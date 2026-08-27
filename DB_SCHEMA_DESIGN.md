@@ -247,7 +247,10 @@ CREATE TABLE sales_targets (
 );
 
 -- ============================================================
--- 3. 台帳系（在庫変動履歴）― 追記のみ、原則UPDATE/DELETEしない
+-- 3. 台帳系（在庫変動履歴）
+--    ※台帳は追記だけでなく、UPDATE・DELETEも通常運用として行う
+--      （入力ミスの訂正・行削除を含む）。詳細な運用ルールは
+--      ユーザーからの追加入力待ち（本セクションは仮置き）。
 -- ============================================================
 
 CREATE TABLE product_stock_ledger (
@@ -269,7 +272,8 @@ CREATE TABLE product_stock_ledger (
   data_kind      TEXT,                          -- データ区分
   is_cancelled   INTEGER NOT NULL DEFAULT 0,    -- 取消フラグ（旧: 備考先頭「取消済み」を正式列化）
   note           TEXT,
-  created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))  -- 通常のUPDATEでの訂正を許容するため追加
 );
 CREATE INDEX idx_psl_product ON product_stock_ledger(product_id, txn_date);
 CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
@@ -288,7 +292,8 @@ CREATE TABLE material_stock_ledger (
   data_kind        TEXT,
   is_cancelled     INTEGER NOT NULL DEFAULT 0,
   note             TEXT,
-  created_at       TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_msl_material ON material_stock_ledger(material_id, txn_date);
 CREATE INDEX idx_msl_product_ledger ON material_stock_ledger(product_ledger_id);
@@ -310,7 +315,8 @@ CREATE TABLE tank_ledger (                       -- 浄酎容器変動履歴
   data_kind          TEXT,
   is_cancelled       INTEGER NOT NULL DEFAULT 0,
   note               TEXT,
-  created_at         TEXT NOT NULL DEFAULT (datetime('now'))
+  created_at         TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX idx_tl_from_tank ON tank_ledger(from_tank_id, txn_date);
 CREATE INDEX idx_tl_to_tank   ON tank_ledger(to_tank_id, txn_date);
@@ -328,7 +334,9 @@ CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
   raw_sake_brand_id INTEGER REFERENCES raw_sake_brands(id), -- 原酒スペック（緩やかな対応をID化）
   spec_note       TEXT,                          -- 正規化できない自由記述の原酒スペック
   is_fifo_estimated INTEGER DEFAULT 0,           -- 過去データ一括変換時のFIFO推定フラグ
-  note            TEXT
+  note            TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ============================================================
@@ -643,6 +651,9 @@ function submitBottling(db, payload) {
    ないか事前にチェックする移行スクリプト（`scripts/migrate-from-sheets.js`）を用意し、
    一致しない場合はエラーとして一覧化してから手動で名寄せ表を作る。
 3. **取消済み行の扱い**：現行の「備考先頭に『取消済み』」という運用を`is_cancelled`フラグに変換する。
+   ※台帳系はこのフラグに加えて、通常のUPDATE（内容訂正）・DELETE（行削除）も業務上必要とのことなので、
+   3章のテーブル定義には`updated_at`を追加済み。削除履歴を残すかどうか（物理削除のみで良いか、
+   削除ログテーブルを別途持つか）は追加のヒアリング事項として保留中。
 4. **受注番号(L列)がない過去データ**：`product_stock_ledger.order_id`はNULLのまま許容し、
    6-3の指摘通り無理に遡及入力はしない（将来必要なら別途スクリプトで対応）。
 5. **酒蔵マスタ・タンクモニター**：テーブルは作るが、初期移行では「参考データ」として
