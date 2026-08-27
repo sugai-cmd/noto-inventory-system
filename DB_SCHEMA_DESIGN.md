@@ -770,6 +770,7 @@ function submitBottling(db, payload) {
    - 酒蔵マスタ・原酒マスタは移行対象外とし、登録APIを先行実装（8-2, 7.2）
    - 全17ローダーを実装し、サンプルCSVでエンドツーエンド検証済み（8-8）
 4. まず「受注登録」「発送済にする」「瓶詰め登録」等、優先度の高い機能からAPI・画面を実装
+   → **API実装完了（9章）。画面（public/）は次のステップ**
 5. 在庫監査レポート・CSV出力（ゆうパック/マネーフォワード）などの周辺機能を移植
 
 ### 7.1 このステップで実際に作成したファイル
@@ -994,3 +995,65 @@ CSVは`scripts/data/csv/`に、テーブル名に対応するファイル名（`
   原酒タンクの残量もモニターしたい場合は別途ビューの追加が必要。
 - タンクマスタの「現在液量(L)」はシート最終値を取り込むが、真値は`v_tank_monitor`側の
   再計算値。両者のズレは台帳の移行漏れを検出する材料になるので、移行後に突合すること。
+
+---
+
+## 9. 主要機能API（実装済み）
+
+DATA_STRUCTURE.md 5章「機能一覧とその成果物」のうち、優先度の高い受注・瓶詰め系を実装した。
+
+### 9.1 エンドポイント一覧
+
+| メソッド | パス | 対応する旧GAS機能 |
+|---|---|---|
+| GET | `/api/customers/search?q=` | 得意先のインクリメンタル検索（2.2） |
+| GET | `/api/products/search?q=` | 商品のインクリメンタル検索（在庫付き。在庫僅少アラート用） |
+| GET | `/api/orders/defaults?customerId=&productId=&quantity=&deliveredOn=` | 受注登録画面の初期値（2.3） |
+| POST | `/api/orders` | `submitOrder()` |
+| GET | `/api/orders`（status/customerId/from/to で絞込） | 受注一覧 |
+| POST | `/api/orders/:id/ship` | `markOrderAsShipped()` |
+| POST | `/api/orders/:id/invoice` | `markInvoiceSent()` |
+| POST | `/api/orders/:id/payment` | 入金日の記録 |
+| POST | `/api/bottling` | `submitBottlingV2()` |
+| POST | `/api/boxing` | `submitBoxing()` |
+| GET | `/api/recipe/:productId` | `getRecipeForProduct_()`（画面での消費予定表示用） |
+| GET | `/api/products/stock` | 商品在庫モニター（`v_product_stock`） |
+| GET | `/api/materials/stock` | **資材在庫モニター（7-1で新設）**。適正在庫割れに`shortage`フラグ |
+| GET | `/api/tanks/monitor` | タンクモニター（`v_tank_monitor`＋300/700ml換算本数） |
+| GET/POST/PUT | `/api/customers`, `/api/products` | マスタCRUD |
+| GET/POST/PUT/DELETE | `/api/breweries`, `/api/raw-sake-brands` | 8-2の移行後手動登録用 |
+
+### 9.2 GAS版からの主な改善点
+
+- **トランザクション化**：瓶詰めは「商品在庫変動履歴＋資材在庫変動履歴（レシピ消費）＋
+  浄酎容器変動履歴」の3台帳へ書き込むが、GAS版はシートごとに順次appendRowしていたため
+  途中で失敗すると不整合が残った。SQLiteのトランザクションで全書き込みをまとめ、
+  失敗時は全てロールバックする。
+- **出荷と受注の確実な紐付け**：`markOrderAsShipped()`が出荷履歴に必ず`order_id`をセットするため、
+  6-3で「移行期の状態」とされていた受注番号との突合が、新規データでは常に成立する。
+- **在庫不足のガード**：箱詰め時に仕掛品在庫を検査し、足りなければ422で拒否する（GAS版にはなかった）。
+- **エラーの区別**：業務ルール違反（在庫不足=422／二重発送=409／対象なし=404）と
+  入力エラー（400）とサーバー障害（500）を`src/utils/errors.js`で区別して返す。
+- **金額のスナップショット**：単価・掛け率は受注登録時点のマスタ値を`orders`に保存するため、
+  後からマスタを変更しても過去の受注金額は変わらない。
+
+### 9.3 採番ロジック
+
+`src/utils/codeGenerator.js`が受注番号（`D`+年月+連番）・商品履歴ID（`L`+…）・
+資材履歴ID（`M`+…）・サンプルID（`S`+…）を共通実装で採番する。
+カウンタテーブルを持たず「同一プレフィックス・同一年月の最大連番+1」で求めるため、
+移行データの続きからも正しく採番される。採番と実INSERTは同一トランザクション内で行う。
+
+### 9.4 テスト
+
+`npm test`で32件（全てpass）。うち受注フローのテスト（`tests/services/orderFlow.test.js`）は
+Expressアプリをインプロセスで起動し、実際のHTTPリクエストで
+「受注登録 → 瓶詰め → 箱詰め → 発送済」の一連の流れと在庫連動を検証している。
+`tests/services/dateUtil.test.js`は支払いサイト計算（年跨ぎ・うるう年・31日指定の末日丸め）を担保する。
+
+### 9.5 未実装（次のステップ）
+
+- 画面（`public/`）：受注登録・瓶詰め・ダッシュボード
+- 蒸留の開始/完了、容器移動・未納税移出、棚卸調整
+- CSV出力（ゆうパック／マネーフォワード）
+- 在庫監査レポート
