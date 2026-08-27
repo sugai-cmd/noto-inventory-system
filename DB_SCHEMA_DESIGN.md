@@ -68,6 +68,7 @@ PRAGMA foreign_keys = ON;
 
 CREATE TABLE customers (
   id                 INTEGER PRIMARY KEY,
+  uid                TEXT NOT NULL UNIQUE,     -- 固有ID（8桁ランダム小文字英数字。キーカラム）
   code               TEXT UNIQUE,              -- 旧: 顧客ID（表示用コード）
   name               TEXT NOT NULL UNIQUE,     -- 得意先名
   segment            TEXT,                     -- 区分
@@ -89,6 +90,7 @@ CREATE TABLE customers (
 
 CREATE TABLE products (
   id                     INTEGER PRIMARY KEY,
+  uid                    TEXT NOT NULL UNIQUE, -- 固有ID（8桁ランダム小文字英数字。キーカラム）
   code                   TEXT UNIQUE,          -- 商品ID
   name                   TEXT NOT NULL UNIQUE, -- 商品名称（全シート共通の参照キー）
   volume_ml              INTEGER,              -- 容量(ml)
@@ -109,6 +111,7 @@ CREATE TABLE products (
 
 CREATE TABLE materials (
   id                INTEGER PRIMARY KEY,
+  uid               TEXT NOT NULL UNIQUE,      -- 固有ID（8桁ランダム小文字英数字。キーカラム）
   code              TEXT UNIQUE,               -- 資材ID
   name              TEXT NOT NULL UNIQUE,      -- 資材名（表記統一：資材名/資材名称→name）
   category          TEXT,                      -- 資材種別
@@ -138,6 +141,7 @@ CREATE TABLE product_recipes (
 
 CREATE TABLE breweries (                        -- 酒蔵マスタ（実質未使用、緩い扱い）
   id          INTEGER PRIMARY KEY,
+  uid         TEXT NOT NULL UNIQUE,             -- 固有ID（8桁ランダム小文字英数字。キーカラム）
   name        TEXT NOT NULL UNIQUE,
   address     TEXT,
   phone       TEXT,
@@ -147,6 +151,7 @@ CREATE TABLE breweries (                        -- 酒蔵マスタ（実質未�
 
 CREATE TABLE raw_sake_brands (                  -- 原酒マスタ
   id                INTEGER PRIMARY KEY,
+  uid               TEXT NOT NULL UNIQUE,       -- 固有ID（8桁ランダム小文字英数字。キーカラム）
   name              TEXT NOT NULL UNIQUE,       -- 銘柄
   abv               REAL,                       -- アルコール度数
   sake_meter_value  REAL,                       -- 日本酒度
@@ -162,6 +167,7 @@ CREATE TABLE raw_sake_brands (                  -- 原酒マスタ
 
 CREATE TABLE tanks (
   id                  INTEGER PRIMARY KEY,
+  uid                 TEXT NOT NULL UNIQUE,     -- 固有ID（8桁ランダム小文字英数字。キーカラム）
   code                TEXT NOT NULL UNIQUE,     -- 容器ID（T/B/SP/U/G/JP/Q/DISTL + 連番）
   name                TEXT NOT NULL UNIQUE,     -- 容器名称（他シートがこの名前で参照 → tank_ledgerではIDで参照させる）
   container_type      TEXT,                     -- 容器種別
@@ -175,6 +181,15 @@ CREATE TABLE tanks (
   note                TEXT
 );
 
+-- 【uidカラムについて】
+-- customers / products / materials / breweries / raw_sake_brands / tanks の
+-- 全マスタに `uid`（8桁ランダム小文字英数字、例: 'a3f9k2mZ'ではなく'a3f9k2mz'のような
+-- [a-z0-9]の8文字）をキーカラムとして追加。product_recipes（中間テーブル）は対象外。
+-- ・生成はアプリ層で行う（例: nanoidのカスタムアルファベット 'abcdefghijklmnopqrstuvwxyz0123456789' で8桁）。
+-- ・UNIQUE制約により衝突時はDB側で検出できるので、アプリ側は衝突時に再生成してリトライする。
+-- ・内部の結合・インデックスには従来通り`id`（INTEGER PRIMARY KEY / rowid）を使い、
+--   `uid`はAPIのURLや画面表示・外部連携など「外部に見せるキー」として使う想定。
+
 -- ============================================================
 -- 2. 受注・売上系（トランザクション）
 -- ============================================================
@@ -183,8 +198,8 @@ CREATE TABLE orders (
   id                 INTEGER PRIMARY KEY,
   order_no           TEXT NOT NULL UNIQUE,      -- D+年月+連番（表示用・外部連携用に維持）
   ordered_on         TEXT NOT NULL,             -- 受注日
-  customer_id        INTEGER NOT NULL REFERENCES customers(id),
-  product_id         INTEGER NOT NULL REFERENCES products(id),
+  customer_id        INTEGER NOT NULL REFERENCES customers(id), -- 画面側は得意先名でインクリメンタル検索（後述）
+  product_id         INTEGER NOT NULL REFERENCES products(id),  -- 画面側は商品名でインクリメンタル検索（後述）
   quantity           INTEGER NOT NULL,          -- 本数
   unit_price         REAL,                      -- 単価（登録時点の商品マスタ上代のスナップショット）
   markup_rate        REAL,                      -- 掛け率（登録時点の得意先マスタのスナップショット）
@@ -192,8 +207,8 @@ CREATE TABLE orders (
   shipping_fee       REAL DEFAULT 0,            -- 送料
   total_amount       REAL,                      -- 合計(税込)
   requested_delivery_on TEXT,                   -- 納入希望日
-  invoiced_on        TEXT,                      -- 請求日
-  payment_due_on     TEXT,                      -- 入金予定日
+  invoiced_on        TEXT,                      -- 請求日（新規登録時、得意先マスタの請求関連情報からイニシャル表示。後述）
+  payment_due_on     TEXT,                      -- 入金予定日（同上）
   paid_on            TEXT,                      -- 入金日
   sales_method       TEXT,                      -- 買取/委託
   delivery_method    TEXT,                      -- 配送/手渡し
@@ -405,6 +420,48 @@ CREATE TABLE resource_locks (
   6-2で指摘された「表記ゆれで突合できない」問題を引き継いでしまうため非推奨。
 
 本設計はA案を基本方針とし、移行が難しい行だけB案的な `note` 退避を許容します。
+
+**→ A案の方向で確定。** `tank_ledger` / `raw_sake_ledger` 等の `from_tank_id` / `to_tank_id` /
+`order_id` のような専用FK列への分解を正式な設計方針とする。
+
+### 2.2 補足：得意先・商品のインクリメンタル検索（AppSheet同等の検索性の再現）
+
+`orders.customer_id` / `orders.product_id` のように、伝票入力画面で得意先・商品を選ぶ場面では、
+かつてAppSheetで実現できていた「入力しながら絞り込める検索」を本アプリでも再現する。
+
+- DB側：`customers.name` と `products.name` を対象に **SQLite FTS5仮想テーブル**を用意する。
+
+  ```sql
+  CREATE VIRTUAL TABLE customers_fts USING fts5(
+    name, code, sales_rep, content='customers', content_rowid='id'
+  );
+  CREATE VIRTUAL TABLE products_fts USING fts5(
+    name, code, category, content='products', content_rowid='id'
+  );
+  -- customers / products への INSERT/UPDATE/DELETE と同期させるトリガを追加する
+  ```
+
+  データ量が少ない前提であれば `LIKE '%キーワード%'` の素朴な検索でも実用上は十分だが、
+  前方一致以外の部分一致・読み仮名検索等を見込むならFTS5を推奨する。
+- API側：`GET /api/customers/search?q=...` `GET /api/products/search?q=...` を用意し、
+  受注登録画面ではこの検索APIを叩くインクリメンタルサーチ（オートコンプリート）のUIコンポーネントを使う。
+- ルーティング（5章のプロジェクト構造）の `routes/customers.js` / `routes/products.js` に
+  検索エンドポイントを追加する形で実装する。
+
+### 2.3 補足：請求関連日付の初期値（イニシャル表示）
+
+受注登録時、`orders.invoiced_on`（請求日）・`orders.payment_due_on`（入金予定日）は、
+選択した得意先（`customers`）の請求関連マスタ情報から**初期値として自動表示**し、
+必要であれば画面上で上書きできるようにする。
+
+- `payment_due_on` の初期値：`customers.payment_term_months`（支払いサイト月数）・
+  `customers.payment_term_day`（支払いサイト日付、例:末日）から、納品日（`delivered_on`）を
+  起点に計算する（現行の「入金予定日は納品日＋支払いサイトから自動計算」を踏襲）。
+- `invoiced_on` の初期値：`customers.invoice_due_note`（請求日送付期日）を参照して
+  デフォルト値を提示する。
+- これらはDBスキーマ上の制約ではなく、**サービス層（`orderService.js`）の入力初期値ロジック**として
+  実装する。`orders`テーブル自体には`unit_price`/`markup_rate`と同様、確定した値をスナップショットとして保存する
+  （後から得意先マスタの値が変わっても、過去の受注の請求日はそのまま残る）。
 
 ---
 
