@@ -765,9 +765,10 @@ function submitBottling(db, payload) {
    - Node.jsプロジェクトの最小骨格（`src/server.js` → `src/db/migrate.js` →
      `src/db/connection.js`）を作成し、`db/migrations/0001_init.sql`として
      マイグレーション適用・`GET /api/health`応答まで動作確認済み
-3. 移行スクリプト（CSVエクスポート→SQLite投入）の作成 ← **設計完了（8章）、実装は次はここ**
+3. ~~移行スクリプト（CSVエクスポート→SQLite投入）の作成~~ → **完了（8章、8-8に実装内容）**
    - サンプル送付↔商品在庫変動履歴の紐付け方針を確定（8-1）
    - 酒蔵マスタ・原酒マスタは移行対象外とし、登録APIを先行実装（8-2, 7.2）
+   - 全17ローダーを実装し、サンプルCSVでエンドツーエンド検証済み（8-8）
 4. まず「受注登録」「発送済にする」「瓶詰め登録」等、優先度の高い機能からAPI・画面を実装
 5. 在庫監査レポート・CSV出力（ゆうパック/マネーフォワード）などの周辺機能を移植
 
@@ -941,3 +942,55 @@ scripts/
 2. シートの行数とテーブルの投入件数（スキップ分を除く）が一致するか
 3. `orders.total_amount`等の月次集計値がスプレッドシート側と一致するかスポットチェック
 4. `v_product_stock`/`v_tank_monitor`の計算結果が、旧シートの最終値と一致するか
+
+このうち1と、モニタービューが引けることの確認は`migrate-from-sheets.js`が実行後に自動で行う。
+2はサマリー（読込/投入/既存/スキップ件数）で確認できる。3・4は旧シートの数字が必要なため手動。
+
+### 8.8 実装内容（実装済み）
+
+```
+scripts/migrate-from-sheets.js     # CLIエントリポイント
+scripts/lib/csvReader.js           # CSV読込（BOM除去）
+scripts/lib/parseDate.js           # 日付/日時/月のパース・分離（2.0の方針を実装）
+scripts/lib/loadHelper.js          # 読込→変換→INSERTの共通処理、名前解決、既存判定
+scripts/lib/report.js              # unmatched-names.csv / errors.csv / summary.json 出力
+scripts/loaders/*.js               # シートごとのローダー（全17本）
+scripts/data/aliases.example.json  # 名寄せ手動補正表のサンプル
+tests/scripts/parseDate.test.js    # 日付分離ロジックのテスト
+```
+
+**実行方法**
+
+```bash
+node scripts/migrate-from-sheets.js --dry-run       # 投入せずレポートのみ（必ず最初にこれ）
+node scripts/migrate-from-sheets.js                 # --strict（既定）で投入
+node scripts/migrate-from-sheets.js --allow-partial # 名寄せ不一致行をスキップして続行
+node scripts/migrate-from-sheets.js --reset         # 台帳・トランザクションを消して再投入
+```
+
+CSVは`scripts/data/csv/`に、テーブル名に対応するファイル名（`customers.csv`、
+`product_stock_ledger.csv`等）で配置する。ファイルがなければそのシートはスキップされるため、
+用意できたシートから段階的に流し込める。
+
+**検証済みの動作**（サンプルCSV16ファイルでエンドツーエンド実行）
+
+- 全17ローダーが依存関係順に動作し、`PRAGMA foreign_key_check`が0件でコミットされること
+- 日付/時刻の分離：`2026/8/1 09:30` → `started_on='2026-08-01'` + `started_time='09:30'`
+- `sample_no`の採番（`S2608-0001`）と、日付×商品×数量による
+  `product_stock_ledger.sample_shipment_id`の自動突合（8-1）
+- 受注由来の出荷は`order_id`、サンプル由来は`sample_shipment_id`に排他的に入ること
+- 「取消済み」プレフィックス → `is_cancelled=1`＋noteからのprefix除去、
+  および集計ビューからの除外
+- `v_product_stock`/`v_material_stock`/`v_tank_monitor`の計算値が手計算と一致すること
+- `--strict`が名寄せ不一致で投入前に中止し、`--allow-partial`が該当行のみスキップして続行すること
+- `--reset`がマスタを保持したまま台帳のみ再投入し、再実行してもマスタが重複しないこと
+  （マスタローダーは自然キーで既存行を検出する冪等な実装）
+
+**既知の注意点**
+
+- `v_tank_monitor`は`tank_ledger`（浄酎容器変動履歴）のみを集計する。原酒タンクの
+  受払は`raw_sake_ledger`側にあるため、原酒ポリタンク等の残量はこのビューには反映されない。
+  これは現行システム（TankEngineが浄酎容器変動履歴のみを見る）と同じ挙動だが、
+  原酒タンクの残量もモニターしたい場合は別途ビューの追加が必要。
+- タンクマスタの「現在液量(L)」はシート最終値を取り込むが、真値は`v_tank_monitor`側の
+  再計算値。両者のズレは台帳の移行漏れを検出する材料になるので、移行後に突合すること。
