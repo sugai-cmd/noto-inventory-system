@@ -268,6 +268,7 @@ CREATE TABLE consignment_reports (
 
 CREATE TABLE sample_shipments (
   id                 INTEGER PRIMARY KEY,
+  sample_no          TEXT NOT NULL UNIQUE,      -- S+年月(4桁)+連番(4桁)。受注番号(D...)の採番方式を踏襲
   shipped_on         TEXT NOT NULL CHECK (shipped_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   customer_id        INTEGER REFERENCES customers(id),
   contact_name       TEXT,                      -- 得意先名前（実質は担当者名）
@@ -276,8 +277,9 @@ CREATE TABLE sample_shipments (
   followup_on        TEXT CHECK (followup_on IS NULL OR followup_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 後追い連絡日
   phone              TEXT,
   data_kind          TEXT,                      -- データ区分
-  note               TEXT,
-  stock_ledger_id    INTEGER REFERENCES product_stock_ledger(id) -- 自動生成される出荷履歴行への逆参照
+  note               TEXT
+  -- 対応する出荷履歴行への参照は product_stock_ledger.sample_shipment_id 側に一本化
+  -- （orders ⇔ product_stock_ledger.order_id と同じ片方向FKパターンに揃える。8-1参照）
 );
 
 CREATE TABLE sales_targets (
@@ -306,7 +308,8 @@ CREATE TABLE product_stock_ledger (
                  )),
   quantity       REAL NOT NULL,                 -- 常に正の数。増減方向はtxn_typeで判定
   counterparty   TEXT,                          -- 受入元/払出先（得意先名・タンクID等の文脈依存自由記述）
-  order_id       INTEGER REFERENCES orders(id), -- 受注番号（移行期はNULL許容）
+  order_id       INTEGER REFERENCES orders(id), -- 受注経由の出荷。受注番号（移行期はNULL許容）
+  sample_shipment_id INTEGER REFERENCES sample_shipments(id), -- サンプル送付経由の出荷（8-1参照）。order_idと同じパターンの専用FK
   volume_ml      REAL,                          -- 容量(ml)×本数（出荷時のみ）
   tax_amount     REAL,                          -- 課税額×本数（出荷時のみ）
   storage_place  TEXT,                          -- 保管場所
@@ -314,10 +317,12 @@ CREATE TABLE product_stock_ledger (
   is_cancelled   INTEGER NOT NULL DEFAULT 0,    -- 取消フラグ（旧: 備考先頭「取消済み」を正式列化）
   note           TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))  -- 通常のUPDATEでの訂正を許容するため追加
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),  -- 通常のUPDATEでの訂正を許容するため追加
+  CHECK (order_id IS NULL OR sample_shipment_id IS NULL) -- 出荷の発生源は受注かサンプルのどちらか一方のみ
 );
 CREATE INDEX idx_psl_product ON product_stock_ledger(product_id, txn_date);
 CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
+CREATE INDEX idx_psl_sample  ON product_stock_ledger(sample_shipment_id);
 
 CREATE TABLE material_stock_ledger (
   id               INTEGER PRIMARY KEY,
@@ -760,7 +765,9 @@ function submitBottling(db, payload) {
    - Node.jsプロジェクトの最小骨格（`src/server.js` → `src/db/migrate.js` →
      `src/db/connection.js`）を作成し、`db/migrations/0001_init.sql`として
      マイグレーション適用・`GET /api/health`応答まで動作確認済み
-3. 移行スクリプト（CSVエクスポート→SQLite投入）の作成 ← **次はここ**
+3. 移行スクリプト（CSVエクスポート→SQLite投入）の作成 ← **設計完了（8章）、実装は次はここ**
+   - サンプル送付↔商品在庫変動履歴の紐付け方針を確定（8-1）
+   - 酒蔵マスタ・原酒マスタは移行対象外とし、登録APIを先行実装（8-2, 7.2）
 4. まず「受注登録」「発送済にする」「瓶詰め登録」等、優先度の高い機能からAPI・画面を実装
 5. 在庫監査レポート・CSV出力（ゆうパック/マネーフォワード）などの周辺機能を移植
 
@@ -779,3 +786,158 @@ src/server.js                      # Express起動。起動時にmigrate()を実
 
 `src/models` / `src/services` / `src/routes` / `public` / `scripts` / `tests` は
 5章の構成に沿ってディレクトリのみ用意済み（中身は次ステップ以降で実装）。
+
+### 7.2 8-2の決定に伴い実装したマスタ登録API（酒蔵・原酒）
+
+8-2で「酒蔵マスタ・原酒マスタは移行対象外とし、移行後にAPI経由で順次登録する」と
+決定したため、先行してその登録APIを実装した（`node --test`で動作確認済み・5件全pass）。
+
+```
+src/utils/uid.js               # マスタのuid（8桁ランダム小文字英数字）生成・衝突リトライ
+src/utils/normalizeName.js     # NFKC正規化＋トリム（8-3の名寄せルールをアプリ側でも共有）
+src/models/breweryModel.js     # 酒蔵マスタ CRUD
+src/models/rawSakeBrandModel.js# 原酒マスタ CRUD。酒蔵は breweryId 優先、
+                                # breweryNameは既存酒蔵と正規化一致すればbrewery_idを解決、
+                                # 不一致ならbrewery_id=NULL・brewery_name_rawへ自由記述のまま退避
+src/routes/breweries.js        # GET/POST/PUT/DELETE /api/breweries
+src/routes/rawSakeBrands.js    # GET/POST/PUT/DELETE /api/raw-sake-brands
+src/middlewares/validateRequest.js # zodスキーマでのリクエスト検証（400を返す）
+src/middlewares/errorHandler.js    # SQLite制約違反(409)等の共通エラーハンドリング
+tests/models/masterModels.test.js  # 上記モデルの単体テスト（node --test）
+```
+
+`npm test`（`node --test tests/**/*.test.js`）で実行できる。
+
+---
+
+## 8. 移行スクリプト設計（7-3 詳細）
+
+### 8.0 全体方針・フェーズ構成
+
+移行の本質的な難しさはINSERT文を書くことではなく、**旧シートの名前ベースの緩い紐付けを、
+新スキーマのID参照に安全に変換すること**（6-2）です。FK依存があるため、以下の順序を厳守します。
+
+```
+フェーズ1: マスタ系（依存関係の起点）
+  得意先マスタ → customers
+  商品マスタ → products
+  資材マスタ → materials
+  タンクマスタ → tanks
+  製品レシピマスタ → product_recipes（products・materialsのnameから解決）
+  ※ 酒蔵マスタ・原酒マスタは対象外（8-2参照）
+
+フェーズ2: 名寄せ事前チェック（★実データ投入前に一旦止まる想定の重要フェーズ）
+  受注リスト以降の全シートに登場する「得意先名」「商品名」「タンク名」等の文字列を
+  全て収集し、フェーズ1で作ったマスタ名と突合。不一致は unmatched-names.csv に出力し、
+  --strict なら実データ投入前に停止する。
+
+フェーズ3: トランザクション・台帳系（マスタのIDを使って解決）
+  1. orders（受注リスト）
+  2. distillations（蒸留記録ヘッダ）
+  3. raw_sake_ledger（原料受払記録）※原酒マスタ・酒蔵マスタは対象外のため raw_sake_brand_id は
+     常にNULL・spec_noに原酒スペックの自由記述をそのまま退避
+  4. distillation_details（蒸留明細記録）
+  5. distillation_residues（残渣回収記録）
+  6. product_stock_ledger（商品在庫変動履歴）※order_noでordersを参照
+  7. material_stock_ledger（資材在庫変動履歴）※商品履歴IDでproduct_stock_ledgerを参照
+  8. tank_ledger（浄酎容器変動履歴）※商品履歴ID・蒸留IDの両方を参照
+  9. consignment_reports（委託販売実績報告）※受注番号でordersを参照
+  10. sample_shipments → product_stock_ledger の突合（8-1参照）
+  11. sales_targets（依存なし）
+
+  ※ resource_locks（ロック管理）は移行対象外（実行時の排他制御用の一時データのため）
+```
+
+同じ「商品履歴ID」がproduct_stock_ledger／material_stock_ledger／tank_ledgerの3シートに
+共通で振られている現行仕様（6-2）をそのまま活用し、`history_code → 新しい整数id`のマップを
+作って後続テーブルのFK解決に使います。蒸留IDも同様です。
+
+### 8.1 サンプル送付↔商品在庫変動履歴の紐付け（決定事項）
+
+**新設した`sample_shipments.sample_no`（S+年月+連番）と`product_stock_ledger.sample_shipment_id`
+（`order_id`と同じパターンの専用FK）を使う。** 詳細は2章のDDLを参照。
+
+移行時の具体的な手順：
+
+1. `sample_shipments`（サンプル、販促資料送付シート）を読み込み、各行に`sample_no`を
+   新規採番して投入する（過去データには当然この番号は存在しないため、移行時に初めて付与する）
+2. `product_stock_ledger`側で、`txn_type='出荷'`かつ`order_id`が解決できない行
+   （＝受注リストに対応する行が見当たらない＝サンプル起因の出荷と推定される行）を抽出する
+3. 2の候補と1のサンプル送付行を、**日付×商品×数量が一致するもの**で突き合わせる
+   - 1対1で一意にマッチしたものだけ`sample_shipment_id`を確定させる
+   - 同日・同商品・同数量の候補が複数あって一意に決まらない場合は、`errors.csv`（曖昧マッチ）に
+     出力してNULLのまま残し、後日手動で確認する
+4. マッチしなかった`sample_shipments`行・`product_stock_ledger`行は、それぞれ単独のレコードとして
+   投入する（無理に紐付けを作らない。7章冒頭の「実害がなければ緊急性は高くない」という現行方針を踏襲）
+
+これは**過去データだけの問題**です。移行後、新アプリの`submitSampleShipment()`は
+`sample_shipments`と`product_stock_ledger`を同一トランザクション内で作成し、
+`sample_shipment_id`を確実にセットするため、今後はこの推測マッチングは不要になります。
+
+### 8.2 酒蔵マスタ・原酒マスタの移行スコープ（決定事項）
+
+6-5/6-6の通り実質未使用の**酒蔵マスタ・原酒マスタは、移行スクリプトの対象から完全に除外**します。
+過去データのCSV変換・名寄せは行わず、代わりに**新アプリのマスタ登録画面／APIを先に用意し、
+移行後に必要な分だけ手動で順次登録していく**運用に切り替えます。
+
+- `raw_sake_ledger.raw_sake_brand_id`は移行時は常にNULLとし、元の「原酒スペック」列は
+  `spec_note`（自由記述）にそのまま退避する（すでにDDLに用意済み）
+- タンクモニターはテーブルを持たず`v_tank_monitor`ビューとして`tanks`から導出する設計のため
+  （3章）、そもそも移行対象データが存在しない
+- 今回、この方針に対応する実装として `src/models/breweryModel.js` /
+  `src/models/rawSakeBrandModel.js` と、それぞれのAPIルートを作成した（8-3参照）。
+  移行完了後、これらのAPIを使って酒蔵・原酒を都度登録できる。
+
+### 8.3 名寄せ（名前解決）の仕組み
+
+1. **正規化ルール**：Unicode NFKC正規化（全角/半角統一）＋前後空白トリム＋連続空白の圧縮を
+   全ての名前系文字列に適用してから比較する
+2. **突合**：正規化済みの値でマスタの`name`と一致するかを見る
+3. **不一致の扱い**：`unmatched-names.csv`に「どのシートの、どの列の、どの値が」不一致かを
+   全件リストアップ。`--strict`（デフォルト）は実データ投入前に停止、`--allow-partial`は
+   FKをNULLにして`note`/`*_raw`列に退避し処理続行
+4. **手動補正**：`scripts/data/aliases.json`に`{"表記ゆれ": "正式名称"}`の対応表を用意し、
+   正規化だけでは解決しない差異を人が指定できるようにする
+
+### 8.4 カラム単位の変換ルール
+
+| 変換項目 | ルール |
+|---|---|
+| 日付 | シート由来の値を`YYYY-MM-DD`に正規化。パース不能な値は`errors.csv`に記録しスキップ |
+| 蒸留日等の日時混在列 | `started_on`+`started_time`等に分離。時刻が読み取れない場合はエラーとして明示的に止める |
+| `uid` | 8桁ランダム小文字英数字を生成し、DB側で重複チェック→衝突時は再生成（`src/utils/uid.js`） |
+| 取消済み行 | `備考`列の先頭が「取消済み」なら`is_cancelled=1`にし、prefixを除いた残りを`note`に格納 |
+| 表記ゆれ列名 | シートごとに列名を明示的にマッピングするので自動判定は不要 |
+
+### 8.5 べき等性・dry-run・エラーレポート
+
+- `--dry-run`：全処理をトランザクション内で実行し、最後に必ずロールバック。
+  `unmatched-names.csv`・`errors.csv`・`summary.json`（シートごとの読込/投入/スキップ件数）だけ出力
+- `--reset`：トランザクション・台帳系テーブルを事前に全削除してから再投入（マスタは対象外）
+- 行単位のエラーは最初の1件で止めず`errors.csv`に集約する
+
+### 8.6 ファイル構成
+
+```
+scripts/
+├── migrate-from-sheets.js        # CLIエントリポイント（--dry-run/--strict/--allow-partial/--reset）
+├── data/
+│   ├── csv/                      # シートCSVエクスポート（.gitignore対象。酒蔵・原酒は含めない）
+│   └── aliases.json              # 手動の名寄せ対応表
+├── lib/
+│   ├── csvReader.js
+│   ├── normalize.js
+│   ├── parseDate.js
+│   └── report.js
+└── migration-report/             # 実行結果（.gitignore対象）
+    ├── unmatched-names.csv
+    ├── errors.csv
+    └── summary.json
+```
+
+### 8.7 移行後の検証
+
+1. `PRAGMA foreign_key_check`が0件であること
+2. シートの行数とテーブルの投入件数（スキップ分を除く）が一致するか
+3. `orders.total_amount`等の月次集計値がスプレッドシート側と一致するかスポットチェック
+4. `v_product_stock`/`v_tank_monitor`の計算結果が、旧シートの最終値と一致するか

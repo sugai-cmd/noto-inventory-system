@@ -184,6 +184,7 @@ CREATE TABLE consignment_reports (
 
 CREATE TABLE sample_shipments (
   id                 INTEGER PRIMARY KEY,
+  sample_no          TEXT NOT NULL UNIQUE,      -- S+年月(4桁)+連番(4桁)。受注番号(D...)の採番方式を踏襲
   shipped_on         TEXT NOT NULL CHECK (shipped_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   customer_id        INTEGER REFERENCES customers(id),
   contact_name       TEXT,                      -- 得意先名前（実質は担当者名）
@@ -192,8 +193,9 @@ CREATE TABLE sample_shipments (
   followup_on        TEXT CHECK (followup_on IS NULL OR followup_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 後追い連絡日
   phone              TEXT,
   data_kind          TEXT,                      -- データ区分
-  note               TEXT,
-  stock_ledger_id    INTEGER REFERENCES product_stock_ledger(id) -- 自動生成される出荷履歴行への逆参照
+  note               TEXT
+  -- 対応する出荷履歴行への参照は product_stock_ledger.sample_shipment_id 側に一本化
+  -- （orders ⇔ product_stock_ledger.order_id と同じ片方向FKパターンに揃える。8-1参照）
 );
 
 CREATE TABLE sales_targets (
@@ -222,7 +224,8 @@ CREATE TABLE product_stock_ledger (
                  )),
   quantity       REAL NOT NULL,                 -- 常に正の数。増減方向はtxn_typeで判定
   counterparty   TEXT,                          -- 受入元/払出先（得意先名・タンクID等の文脈依存自由記述）
-  order_id       INTEGER REFERENCES orders(id), -- 受注番号（移行期はNULL許容）
+  order_id       INTEGER REFERENCES orders(id), -- 受注経由の出荷。受注番号（移行期はNULL許容）
+  sample_shipment_id INTEGER REFERENCES sample_shipments(id), -- サンプル送付経由の出荷（8-1参照）。order_idと同じパターンの専用FK
   volume_ml      REAL,                          -- 容量(ml)×本数（出荷時のみ）
   tax_amount     REAL,                          -- 課税額×本数（出荷時のみ）
   storage_place  TEXT,                          -- 保管場所
@@ -230,10 +233,12 @@ CREATE TABLE product_stock_ledger (
   is_cancelled   INTEGER NOT NULL DEFAULT 0,    -- 取消フラグ（旧: 備考先頭「取消済み」を正式列化）
   note           TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at     TEXT NOT NULL DEFAULT (datetime('now'))  -- 通常のUPDATEでの訂正を許容するため追加
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),  -- 通常のUPDATEでの訂正を許容するため追加
+  CHECK (order_id IS NULL OR sample_shipment_id IS NULL) -- 出荷の発生源は受注かサンプルのどちらか一方のみ
 );
 CREATE INDEX idx_psl_product ON product_stock_ledger(product_id, txn_date);
 CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
+CREATE INDEX idx_psl_sample  ON product_stock_ledger(sample_shipment_id);
 
 CREATE TABLE material_stock_ledger (
   id               INTEGER PRIMARY KEY,
