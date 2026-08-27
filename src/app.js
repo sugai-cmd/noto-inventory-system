@@ -4,15 +4,41 @@
 const path = require('node:path');
 const express = require('express');
 const { errorHandler } = require('./middlewares/errorHandler');
+const { attachUser, requireAuth } = require('./middlewares/auth');
 
-function createApp() {
+const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
+
+// ログインしていなくても配信するもの（ログイン画面と、その表示に必要な資材）
+const PUBLIC_PATHS = new Set([
+  '/login.html',
+  '/favicon.svg',
+  '/assets/css/app.css',
+  '/assets/js/app.js',
+]);
+
+function createApp({ requireLogin = true } = {}) {
   const app = express();
   app.use(express.json());
-  app.use(express.static(path.resolve(__dirname, '..', 'public')));
+
+  // 全リクエストでセッションを解決する（弾くのは requireAuth の役目）
+  app.use(attachUser);
 
   app.get('/api/health', (req, res) => {
     res.json({ status: 'ok' });
   });
+
+  app.use('/api/auth', require('./routes/auth'));
+
+  if (requireLogin) {
+    // 画面・API問わず、ログイン画面まわり以外は認証を必須にする。
+    // 静的ファイルの配信より前に置くことで、HTMLを直接開かれても素通りさせない。
+    app.use((req, res, next) => {
+      if (PUBLIC_PATHS.has(req.path)) return next();
+      return requireAuth(req, res, next);
+    });
+  }
+
+  app.use(express.static(PUBLIC_DIR));
 
   // マスタ系
   app.use('/api/customers', require('./routes/customers'));

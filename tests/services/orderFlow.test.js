@@ -4,36 +4,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
+const { createHarness } = require('../helpers/appHarness');
 
-// config.js は読込時に DB_PATH を評価するため、他のrequireより前に設定する
-const TEST_DB_PATH = path.resolve(__dirname, '..', '..', 'db', 'test-order-flow.sqlite');
-for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
-process.env.DB_PATH = TEST_DB_PATH;
+// 認証を有効にしたまま（本番と同じ構成で）テストする
+const harness = createHarness('test-order-flow.sqlite');
+const api = harness.api;
 
-const { migrate } = require('../../src/db/migrate');
-const { getConnection } = require('../../src/db/connection');
-const { createApp } = require('../../src/app');
-const { generateUid } = require('../../src/utils/uid');
-
-let server;
-let baseUrl;
-
-async function api(method, urlPath, body) {
-  const res = await fetch(`${baseUrl}${urlPath}`, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
-}
+let db;
 
 test.before(async () => {
-  migrate();
-  const db = getConnection();
-
+  ({ db } = await harness.setup((db, generateUid) => {
   // マスタを用意（レシピ・タンクはAPI未実装のため直接投入する）
   db.prepare(
     `INSERT INTO customers (uid, name, markup_rate, payment_term_months, payment_term_day)
@@ -60,15 +40,11 @@ test.before(async () => {
     `INSERT INTO tanks (uid, code, name, max_volume_l, initial_volume_l, current_abv)
      VALUES (?, 'T-01', '浄酎タンク1', 1000, 100, 40)`
   ).run(generateUid(db, 'tanks'));
-
-  server = createApp().listen(0);
-  await new Promise((resolve) => server.once('listening', resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  }));
 });
 
 test.after(async () => {
-  if (server) await new Promise((resolve) => server.close(resolve));
-  for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
+  await harness.teardown();
 });
 
 test('受注登録の初期値は得意先の掛率と支払いサイトから計算される（2.3）', async () => {
@@ -151,7 +127,6 @@ test('発送済にすると在庫が減り、出荷履歴にorder_idが紐付く
   assert.equal(body.order.delivered_on, '2026-08-08');
   assert.equal(body.order.payment_due_on, '2026-09-30');
 
-  const db = getConnection();
   const ledger = db
     .prepare('SELECT * FROM product_stock_ledger WHERE id = ?')
     .get(body.stockLedgerId);

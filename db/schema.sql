@@ -281,6 +281,14 @@ CREATE TABLE sample_shipments (
   -- （orders ⇔ product_stock_ledger.order_id と同じ片方向FKパターンに揃える。8-1参照）
 );
 
+CREATE TABLE sessions (
+  token       TEXT PRIMARY KEY,
+  user_id     INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  expires_at  TEXT NOT NULL,
+  user_agent  TEXT
+);
+
 CREATE TABLE tank_ledger (                       -- 浄酎容器変動履歴
   id                 INTEGER PRIMARY KEY,
   txn_date           TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
@@ -318,6 +326,20 @@ CREATE TABLE tanks (
   note                TEXT
 );
 
+CREATE TABLE users (
+  id            INTEGER PRIMARY KEY,
+  uid           TEXT NOT NULL UNIQUE,      -- 他マスタと同じ8桁ランダム小文字英数字
+  username      TEXT NOT NULL UNIQUE,      -- ログインID
+  display_name  TEXT NOT NULL,             -- 画面に出す名前
+  password_salt TEXT NOT NULL,
+  password_hash TEXT NOT NULL,
+  role          TEXT NOT NULL DEFAULT 'staff' CHECK (role IN ('admin', 'staff')),
+  is_active     INTEGER NOT NULL DEFAULT 1,
+  last_login_at TEXT,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE INDEX idx_msl_material ON material_stock_ledger(material_id, txn_date);
 
 CREATE INDEX idx_msl_product_ledger ON material_stock_ledger(product_ledger_id);
@@ -333,6 +355,10 @@ CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
 CREATE INDEX idx_psl_product ON product_stock_ledger(product_id, txn_date);
 
 CREATE INDEX idx_psl_sample  ON product_stock_ledger(sample_shipment_id);
+
+CREATE INDEX idx_sessions_expires ON sessions(expires_at);
+
+CREATE INDEX idx_sessions_user ON sessions(user_id);
 
 CREATE INDEX idx_tl_from_tank ON tank_ledger(from_tank_id, txn_date);
 

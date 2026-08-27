@@ -8,14 +8,21 @@ Node.js + SQLite のローカルサーバー型アプリとして作り直した
 
 ```bash
 npm install
-npm start           # http://localhost:3000 で起動（初回はDBを自動作成）
+npm run create-user   # 最初の管理者を作る（初回のみ）
+npm start             # http://localhost:3000 で起動
 ```
+
+**会社と自宅の複数PCで使う場合の手順は [docs/SETUP.md](docs/SETUP.md) を参照してください。**
+サーバー機の準備、Tailscaleを使ったHTTPS接続、常時起動、バックアップ、
+動作確認チェックリストまでまとめてあります。
 
 `.env.example`をコピーして`.env`を作れば、ポートとDBファイルの場所を変更できます。
 
 ```bash
-npm test            # テスト実行
-npm run migrate     # マイグレーションのみ適用
+npm test                            # テスト実行
+npm run migrate                     # マイグレーションのみ適用
+npm run create-user                 # ユーザー追加
+node scripts/create-user.js --list  # ユーザー一覧
 ```
 
 ## 画面
@@ -30,6 +37,14 @@ npm run migrate     # マイグレーションのみ適用
 | `/stock.html` | 商品／資材／タンク／原酒タンクの在庫モニター |
 | `/stocktaking.html` | 棚卸 |
 | `/audit.html` | 在庫監査レポート |
+
+## ログイン
+
+利用にはログインが必要です。ユーザーは `npm run create-user` で追加します。
+パスワードはscryptでハッシュ化して保存され、復元できません。
+
+社外（自宅など）から使う場合は、インターネットに直接公開せず
+Tailscale等のVPN経由でアクセスしてください（[docs/SETUP.md](docs/SETUP.md) 3章）。
 
 ## 伝票番号
 
@@ -77,6 +92,7 @@ node scripts/migrate-from-sheets.js
 
 | ファイル | 内容 |
 |---|---|
+| `docs/SETUP.md` | 導入手順・複数PC設定・常時起動・バックアップ・動作確認チェックリスト |
 | `DB_SCHEMA_DESIGN.md` | テーブル設計・プロジェクト構造・移行手順・実装済み機能の詳細 |
 | `DATA_STRUCTURE.md` | 現行スプレッドシート（21シート）の仕様。移行元の記録として保持 |
 | `ER_DIAGRAM_TEXT.md` | 現行システムの関係性図 |

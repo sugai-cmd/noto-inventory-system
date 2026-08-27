@@ -36,6 +36,8 @@ header.site h1 {
   padding: 12px 0 8px;
   font-weight: 600;
 }
+.site-top { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; }
+.site-user { display: flex; align-items: center; gap: 10px; font-size: 13px; color: #c6d2e4; }
 nav.site { display: flex; flex-wrap: wrap; gap: 2px; }
 nav.site a {
   color: #c6d2e4;

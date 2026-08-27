@@ -3,35 +3,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
+const { createHarness } = require('../helpers/appHarness');
 
-const TEST_DB_PATH = path.resolve(__dirname, '..', '..', 'db', 'test-distillation.sqlite');
-for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
-process.env.DB_PATH = TEST_DB_PATH;
+// 認証を有効にしたまま（本番と同じ構成で）テストする
+const harness = createHarness('test-distillation.sqlite');
+const api = harness.api;
 
-const { migrate } = require('../../src/db/migrate');
-const { getConnection } = require('../../src/db/connection');
-const { createApp } = require('../../src/app');
-const { generateUid } = require('../../src/utils/uid');
-
-let server;
-let baseUrl;
-
-async function api(method, urlPath, body) {
-  const res = await fetch(`${baseUrl}${urlPath}`, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
-}
+let db;
 
 test.before(async () => {
-  migrate();
-  const db = getConnection();
-
+  ({ db } = await harness.setup((db, generateUid) => {
   // 原酒タンク2本と浄酎タンク1本
   db.prepare(
     `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
@@ -45,15 +26,11 @@ test.before(async () => {
     `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
      VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 0)`
   ).run(generateUid(db, 'tanks'));
-
-  server = createApp().listen(0);
-  await new Promise((resolve) => server.once('listening', resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  }));
 });
 
 test.after(async () => {
-  if (server) await new Promise((resolve) => server.close(resolve));
-  for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
+  await harness.teardown();
 });
 
 test('原酒入荷でタンク残量が増える', async () => {
@@ -77,7 +54,6 @@ test('原酒入荷でタンク残量が増える', async () => {
 });
 
 test('原酒受払IDは受入が1000番台、払出が0001番台で採番される（4-9）', async () => {
-  const db = getConnection();
   const codes = db
     .prepare("SELECT lot_code FROM raw_sake_ledger WHERE txn_type = '受入' ORDER BY id")
     .all()
@@ -109,7 +85,6 @@ test('蒸留開始で複数タンクから投入でき、原酒が減る', async
 });
 
 test('蒸留開始で払出側の原酒受払IDは0001番台になる', async () => {
-  const db = getConnection();
   const codes = db
     .prepare("SELECT lot_code FROM raw_sake_ledger WHERE txn_type = '払出' ORDER BY id")
     .all()
@@ -194,7 +169,6 @@ test('完了済みの蒸留は二重完了・明細取消ができない', async
 
 test('24時間超の蒸留中アラートが検出される（旧 getStaleDistillationAlerts）', async () => {
   // 昨日開始してまだ蒸留中の記録を作る
-  const db = getConnection();
   const yesterday = new Date(Date.now() - 30 * 60 * 60 * 1000);
   const ymd = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
   db.prepare(

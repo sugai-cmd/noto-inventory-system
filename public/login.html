@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ログイン | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+  <style>
+    body { display: flex; align-items: center; justify-content: center; min-height: 100vh; }
+    .login-box { width: 100%; max-width: 380px; padding: 16px; }
+    .login-box h1 { font-size: 18px; text-align: center; margin: 0 0 4px; }
+    .login-box .sub { text-align: center; color: var(--muted); font-size: 13px; margin: 0 0 20px; }
+    .login-box .panel { margin-bottom: 0; }
+    .login-box button { width: 100%; margin-top: 4px; }
+    .field { margin-bottom: 12px; }
+  </style>
+</head>
+<body>
+<div class="login-box">
+  <h1>NOTO Naorai</h1>
+  <p class="sub">受注・製造管理システム</p>
+
+  <div id="messages"></div>
+
+  <div class="panel">
+    <form id="loginForm">
+      <div class="field">
+        <label for="username">ログインID</label>
+        <input type="text" id="username" autocomplete="username" required autofocus>
+      </div>
+      <div class="field">
+        <label for="password">パスワード</label>
+        <input type="password" id="password" autocomplete="current-password" required>
+      </div>
+      <button type="submit" id="submitBtn">ログイン</button>
+    </form>
+  </div>
+</div>
+
+<script src="assets/js/app.js"></script>
+<script>
+/** ログイン後の遷移先。?next= が付いていればそこへ戻す */
+function nextUrl() {
+  const next = new URLSearchParams(location.search).get('next');
+  // 外部サイトへ飛ばされないよう、自サイト内の相対パスだけ許可する
+  if (next && next.startsWith('/') && !next.startsWith('//')) return next;
+  return '/index.html';
+}
+
+el('loginForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  el('submitBtn').disabled = true;
+
+  try {
+    await apiPost('/api/auth/login', {
+      username: el('username').value,
+      password: el('password').value,
+    });
+    location.href = nextUrl();
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+    el('password').value = '';
+    el('password').focus();
+  } finally {
+    el('submitBtn').disabled = false;
+  }
+});
+</script>
+</body>
+</html>

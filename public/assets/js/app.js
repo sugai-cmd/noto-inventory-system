@@ -195,7 +195,10 @@ function renderNav(current) {
   document.body.insertAdjacentHTML(
     'afterbegin',
     `<header class="site">
-       <h1>NOTO Naorai 受注・製造管理システム</h1>
+       <div class="site-top">
+         <h1>NOTO Naorai 受注・製造管理システム</h1>
+         <div class="site-user" id="siteUser"></div>
+       </div>
        <nav class="site">
          ${pages
            .map(
@@ -206,4 +209,26 @@ function renderNav(current) {
        </nav>
      </header>`
   );
+
+  renderCurrentUser();
+}
+
+/** ヘッダにログイン中のユーザー名とログアウトボタンを出す */
+async function renderCurrentUser() {
+  const box = el('siteUser');
+  if (!box) return;
+
+  try {
+    const { user } = await apiGet('/api/auth/me');
+    box.innerHTML =
+      `<span>${escapeHtml(user.displayName)}</span>` +
+      `<button type="button" id="logoutBtn" class="secondary small">ログアウト</button>`;
+
+    el('logoutBtn').addEventListener('click', async () => {
+      await apiPost('/api/auth/logout');
+      location.href = '/login.html';
+    });
+  } catch {
+    // 未ログインならサーバー側のリダイレクトに任せる
+  }
 }

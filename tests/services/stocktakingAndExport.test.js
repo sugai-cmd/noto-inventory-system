@@ -2,36 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
+const { createHarness } = require('../helpers/appHarness');
 
-const TEST_DB_PATH = path.resolve(__dirname, '..', '..', 'db', 'test-stocktaking.sqlite');
-for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
-process.env.DB_PATH = TEST_DB_PATH;
+// 認証を有効にしたまま（本番と同じ構成で）テストする
+const harness = createHarness('test-stocktaking.sqlite');
+const api = harness.api;
 
-const { migrate } = require('../../src/db/migrate');
-const { getConnection } = require('../../src/db/connection');
-const { createApp } = require('../../src/app');
-const { generateUid } = require('../../src/utils/uid');
-
-let server;
-let baseUrl;
-
-async function api(method, urlPath, body) {
-  const res = await fetch(`${baseUrl}${urlPath}`, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  const isJson = res.headers.get('content-type')?.includes('application/json');
-  return { status: res.status, body: isJson && text ? JSON.parse(text) : text, res };
-}
+let db;
 
 test.before(async () => {
-  migrate();
-  const db = getConnection();
-
+  ({ db } = await harness.setup((db, generateUid) => {
   db.prepare(`INSERT INTO customers (uid, name, markup_rate, address, payment_term_months, payment_term_day)
               VALUES (?, '株式会社NOTO', 0.7, '石川県輪島市1-1', 1, '末日')`).run(generateUid(db, 'customers'));
   db.prepare(`INSERT INTO products (uid, name, volume_ml, list_price, tax_per_unit,
@@ -42,15 +22,11 @@ test.before(async () => {
               VALUES (?, '300ml瓶', '本', 100, 1000, 500, 'ガラス商事', 14)`).run(generateUid(db, 'materials'));
   db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l, current_abv)
               VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 500, 40)`).run(generateUid(db, 'tanks'));
-
-  server = createApp().listen(0);
-  await new Promise((resolve) => server.once('listening', resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  }));
 });
 
 test.after(async () => {
-  if (server) await new Promise((resolve) => server.close(resolve));
-  for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
+  await harness.teardown();
 });
 
 test('商品棚卸: 実測が理論を下回れば欠損、上回れば棚卸調整として記録される', async () => {
@@ -77,7 +53,6 @@ test('商品棚卸: 実測が理論を下回れば欠損、上回れば棚卸調
 });
 
 test('商品棚卸: 差異が0なら台帳行を作らない', async () => {
-  const db = getConnection();
   const before = db.prepare('SELECT COUNT(*) AS c FROM product_stock_ledger').get().c;
 
   const { body } = await api('POST', '/api/stocktaking/products', {
@@ -136,7 +111,6 @@ test('タンク棚卸: 減少は欠減、増加は棚卸調整として記録さ
   assert.equal(down.body.after.current_volume_l, 495);
 
   // 実測度数がタンクマスタに反映される
-  const db = getConnection();
   assert.equal(db.prepare('SELECT current_abv FROM tanks WHERE id = 1').get().current_abv, 39.5);
 
   const up = await api('POST', '/api/stocktaking/tanks', {
@@ -186,7 +160,7 @@ test('マネーフォワードCSVが出力される', async () => {
 
 test('CSVはBOM付きCRLFで出力される（Excelでの文字化け対策）', async () => {
   // fetchのtext()は仕様上BOMを取り除いてしまうので、生バイト列で検証する
-  const res = await fetch(`${baseUrl}/api/exports/moneyforward`);
+  const res = await harness.rawFetch('/api/exports/moneyforward', { headers: { Cookie: harness.state.cookie } });
   const bytes = new Uint8Array(await res.arrayBuffer());
   assert.deepEqual([...bytes.slice(0, 3)], [0xef, 0xbb, 0xbf], 'UTF-8 BOMで始まること');
 
@@ -195,7 +169,6 @@ test('CSVはBOM付きCRLFで出力される（Excelでの文字化け対策）',
 });
 
 test('カンマや引用符を含む値が正しくエスケープされる', async () => {
-  const db = getConnection();
   db.prepare("UPDATE orders SET note = 'テスト,カンマ入り \"引用符\" あり' WHERE id = 1").run();
 
   const { body } = await api('GET', '/api/exports/moneyforward');

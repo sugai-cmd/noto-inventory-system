@@ -12,3 +12,8 @@ scripts/data/csv/*
 scripts/data/aliases.json
 scripts/migration-report/*
 !scripts/migration-report/.gitkeep
+
+# 実行ログ・バックアップ
+logs/
+backups/
+certs/

@@ -2,35 +2,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const path = require('node:path');
-const fs = require('node:fs');
+const { createHarness } = require('../helpers/appHarness');
 
-const TEST_DB_PATH = path.resolve(__dirname, '..', '..', 'db', 'test-tank-audit.sqlite');
-for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
-process.env.DB_PATH = TEST_DB_PATH;
+// 認証を有効にしたまま（本番と同じ構成で）テストする
+const harness = createHarness('test-tank-audit.sqlite');
+const api = harness.api;
 
-const { migrate } = require('../../src/db/migrate');
-const { getConnection } = require('../../src/db/connection');
-const { createApp } = require('../../src/app');
-const { generateUid } = require('../../src/utils/uid');
-
-let server;
-let baseUrl;
-
-async function api(method, urlPath, body) {
-  const res = await fetch(`${baseUrl}${urlPath}`, {
-    method,
-    headers: body ? { 'Content-Type': 'application/json' } : undefined,
-    body: body ? JSON.stringify(body) : undefined,
-  });
-  const text = await res.text();
-  return { status: res.status, body: text ? JSON.parse(text) : null };
-}
+let db;
 
 test.before(async () => {
-  migrate();
-  const db = getConnection();
-
+  ({ db } = await harness.setup((db, generateUid) => {
   db.prepare(`INSERT INTO customers (uid, name, markup_rate, payment_term_months, payment_term_day)
               VALUES (?, '株式会社NOTO', 0.7, 1, '末日')`).run(generateUid(db, 'customers'));
   db.prepare(`INSERT INTO products (uid, name, volume_ml, list_price, tax_per_unit,
@@ -48,15 +29,11 @@ test.before(async () => {
               VALUES (?, 'T-02', '浄酎タンク2', 'ステンレスタンク', 100, 0)`).run(generateUid(db, 'tanks'));
   db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l, current_abv)
               VALUES (?, 'T-03', '浄酎タンク3', 'ステンレスタンク', 1000, 100, 30)`).run(generateUid(db, 'tanks'));
-
-  server = createApp().listen(0);
-  await new Promise((resolve) => server.once('listening', resolve));
-  baseUrl = `http://127.0.0.1:${server.address().port}`;
+  }));
 });
 
 test.after(async () => {
-  if (server) await new Promise((resolve) => server.close(resolve));
-  for (const ext of ['', '-wal', '-shm']) fs.rmSync(TEST_DB_PATH + ext, { force: true });
+  await harness.teardown();
 });
 
 test('容器移動: 移動元が減り移動先が増える', async () => {
@@ -73,7 +50,6 @@ test('容器移動: 移動元が減り移動先が増える', async () => {
 
 test('容器移動: 移動先の理論度数が加重平均で更新される', async () => {
   // 直前のテストで T-03 は「度数30が100L」に「度数40が100L」が入った状態
-  const db = getConnection();
   const abv = db.prepare('SELECT current_abv FROM tanks WHERE id = 3').get().current_abv;
   assert.equal(abv, 35); // (100*30 + 100*40) / 200
 });
@@ -119,7 +95,6 @@ test('未納税移出: 払出元が減り、搬出先が備考に残る', async 
   assert.equal(status, 201);
   assert.equal(body.from.after.current_volume_l, 350); // 400 - 50
 
-  const db = getConnection();
   const row = db.prepare('SELECT * FROM tank_ledger WHERE id = ?').get(body.tankLedgerId);
   assert.equal(row.txn_type, '未納税移出');
   assert.equal(row.to_tank_id, null); // 社外なので受入先タンクはない
@@ -156,7 +131,6 @@ test('在庫監査④: レシピ通りに資材が消費されていれば差異
 
 test('在庫監査④: 資材消費がレシピと食い違えば検出される', async () => {
   // 瓶詰めで自動生成された消費行を書き換えて、意図的に差異を作る
-  const db = getConnection();
   db.prepare(
     `UPDATE material_stock_ledger SET quantity = 80
      WHERE product_ledger_id = (SELECT id FROM product_stock_ledger WHERE txn_type = '瓶詰' LIMIT 1)`
@@ -172,7 +146,6 @@ test('在庫監査④: 資材消費がレシピと食い違えば検出される
 });
 
 test('在庫監査③: 発送済なのに出荷履歴がない受注を検出する', async () => {
-  const db = getConnection();
   // 出荷履歴を作らずに発送済にした受注を用意する
   db.prepare(
     `INSERT INTO orders (order_no, ordered_on, customer_id, product_id, quantity, status, delivered_on)
@@ -186,7 +159,6 @@ test('在庫監査③: 発送済なのに出荷履歴がない受注を検出す
 });
 
 test('在庫監査②: 在庫がマイナスなら検出される', async () => {
-  const db = getConnection();
   // 在庫以上の出荷を直接書き込んでマイナスを作る
   db.prepare(
     `INSERT INTO product_stock_ledger (txn_date, product_id, txn_type, quantity)
@@ -199,7 +171,6 @@ test('在庫監査②: 在庫がマイナスなら検出される', async () => 
 });
 
 test('在庫監査①: 同一日・同一商品・同一数量の重複を検出する', async () => {
-  const db = getConnection();
   const insert = db.prepare(
     `INSERT INTO product_stock_ledger (history_code, txn_date, product_id, txn_type, quantity)
      VALUES (?, '2026-08-21', 1, '返品', 3)`
@@ -214,7 +185,6 @@ test('在庫監査①: 同一日・同一商品・同一数量の重複を検出
 });
 
 test('在庫監査⑤: 完了済みなのに継足がない蒸留を検出する', async () => {
-  const db = getConnection();
   db.prepare(
     `INSERT INTO distillations (distillation_code, started_on, started_time, status, output_l)
      VALUES ('D2608-9001', '2026-08-01', '09:00', '完了', 50)`
@@ -235,7 +205,6 @@ test('在庫監査: 検出があれば totalIssues と各セクションの件�
 });
 
 test('在庫監査は読み取り専用（実行してもデータが変わらない）', async () => {
-  const db = getConnection();
   const before = db.prepare('SELECT COUNT(*) AS c FROM product_stock_ledger').get().c;
   await api('GET', '/api/audit');
   const after = db.prepare('SELECT COUNT(*) AS c FROM product_stock_ledger').get().c;
