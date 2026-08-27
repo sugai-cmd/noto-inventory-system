@@ -30,8 +30,8 @@ function createApp() {
   app.use('/api/raw-sake-receipts', require('./routes/rawSakeReceipts'));
   app.use('/api/stocktaking', require('./routes/stocktaking'));
   app.use('/api/exports', require('./routes/exports'));
-
-  // TODO: 在庫監査レポートを実装次第マウントする
+  app.use('/api/tank-operations', require('./routes/tankOperations'));
+  app.use('/api/audit', require('./routes/audit'));
 
   app.use(errorHandler);
   return app;

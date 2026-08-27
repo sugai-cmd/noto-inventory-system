@@ -46,8 +46,11 @@ function generateCode(db, { table, column, prefix, dateOnly }) {
   return `${prefix}${yymm}-${String(next).padStart(SEQ_DIGITS, '0')}`;
 }
 
+// 受注番号は Order の 'O'。
+// （現行シートでは受注番号も蒸留IDも 'D' で番号だけでは区別できなかったため、
+//   新規採番分は受注を 'O'、蒸留を 'D' に整理した。移行済みの過去データは元の値を保持する）
 const nextOrderNo = (db, dateOnly) =>
-  generateCode(db, { table: 'orders', column: 'order_no', prefix: 'D', dateOnly });
+  generateCode(db, { table: 'orders', column: 'order_no', prefix: 'O', dateOnly });
 
 const nextProductHistoryCode = (db, dateOnly) =>
   generateCode(db, { table: 'product_stock_ledger', column: 'history_code', prefix: 'L', dateOnly });

@@ -1,0 +1,240 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>タンク操作 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>容器移動</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      タンク間で中身を移します。移動先の理論アルコール度数は加重平均で自動更新されます。
+    </p>
+    <form id="transferForm">
+      <div class="grid">
+        <div>
+          <label for="tFrom">移動元タンク</label>
+          <select id="tFrom" required></select>
+          <div class="hint" id="tFromHint"></div>
+        </div>
+        <div>
+          <label for="tTo">移動先タンク</label>
+          <select id="tTo" required></select>
+          <div class="hint" id="tToHint"></div>
+        </div>
+        <div>
+          <label for="tQuantity">移動量 (L)</label>
+          <input type="number" id="tQuantity" min="0.1" step="0.1" required>
+        </div>
+        <div>
+          <label for="tAbv">アルコール度数 (%)</label>
+          <input type="number" id="tAbv" step="0.1" placeholder="未入力なら移動元の度数">
+        </div>
+        <div>
+          <label for="tDate">作業日</label>
+          <input type="date" id="tDate" required>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <label for="tNote">備考</label>
+        <input type="text" id="tNote">
+      </div>
+      <div class="actions">
+        <button type="submit" id="tSubmit">容器移動を登録</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>未納税移出</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      未納税のまま社外へ搬出します。受入先は自社タンクではないため、搬出先は備考に記録されます。
+    </p>
+    <form id="taxFreeForm">
+      <div class="grid">
+        <div>
+          <label for="fFrom">払出元タンク</label>
+          <select id="fFrom" required></select>
+          <div class="hint" id="fFromHint"></div>
+        </div>
+        <div>
+          <label for="fQuantity">移出量 (L)</label>
+          <input type="number" id="fQuantity" min="0.1" step="0.1" required>
+        </div>
+        <div>
+          <label for="fDestination">搬出先</label>
+          <input type="text" id="fDestination" required placeholder="例: 他社酒造場A">
+        </div>
+        <div>
+          <label for="fAbv">アルコール度数 (%)</label>
+          <input type="number" id="fAbv" step="0.1" placeholder="未入力なら払出元の度数">
+        </div>
+        <div>
+          <label for="fDate">作業日</label>
+          <input type="date" id="fDate" required>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <label for="fNote">備考</label>
+        <input type="text" id="fNote">
+      </div>
+      <div class="actions">
+        <button type="submit" id="fSubmit">未納税移出を登録</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>タンク入出庫履歴</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="filterTank">タンクで絞り込む</label>
+        <select id="filterTank"></select>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>日付</th><th>受払</th><th>移動元</th><th>移動先</th>
+            <th class="num">数量(L)</th><th class="num">度数</th><th>関連</th><th>備考</th>
+          </tr>
+        </thead>
+        <tbody id="ledgerRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('tanks.html');
+
+let tanks = [];
+
+async function loadTanks() {
+  tanks = await apiGet('/api/tanks/monitor');
+  const options = '<option value="">選択してください</option>' +
+    tanks.map((t) =>
+      `<option value="${t.tank_id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`
+    ).join('');
+
+  for (const id of ['tFrom', 'tTo', 'fFrom']) {
+    const current = el(id).value;
+    el(id).innerHTML = options;
+    el(id).value = current;
+  }
+  el('filterTank').innerHTML = '<option value="">すべて</option>' +
+    tanks.map((t) => `<option value="${t.tank_id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}</option>`).join('');
+}
+
+function showTankHint(selectId, hintId) {
+  const tank = tanks.find((t) => String(t.tank_id) === el(selectId).value);
+  el(hintId).textContent = tank
+    ? `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・度数 ${tank.current_abv ?? '-'}%`
+    : '';
+}
+
+el('tFrom').addEventListener('change', () => showTankHint('tFrom', 'tFromHint'));
+el('tTo').addEventListener('change', () => showTankHint('tTo', 'tToHint'));
+el('fFrom').addEventListener('change', () => showTankHint('fFrom', 'fFromHint'));
+
+async function loadLedger() {
+  const params = new URLSearchParams();
+  if (el('filterTank').value) params.set('tankId', el('filterTank').value);
+  const rows = await apiGet(`/api/tank-operations/ledger?${params}`);
+
+  el('ledgerRows').innerHTML = rows.length
+    ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
+        <td>${escapeHtml(r.txn_date)}</td>
+        <td>${escapeHtml(r.txn_type)}${r.is_cancelled ? ' <span class="badge muted">取消済み</span>' : ''}</td>
+        <td>${escapeHtml(r.from_tank_name ?? '')}</td>
+        <td>${escapeHtml(r.to_tank_name ?? '')}</td>
+        <td class="num">${num(r.quantity_l, 1)}</td>
+        <td class="num">${r.abv ?? ''}</td>
+        <td>${escapeHtml(r.product_name ?? r.distillation_code ?? '')}</td>
+        <td>${escapeHtml(r.note ?? '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">履歴がありません</td></tr>';
+}
+
+el('filterTank').addEventListener('change', loadLedger);
+
+el('transferForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+
+  const payload = {
+    fromTankId: Number(el('tFrom').value),
+    toTankId: Number(el('tTo').value),
+    quantityL: Number(el('tQuantity').value),
+    txnDate: el('tDate').value,
+  };
+  if (el('tAbv').value) payload.abv = Number(el('tAbv').value);
+  if (el('tNote').value.trim()) payload.note = el('tNote').value.trim();
+
+  el('tSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/tank-operations/transfer', payload);
+    showMessage('messages', 'ok',
+      `容器移動を登録しました（${r.from.name} ${num(r.from.after.current_volume_l, 1)}L → ${r.to.name} ${num(r.to.after.current_volume_l, 1)}L）`);
+    el('transferForm').reset();
+    el('tDate').value = todayStr();
+    el('tFromHint').textContent = '';
+    el('tToHint').textContent = '';
+    await Promise.all([loadTanks(), loadLedger()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('tSubmit').disabled = false;
+  }
+});
+
+el('taxFreeForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+
+  const payload = {
+    fromTankId: Number(el('fFrom').value),
+    quantityL: Number(el('fQuantity').value),
+    destination: el('fDestination').value.trim(),
+    txnDate: el('fDate').value,
+  };
+  if (el('fAbv').value) payload.abv = Number(el('fAbv').value);
+  if (el('fNote').value.trim()) payload.note = el('fNote').value.trim();
+
+  el('fSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/tank-operations/tax-free-transfer', payload);
+    showMessage('messages', 'ok',
+      `未納税移出を登録しました（${r.from.name} 残 ${num(r.from.after.current_volume_l, 1)}L / 搬出先: ${r.destination}）`);
+    el('taxFreeForm').reset();
+    el('fDate').value = todayStr();
+    el('fFromHint').textContent = '';
+    await Promise.all([loadTanks(), loadLedger()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('fSubmit').disabled = false;
+  }
+});
+
+el('tDate').value = todayStr();
+el('fDate').value = todayStr();
+(async () => {
+  try {
+    await loadTanks();
+    await loadLedger();
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+})();
+</script>
+</body>
+</html>

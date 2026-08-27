@@ -187,8 +187,10 @@ function renderNav(current) {
     ['orders.html', '受注'],
     ['bottling.html', '瓶詰め・箱詰め'],
     ['distillation.html', '蒸留'],
+    ['tanks.html', 'タンク操作'],
     ['stock.html', '在庫'],
     ['stocktaking.html', '棚卸'],
+    ['audit.html', '在庫監査'],
   ];
   document.body.insertAdjacentHTML(
     'afterbegin',

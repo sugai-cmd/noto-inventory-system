@@ -14,10 +14,9 @@ const { nextRawSakeLotCode } = require('../utils/rawSakeCode');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 
-// 蒸留IDのプレフィックス。
-// DATA_STRUCTURE.md上は受注番号と同じ「D+年月+連番」だが、それでは受注番号と
-// 見分けがつかないため、新規採番分は 'DS' を使う（過去データは移行時の値をそのまま保持）。
-const DISTILLATION_PREFIX = 'DS';
+// 蒸留IDのプレフィックスは Distill の 'D'（現行シート踏襲）。
+// 受注番号は同じ 'D' だと区別できないため 'O'（Order）に整理した（codeGenerator.js参照）。
+const DISTILLATION_PREFIX = 'D';
 
 const STATUS_IN_PROGRESS = '蒸留中';
 const STATUS_COMPLETED = '完了';

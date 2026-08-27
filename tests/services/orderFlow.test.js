@@ -92,7 +92,7 @@ test('受注番号は月ごとの連番で自動採番される', async () => {
     shippingFee: 800,
   });
   assert.equal(first.status, 201);
-  assert.equal(first.body.order_no, 'D2608-0001');
+  assert.equal(first.body.order_no, 'O2608-0001');
   assert.equal(first.body.sales_amount, 21000);
   assert.equal(first.body.total_amount, 21800); // 売価 + 送料
 
@@ -102,7 +102,7 @@ test('受注番号は月ごとの連番で自動採番される', async () => {
     productId: 1,
     quantity: 5,
   });
-  assert.equal(second.body.order_no, 'D2608-0002');
+  assert.equal(second.body.order_no, 'O2608-0002');
 });
 
 test('瓶詰めは仕掛品を増やし、レシピに沿って資材を消費する', async () => {

@@ -96,8 +96,8 @@ test('蒸留開始で複数タンクから投入でき、原酒が減る', async
     ],
   });
   assert.equal(status, 201);
-  // 受注番号(D...)と区別するため蒸留IDはDSプレフィックス
-  assert.equal(body.distillationCode, 'DS2608-0001');
+  // 蒸留IDはDistillの'D'（受注番号はOrderの'O'に分離済み）
+  assert.equal(body.distillationCode, 'D2608-0001');
   assert.equal(body.totalInputL, 150);
   assert.equal(body.details.length, 2);
 
