@@ -1,0 +1,266 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>瓶詰め・箱詰め | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>瓶詰め登録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      タンクから液を抜いて仕掛品を作ります。商品在庫・資材消費（レシピ連動）・タンク残量が同時に更新されます。
+    </p>
+    <form id="bottlingForm">
+      <div class="grid">
+        <div>
+          <label for="bProductSearch">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="bProductSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="bProductResults"></div>
+          </div>
+          <div class="chosen" id="bProductChosen">
+            <span class="name"></span>
+            <button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div>
+          <label for="bTank">払出元タンク</label>
+          <select id="bTank" required></select>
+          <div class="hint" id="bTankHint"></div>
+        </div>
+        <div>
+          <label for="bQuantity">瓶詰め本数</label>
+          <input type="number" id="bQuantity" min="1" step="1" required>
+        </div>
+        <div>
+          <label for="bVolume">タンクからの払出量 (L)</label>
+          <input type="number" id="bVolume" min="0.1" step="0.1" required>
+        </div>
+        <div>
+          <label for="bAbv">アルコール度数 (%)</label>
+          <input type="number" id="bAbv" step="0.1">
+        </div>
+        <div>
+          <label for="bDate">作業日</label>
+          <input type="date" id="bDate" required>
+        </div>
+      </div>
+
+      <div id="bRecipe"></div>
+
+      <div style="margin-top:12px">
+        <label for="bNote">備考</label>
+        <input type="text" id="bNote">
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="bSubmit">瓶詰めを登録</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>箱詰め登録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      仕掛品を完成品に振り替えます。仕掛品在庫が足りない場合は登録できません。
+    </p>
+    <form id="boxingForm">
+      <div class="grid">
+        <div>
+          <label for="xProductSearch">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="xProductSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="xProductResults"></div>
+          </div>
+          <div class="chosen" id="xProductChosen">
+            <span class="name"></span>
+            <button type="button" class="secondary small">変更</button>
+          </div>
+          <div class="hint" id="xStockHint"></div>
+        </div>
+        <div>
+          <label for="xQuantity">箱詰め本数</label>
+          <input type="number" id="xQuantity" min="1" step="1" required>
+        </div>
+        <div>
+          <label for="xDate">作業日</label>
+          <input type="date" id="xDate" required>
+        </div>
+      </div>
+
+      <div id="xRecipe"></div>
+
+      <div style="margin-top:12px">
+        <label for="xNote">備考</label>
+        <input type="text" id="xNote">
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="xSubmit">箱詰めを登録</button>
+      </div>
+    </form>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('bottling.html');
+
+let tanks = [];
+
+async function loadTanks() {
+  tanks = await apiGet('/api/tanks/monitor');
+  el('bTank').innerHTML =
+    '<option value="">選択してください</option>' +
+    tanks
+      .map((t) => `<option value="${t.tank_id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`)
+      .join('');
+}
+
+el('bTank').addEventListener('change', () => {
+  const tank = tanks.find((t) => String(t.tank_id) === el('bTank').value);
+  el('bTankHint').textContent = tank
+    ? `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・度数 ${tank.current_abv ?? '-'}%`
+    : '';
+  if (tank && tank.current_abv != null && !el('bAbv').value) el('bAbv').value = tank.current_abv;
+});
+
+/** 選択した商品のレシピ（消費される資材）を事前に見せる */
+async function showRecipe(productId, containerId, process, quantityInputId) {
+  const container = el(containerId);
+  if (!productId) { container.innerHTML = ''; return; }
+
+  const recipe = await apiGet(`/api/recipe/${productId}`);
+  const items = recipe[process] ?? [];
+  if (!items.length) {
+    container.innerHTML = `<p class="hint">${process}工程のレシピが登録されていません（資材は消費されません）</p>`;
+    return;
+  }
+
+  const qty = Number(el(quantityInputId).value || 0);
+  container.innerHTML = `
+    <h3>${process}で消費される資材</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>資材</th><th class="num">1本あたり</th><th class="num">今回の消費予定</th></tr></thead>
+        <tbody>
+          ${items
+            .map(
+              (i) => `<tr>
+                <td>${escapeHtml(i.material_name)}</td>
+                <td class="num">${num(i.qty_required, 2)}</td>
+                <td class="num">${qty ? num(i.qty_required * qty, 2) : '-'}</td>
+              </tr>`
+            )
+            .join('')}
+        </tbody>
+      </table>
+    </div>`;
+}
+
+const bProduct = createSearchSelect({
+  inputId: 'bProductSearch',
+  resultsId: 'bProductResults',
+  chosenId: 'bProductChosen',
+  endpoint: '/api/products/search',
+  renderLabel: (p) => p.name,
+  renderSub: (p) => `仕掛品 ${p.wip_stock ?? 0}本 / 商品 ${p.product_stock ?? 0}本`,
+  onSelect: (p) => showRecipe(p?.id, 'bRecipe', '瓶詰', 'bQuantity'),
+});
+
+const xProduct = createSearchSelect({
+  inputId: 'xProductSearch',
+  resultsId: 'xProductResults',
+  chosenId: 'xProductChosen',
+  endpoint: '/api/products/search',
+  renderLabel: (p) => p.name,
+  renderSub: (p) => `仕掛品 ${p.wip_stock ?? 0}本 / 商品 ${p.product_stock ?? 0}本`,
+  onSelect: (p) => {
+    el('xStockHint').textContent = p ? `現在の仕掛品在庫 ${p.wip_stock ?? 0}本` : '';
+    showRecipe(p?.id, 'xRecipe', '箱詰', 'xQuantity');
+  },
+});
+
+el('bQuantity').addEventListener('input', () => {
+  if (bProduct.value) showRecipe(bProduct.value.id, 'bRecipe', '瓶詰', 'bQuantity');
+});
+el('xQuantity').addEventListener('input', () => {
+  if (xProduct.value) showRecipe(xProduct.value.id, 'xRecipe', '箱詰', 'xQuantity');
+});
+
+el('bottlingForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  if (!bProduct.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  const payload = {
+    productId: bProduct.value.id,
+    quantity: Number(el('bQuantity').value),
+    tankId: Number(el('bTank').value),
+    volumeL: Number(el('bVolume').value),
+    txnDate: el('bDate').value,
+  };
+  if (el('bAbv').value) payload.abv = Number(el('bAbv').value);
+  if (el('bNote').value.trim()) payload.note = el('bNote').value.trim();
+
+  el('bSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/bottling', payload);
+    const consumed = r.consumedMaterials.map((m) => `${m.materialName} ${num(m.quantity, 2)}`).join('、');
+    showMessage('messages', 'ok',
+      `瓶詰めを登録しました（${r.historyCode}）。仕掛品 ${r.stock.wip_stock}本 / 消費資材: ${consumed || 'なし'}`);
+    el('bottlingForm').reset();
+    el('bDate').value = todayStr();
+    bProduct.reset();
+    el('bRecipe').innerHTML = '';
+    el('bTankHint').textContent = '';
+    await loadTanks();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('bSubmit').disabled = false;
+  }
+});
+
+el('boxingForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  if (!xProduct.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  el('xSubmit').disabled = true;
+  try {
+    const payload = {
+      productId: xProduct.value.id,
+      quantity: Number(el('xQuantity').value),
+      txnDate: el('xDate').value,
+    };
+    if (el('xNote').value.trim()) payload.note = el('xNote').value.trim();
+
+    const r = await apiPost('/api/boxing', payload);
+    const consumed = r.consumedMaterials.map((m) => `${m.materialName} ${num(m.quantity, 2)}`).join('、');
+    showMessage('messages', 'ok',
+      `箱詰めを登録しました（${r.historyCode}）。商品 ${r.stock.product_stock}本 / 仕掛品 ${r.stock.wip_stock}本 / 消費資材: ${consumed || 'なし'}`);
+    el('boxingForm').reset();
+    el('xDate').value = todayStr();
+    xProduct.reset();
+    el('xRecipe').innerHTML = '';
+    el('xStockHint').textContent = '';
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('xSubmit').disabled = false;
+  }
+});
+
+el('bDate').value = todayStr();
+el('xDate').value = todayStr();
+loadTanks().catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

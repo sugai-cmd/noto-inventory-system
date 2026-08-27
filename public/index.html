@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ダッシュボード | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+  <div id="alerts"></div>
+
+  <div class="stat-row" style="margin-bottom:20px">
+    <div class="stat">
+      <div class="label">未着手の受注</div>
+      <div class="value" id="statPending">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">蒸留中</div>
+      <div class="value" id="statDistilling">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">要発注の資材</div>
+      <div class="value" id="statShortage">-</div>
+    </div>
+    <div class="stat">
+      <div class="label">商品在庫合計 <span class="unit">本</span></div>
+      <div class="value" id="statStock">-</div>
+    </div>
+  </div>
+
+  <section class="panel">
+    <h2>未着手の受注</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>受注番号</th><th>受注日</th><th>得意先</th><th>商品</th><th class="num">本数</th><th class="num">合計</th><th>納入希望日</th></tr>
+        </thead>
+        <tbody id="pendingRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>在庫が少ない商品</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>商品名称</th><th class="num">商品</th><th class="num">仕掛品</th></tr></thead>
+        <tbody id="lowStockRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>要発注の資材</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>資材名</th><th class="num">現在庫</th><th class="num">適正在庫</th><th>発注先</th><th class="num">リードタイム</th></tr></thead>
+        <tbody id="shortageRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('index.html');
+
+const LOW_STOCK_THRESHOLD = 20;
+
+(async () => {
+  try {
+    const [orders, products, materials, distillations, staleDistillations] = await Promise.all([
+      apiGet('/api/orders?status=' + encodeURIComponent('未着手')),
+      apiGet('/api/products/stock'),
+      apiGet('/api/materials/stock'),
+      apiGet('/api/distillations?status=' + encodeURIComponent('蒸留中')),
+      apiGet('/api/distillations/alerts'),
+    ]);
+
+    const shortages = materials.filter((m) => m.shortage);
+
+    el('statPending').textContent = orders.length;
+    el('statDistilling').textContent = distillations.length;
+    el('statShortage').textContent = shortages.length;
+    el('statStock').textContent = num(
+      products.reduce((sum, p) => sum + (p.product_stock ?? 0), 0)
+    );
+
+    if (staleDistillations.length) {
+      el('alerts').innerHTML = `<div class="msg error">
+        <strong>24時間以上「蒸留中」のままの蒸留が ${staleDistillations.length} 件あります</strong>
+        <ul>${staleDistillations.map((d) =>
+          `<li>${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)} ${escapeHtml(d.started_time)}・経過 ${d.elapsed_hours}時間）</li>`
+        ).join('')}</ul>
+      </div>`;
+    }
+
+    el('pendingRows').innerHTML = orders.length
+      ? orders.slice(0, 20).map((o) => `<tr>
+          <td>${escapeHtml(o.order_no)}</td>
+          <td>${escapeHtml(o.ordered_on)}</td>
+          <td>${escapeHtml(o.customer_name)}</td>
+          <td>${escapeHtml(o.product_name)}</td>
+          <td class="num">${num(o.quantity)}</td>
+          <td class="num">${yen(o.total_amount)}</td>
+          <td>${escapeHtml(o.requested_delivery_on ?? '')}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" class="empty">未着手の受注はありません</td></tr>';
+
+    const lowStock = products.filter((p) => (p.product_stock ?? 0) <= LOW_STOCK_THRESHOLD);
+    el('lowStockRows').innerHTML = lowStock.length
+      ? lowStock.map((p) => `<tr>
+          <td>${escapeHtml(p.name)}</td>
+          <td class="num">${num(p.product_stock)}</td>
+          <td class="num">${num(p.wip_stock)}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="3" class="empty">在庫${LOW_STOCK_THRESHOLD}本以下の商品はありません</td></tr>`;
+
+    el('shortageRows').innerHTML = shortages.length
+      ? shortages.map((m) => `<tr>
+          <td>${escapeHtml(m.name)}</td>
+          <td class="num">${num(m.current_stock, 2)}</td>
+          <td class="num">${num(m.proper_stock_qty)}</td>
+          <td>${escapeHtml(m.supplier_name ?? '')}</td>
+          <td class="num">${m.lead_time_days != null ? `${m.lead_time_days}日` : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="5" class="empty">適正在庫を下回っている資材はありません</td></tr>';
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+})();
+</script>
+</body>
+</html>

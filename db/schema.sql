@@ -1,12 +1,39 @@
 -- NOTO Naorai 受注・製造管理システム
--- SQLite スキーマ定義（DB_SCHEMA_DESIGN.md 2章・3章のDDLより自動抽出）
--- 生成元: DB_SCHEMA_DESIGN.md
+-- SQLite スキーマ定義（全マイグレーション適用後の状態）
+--
+-- このファイルは db/migrations/*.sql をすべて適用したDBから生成したリファレンスです。
+-- 実際のDB構築は migrations 側が行うため、スキーマを変更するときは
+-- 新しいマイグレーションを追加してから、このファイルを再生成してください。
+-- 設計の背景は DB_SCHEMA_DESIGN.md を参照。
 
 PRAGMA foreign_keys = ON;
 
--- ============================================================
--- 1. マスタ系
--- ============================================================
+CREATE TABLE breweries (                        -- 酒蔵マスタ（実質未使用、緩い扱い）
+  id          INTEGER PRIMARY KEY,
+  uid         TEXT NOT NULL UNIQUE,             -- 固有ID（8桁ランダム小文字英数字。キーカラム）
+  name        TEXT NOT NULL UNIQUE,
+  address     TEXT,
+  phone       TEXT,
+  contact     TEXT,
+  started_on  TEXT
+);
+
+CREATE TABLE consignment_reports (
+  id              INTEGER PRIMARY KEY,
+  order_id        INTEGER NOT NULL REFERENCES orders(id), -- 受注リストの受注番号→ID参照
+  report_month    TEXT NOT NULL CHECK (report_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), -- 対象月（YYYY-MM）
+  customer_id     INTEGER NOT NULL REFERENCES customers(id),
+  product_id      INTEGER NOT NULL REFERENCES products(id),
+  quantity        INTEGER NOT NULL,
+  unit_price      REAL,
+  markup_rate     REAL,
+  sales_amount    REAL,
+  shipping_fee    REAL,
+  invoiced_on     TEXT CHECK (invoiced_on IS NULL OR invoiced_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  payment_due_on  TEXT CHECK (payment_due_on IS NULL OR payment_due_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  paid_on         TEXT CHECK (paid_on IS NULL OR paid_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  note            TEXT
+);
 
 CREATE TABLE customers (
   id                 INTEGER PRIMARY KEY,
@@ -30,25 +57,62 @@ CREATE TABLE customers (
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
-CREATE TABLE products (
-  id                     INTEGER PRIMARY KEY,
-  uid                    TEXT NOT NULL UNIQUE, -- 固有ID（8桁ランダム小文字英数字。キーカラム）
-  code                   TEXT UNIQUE,          -- 商品ID
-  name                   TEXT NOT NULL UNIQUE, -- 商品名称（全シート共通の参照キー）
-  volume_ml              INTEGER,              -- 容量(ml)
-  abv                    REAL,                 -- 規定度数
-  container_type         TEXT,                 -- 容器タイプ
-  unit                   TEXT DEFAULT '本',
-  list_price             REAL,                 -- 上代
-  jan_code               TEXT,
-  target_extract_spec    TEXT,                 -- 目標エキス分基準
-  category               TEXT,                 -- 商品カテゴリ
-  tax_per_unit           REAL,                 -- 課税額
-  initial_product_stock  INTEGER DEFAULT 0,    -- 初期商品在庫数（再計算の起点）
-  initial_wip_stock      INTEGER DEFAULT 0,    -- 初期仕掛品在庫数（再計算の起点）
-  note                   TEXT,
-  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
+CREATE TABLE distillation_details (
+  id                INTEGER PRIMARY KEY,
+  distillation_id   INTEGER NOT NULL REFERENCES distillations(id),
+  raw_sake_ledger_id INTEGER NOT NULL REFERENCES raw_sake_ledger(id),
+  input_l           REAL NOT NULL,
+  source_tank_id    INTEGER REFERENCES tanks(id),  -- 元容器ID
+  is_cancelled      INTEGER NOT NULL DEFAULT 0,
+  note              TEXT
+);
+
+CREATE TABLE distillation_residues (
+  id               INTEGER PRIMARY KEY,
+  distillation_id  INTEGER NOT NULL REFERENCES distillations(id),
+  collected_on     TEXT NOT NULL CHECK (collected_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 残渣回収日
+  collected_time   TEXT NOT NULL CHECK (collected_time GLOB '[0-9][0-9]:[0-9][0-9]'), -- 残渣回収時刻（HH:MM）。蒸留記録と同様の理由で日付と分離
+  quantity         REAL,
+  abv              REAL,
+  salt_status      TEXT,                         -- 食塩ステータス
+  salt_input_qty   REAL,                         -- 投入量（食塩等）
+  salt_concentration REAL,                       -- 塩分濃度
+  destination      TEXT                          -- 払出先（廃棄先/保管先）
+);
+
+CREATE TABLE distillations (                     -- 蒸留記録（ヘッダ）
+  id                  INTEGER PRIMARY KEY,
+  distillation_code   TEXT NOT NULL UNIQUE,      -- D+年月+連番（蒸留ID）
+  started_on          TEXT NOT NULL CHECK (started_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 投入開始日
+  started_time        TEXT NOT NULL CHECK (started_time GLOB '[0-9][0-9]:[0-9][0-9]'), -- 投入開始時刻（HH:MM）。24時間経過アラートの計算に使用するため日付と分離して保持
+  input_summary       TEXT,                      -- 使用原酒明細（自由記述サマリ、詳細はdistillation_details）
+  total_input_l       REAL,                      -- 投入量合計
+  planned_duration    TEXT,                      -- 蒸留設定時間
+  status              TEXT NOT NULL DEFAULT '蒸留中', -- 蒸留中/完了
+  output_l            REAL,                      -- 蒸留量（完了時）
+  output_abv          REAL,                      -- アルコール度数（完了時）
+  output_tank_id      INTEGER REFERENCES tanks(id), -- 払出先
+  residue_qty         REAL,                      -- 残渣回収量（サマリ、詳細はdistillation_residues）
+  completed_on         TEXT CHECK (completed_on IS NULL OR completed_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 完了日
+  completed_time        TEXT CHECK (completed_time IS NULL OR completed_time GLOB '[0-9][0-9]:[0-9][0-9]')  -- 完了時刻（HH:MM）
+);
+
+CREATE TABLE "material_stock_ledger" (
+  id               INTEGER PRIMARY KEY,
+  history_code     TEXT UNIQUE,
+  txn_date         TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  material_id      INTEGER NOT NULL REFERENCES materials(id),
+  txn_type         TEXT NOT NULL CHECK (txn_type IN ('入荷','消費','棚卸調整','欠損')),
+  quantity         REAL NOT NULL,
+  counterparty     TEXT,
+  product_ledger_id INTEGER REFERENCES product_stock_ledger(id),
+  unit_price       REAL,
+  total_price      REAL,
+  data_kind        TEXT,
+  is_cancelled     INTEGER NOT NULL DEFAULT 0,
+  note             TEXT,
+  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE materials (
@@ -70,71 +134,6 @@ CREATE TABLE materials (
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
-
--- 製品レシピ：商品1つに対して複数資材（多対多の中間テーブル）
-CREATE TABLE product_recipes (
-  id           INTEGER PRIMARY KEY,
-  product_id   INTEGER NOT NULL REFERENCES products(id),
-  material_id  INTEGER NOT NULL REFERENCES materials(id),
-  qty_required REAL NOT NULL,                  -- 必要数量（1本あたり）
-  process      TEXT,                           -- ステータス（瓶詰/箱詰の区分）
-  UNIQUE(product_id, material_id, process)
-);
-
-CREATE TABLE breweries (                        -- 酒蔵マスタ（実質未使用、緩い扱い）
-  id          INTEGER PRIMARY KEY,
-  uid         TEXT NOT NULL UNIQUE,             -- 固有ID（8桁ランダム小文字英数字。キーカラム）
-  name        TEXT NOT NULL UNIQUE,
-  address     TEXT,
-  phone       TEXT,
-  contact     TEXT,
-  started_on  TEXT
-);
-
-CREATE TABLE raw_sake_brands (                  -- 原酒マスタ
-  id                INTEGER PRIMARY KEY,
-  uid               TEXT NOT NULL UNIQUE,       -- 固有ID（8桁ランダム小文字英数字。キーカラム）
-  name              TEXT NOT NULL UNIQUE,       -- 銘柄
-  abv               REAL,                       -- アルコール度数
-  sake_meter_value  REAL,                       -- 日本酒度
-  brewery_id        INTEGER REFERENCES breweries(id), -- 酒蔵（緩やかな紐付け→ID化するが必須にしない）
-  brewery_name_raw  TEXT,                       -- 移行データ用：正規化できなかった元の文字列
-  status            TEXT,                       -- ステータス
-  produced_on       TEXT,                       -- 製造年(月)。表記が不定（和暦等）な移行データもあるためCHECKなしの自由記述で許容
-  note              TEXT,
-  registered_on     TEXT CHECK (registered_on IS NULL OR registered_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 移入日（時刻なし）
-  initial_stock     REAL DEFAULT 0,             -- 初期在庫量
-  current_stock     REAL DEFAULT 0              -- 現在在庫量（実質raw_sake_ledgerで管理、参考値として残す）
-);
-
-CREATE TABLE tanks (
-  id                  INTEGER PRIMARY KEY,
-  uid                 TEXT NOT NULL UNIQUE,     -- 固有ID（8桁ランダム小文字英数字。キーカラム）
-  code                TEXT NOT NULL UNIQUE,     -- 容器ID（T/B/SP/U/G/JP/Q/DISTL + 連番）
-  name                TEXT NOT NULL UNIQUE,     -- 容器名称（他シートがこの名前で参照 → tank_ledgerではIDで参照させる）
-  container_type      TEXT,                     -- 容器種別
-  max_volume_l        REAL,                     -- 最大容量(L)
-  location            TEXT,                     -- 現在設置場所
-  status              TEXT,                     -- 稼働中/空/満タン/廃棄
-  gauge_constant      REAL,                     -- 検尺定数
-  initial_volume_l    REAL DEFAULT 0,           -- 初期在庫量
-  current_volume_l    REAL DEFAULT 0,           -- 現在液量(L)（キャッシュ値。真値はv_tank_monitorで再計算）
-  current_abv         REAL,                     -- 理論アルコール度数（同上）
-  note                TEXT
-);
-
--- 【uidカラムについて】
--- customers / products / materials / breweries / raw_sake_brands / tanks の
--- 全マスタに `uid`（8桁ランダム小文字英数字、例: 'a3f9k2mZ'ではなく'a3f9k2mz'のような
--- [a-z0-9]の8文字）をキーカラムとして追加。product_recipes（中間テーブル）は対象外。
--- ・生成はアプリ層で行う（例: nanoidのカスタムアルファベット 'abcdefghijklmnopqrstuvwxyz0123456789' で8桁）。
--- ・UNIQUE制約により衝突時はDB側で検出できるので、アプリ側は衝突時に再生成してリトライする。
--- ・内部の結合・インデックスには従来通り`id`（INTEGER PRIMARY KEY / rowid）を使い、
---   `uid`はAPIのURLや画面表示・外部連携など「外部に見せるキー」として使う想定。
-
--- ============================================================
--- 2. 受注・売上系（トランザクション）
--- ============================================================
 
 CREATE TABLE orders (
   id                 INTEGER PRIMARY KEY,
@@ -161,56 +160,15 @@ CREATE TABLE orders (
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_orders_customer ON orders(customer_id);
-CREATE INDEX idx_orders_product  ON orders(product_id);
-CREATE INDEX idx_orders_status   ON orders(status);
 
-CREATE TABLE consignment_reports (
-  id              INTEGER PRIMARY KEY,
-  order_id        INTEGER NOT NULL REFERENCES orders(id), -- 受注リストの受注番号→ID参照
-  report_month    TEXT NOT NULL CHECK (report_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), -- 対象月（YYYY-MM）
-  customer_id     INTEGER NOT NULL REFERENCES customers(id),
-  product_id      INTEGER NOT NULL REFERENCES products(id),
-  quantity        INTEGER NOT NULL,
-  unit_price      REAL,
-  markup_rate     REAL,
-  sales_amount    REAL,
-  shipping_fee    REAL,
-  invoiced_on     TEXT CHECK (invoiced_on IS NULL OR invoiced_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  payment_due_on  TEXT CHECK (payment_due_on IS NULL OR payment_due_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  paid_on         TEXT CHECK (paid_on IS NULL OR paid_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  note            TEXT
+CREATE TABLE product_recipes (
+  id           INTEGER PRIMARY KEY,
+  product_id   INTEGER NOT NULL REFERENCES products(id),
+  material_id  INTEGER NOT NULL REFERENCES materials(id),
+  qty_required REAL NOT NULL,                  -- 必要数量（1本あたり）
+  process      TEXT,                           -- ステータス（瓶詰/箱詰の区分）
+  UNIQUE(product_id, material_id, process)
 );
-
-CREATE TABLE sample_shipments (
-  id                 INTEGER PRIMARY KEY,
-  sample_no          TEXT NOT NULL UNIQUE,      -- S+年月(4桁)+連番(4桁)。受注番号(D...)の採番方式を踏襲
-  shipped_on         TEXT NOT NULL CHECK (shipped_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  customer_id        INTEGER REFERENCES customers(id),
-  contact_name       TEXT,                      -- 得意先名前（実質は担当者名）
-  product_id         INTEGER NOT NULL REFERENCES products(id),
-  quantity           INTEGER NOT NULL,
-  followup_on        TEXT CHECK (followup_on IS NULL OR followup_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 後追い連絡日
-  phone              TEXT,
-  data_kind          TEXT,                      -- データ区分
-  note               TEXT
-  -- 対応する出荷履歴行への参照は product_stock_ledger.sample_shipment_id 側に一本化
-  -- （orders ⇔ product_stock_ledger.order_id と同じ片方向FKパターンに揃える。8-1参照）
-);
-
-CREATE TABLE sales_targets (
-  id             INTEGER PRIMARY KEY,
-  target_month   TEXT NOT NULL UNIQUE CHECK (target_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), -- 対象月（YYYY-MM）
-  target_amount  REAL NOT NULL,
-  note           TEXT
-);
-
--- ============================================================
--- 3. 台帳系（在庫変動履歴）
---    ※台帳は追記だけでなく、UPDATE・DELETEも通常運用として行う
---      （入力ミスの訂正・行削除を含む）。詳細な運用ルールは
---      ユーザーからの追加入力待ち（本セクションは仮置き）。
--- ============================================================
 
 CREATE TABLE product_stock_ledger (
   id             INTEGER PRIMARY KEY,
@@ -236,29 +194,92 @@ CREATE TABLE product_stock_ledger (
   updated_at     TEXT NOT NULL DEFAULT (datetime('now')),  -- 通常のUPDATEでの訂正を許容するため追加
   CHECK (order_id IS NULL OR sample_shipment_id IS NULL) -- 出荷の発生源は受注かサンプルのどちらか一方のみ
 );
-CREATE INDEX idx_psl_product ON product_stock_ledger(product_id, txn_date);
-CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
-CREATE INDEX idx_psl_sample  ON product_stock_ledger(sample_shipment_id);
 
-CREATE TABLE material_stock_ledger (
-  id               INTEGER PRIMARY KEY,
-  history_code     TEXT UNIQUE,                 -- M+年月+連番（資材履歴ID）
-  txn_date         TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  material_id      INTEGER NOT NULL REFERENCES materials(id),
-  txn_type         TEXT NOT NULL CHECK (txn_type IN ('入荷','消費')),
-  quantity         REAL NOT NULL,
-  counterparty     TEXT,                        -- 受入元/払出先
-  product_ledger_id INTEGER REFERENCES product_stock_ledger(id), -- 消費記録の紐付けキー
-  unit_price       REAL,
-  total_price      REAL,
-  data_kind        TEXT,
-  is_cancelled     INTEGER NOT NULL DEFAULT 0,
-  note             TEXT,
-  created_at       TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+CREATE TABLE products (
+  id                     INTEGER PRIMARY KEY,
+  uid                    TEXT NOT NULL UNIQUE, -- 固有ID（8桁ランダム小文字英数字。キーカラム）
+  code                   TEXT UNIQUE,          -- 商品ID
+  name                   TEXT NOT NULL UNIQUE, -- 商品名称（全シート共通の参照キー）
+  volume_ml              INTEGER,              -- 容量(ml)
+  abv                    REAL,                 -- 規定度数
+  container_type         TEXT,                 -- 容器タイプ
+  unit                   TEXT DEFAULT '本',
+  list_price             REAL,                 -- 上代
+  jan_code               TEXT,
+  target_extract_spec    TEXT,                 -- 目標エキス分基準
+  category               TEXT,                 -- 商品カテゴリ
+  tax_per_unit           REAL,                 -- 課税額
+  initial_product_stock  INTEGER DEFAULT 0,    -- 初期商品在庫数（再計算の起点）
+  initial_wip_stock      INTEGER DEFAULT 0,    -- 初期仕掛品在庫数（再計算の起点）
+  note                   TEXT,
+  created_at             TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
 );
-CREATE INDEX idx_msl_material ON material_stock_ledger(material_id, txn_date);
-CREATE INDEX idx_msl_product_ledger ON material_stock_ledger(product_ledger_id);
+
+CREATE TABLE raw_sake_brands (                  -- 原酒マスタ
+  id                INTEGER PRIMARY KEY,
+  uid               TEXT NOT NULL UNIQUE,       -- 固有ID（8桁ランダム小文字英数字。キーカラム）
+  name              TEXT NOT NULL UNIQUE,       -- 銘柄
+  abv               REAL,                       -- アルコール度数
+  sake_meter_value  REAL,                       -- 日本酒度
+  brewery_id        INTEGER REFERENCES breweries(id), -- 酒蔵（緩やかな紐付け→ID化するが必須にしない）
+  brewery_name_raw  TEXT,                       -- 移行データ用：正規化できなかった元の文字列
+  status            TEXT,                       -- ステータス
+  produced_on       TEXT,                       -- 製造年(月)。表記が不定（和暦等）な移行データもあるためCHECKなしの自由記述で許容
+  note              TEXT,
+  registered_on     TEXT CHECK (registered_on IS NULL OR registered_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 移入日（時刻なし）
+  initial_stock     REAL DEFAULT 0,             -- 初期在庫量
+  current_stock     REAL DEFAULT 0              -- 現在在庫量（実質raw_sake_ledgerで管理、参考値として残す）
+);
+
+CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
+  id              INTEGER PRIMARY KEY,
+  lot_code        TEXT UNIQUE,                   -- 原酒受払ID
+  txn_date        TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  txn_type        TEXT NOT NULL CHECK (txn_type IN ('受入','払出')),
+  from_tank_id    INTEGER REFERENCES tanks(id),         -- 受入元（払出の場合：投入元タンク）
+  to_ref          TEXT,                          -- 払出先（受入先タンクID or 蒸留ID。用途混在のため文字列＋下2列で正規化）
+  to_tank_id      INTEGER REFERENCES tanks(id),
+  distillation_id INTEGER REFERENCES distillations(id),
+  quantity        REAL NOT NULL,
+  raw_sake_brand_id INTEGER REFERENCES raw_sake_brands(id), -- 原酒スペック（緩やかな対応をID化）
+  spec_note       TEXT,                          -- 正規化できない自由記述の原酒スペック
+  is_fifo_estimated INTEGER DEFAULT 0,           -- 過去データ一括変換時のFIFO推定フラグ
+  note            TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE resource_locks (
+  id               INTEGER PRIMARY KEY,
+  target_type      TEXT NOT NULL DEFAULT 'distillation',
+  distillation_id  INTEGER REFERENCES distillations(id),
+  locked_by        TEXT NOT NULL,                -- ユーザー
+  locked_at        TEXT NOT NULL DEFAULT (datetime('now')) -- システムが自動設定する監査用タイムスタンプのため日付/時刻分離の対象外（2.0参照）
+);
+
+CREATE TABLE sales_targets (
+  id             INTEGER PRIMARY KEY,
+  target_month   TEXT NOT NULL UNIQUE CHECK (target_month GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]'), -- 対象月（YYYY-MM）
+  target_amount  REAL NOT NULL,
+  note           TEXT
+);
+
+CREATE TABLE sample_shipments (
+  id                 INTEGER PRIMARY KEY,
+  sample_no          TEXT NOT NULL UNIQUE,      -- S+年月(4桁)+連番(4桁)。受注番号(D...)の採番方式を踏襲
+  shipped_on         TEXT NOT NULL CHECK (shipped_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  customer_id        INTEGER REFERENCES customers(id),
+  contact_name       TEXT,                      -- 得意先名前（実質は担当者名）
+  product_id         INTEGER NOT NULL REFERENCES products(id),
+  quantity           INTEGER NOT NULL,
+  followup_on        TEXT CHECK (followup_on IS NULL OR followup_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 後追い連絡日
+  phone              TEXT,
+  data_kind          TEXT,                      -- データ区分
+  note               TEXT
+  -- 対応する出荷履歴行への参照は product_stock_ledger.sample_shipment_id 側に一本化
+  -- （orders ⇔ product_stock_ledger.order_id と同じ片方向FKパターンに揃える。8-1参照）
+);
 
 CREATE TABLE tank_ledger (                       -- 浄酎容器変動履歴
   id                 INTEGER PRIMARY KEY,
@@ -280,86 +301,58 @@ CREATE TABLE tank_ledger (                       -- 浄酎容器変動履歴
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+CREATE TABLE tanks (
+  id                  INTEGER PRIMARY KEY,
+  uid                 TEXT NOT NULL UNIQUE,     -- 固有ID（8桁ランダム小文字英数字。キーカラム）
+  code                TEXT NOT NULL UNIQUE,     -- 容器ID（T/B/SP/U/G/JP/Q/DISTL + 連番）
+  name                TEXT NOT NULL UNIQUE,     -- 容器名称（他シートがこの名前で参照 → tank_ledgerではIDで参照させる）
+  container_type      TEXT,                     -- 容器種別
+  max_volume_l        REAL,                     -- 最大容量(L)
+  location            TEXT,                     -- 現在設置場所
+  status              TEXT,                     -- 稼働中/空/満タン/廃棄
+  gauge_constant      REAL,                     -- 検尺定数
+  initial_volume_l    REAL DEFAULT 0,           -- 初期在庫量
+  current_volume_l    REAL DEFAULT 0,           -- 現在液量(L)（キャッシュ値。真値はv_tank_monitorで再計算）
+  current_abv         REAL,                     -- 理論アルコール度数（同上）
+  note                TEXT
+);
+
+CREATE INDEX idx_msl_material ON material_stock_ledger(material_id, txn_date);
+
+CREATE INDEX idx_msl_product_ledger ON material_stock_ledger(product_ledger_id);
+
+CREATE INDEX idx_orders_customer ON orders(customer_id);
+
+CREATE INDEX idx_orders_product  ON orders(product_id);
+
+CREATE INDEX idx_orders_status   ON orders(status);
+
+CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
+
+CREATE INDEX idx_psl_product ON product_stock_ledger(product_id, txn_date);
+
+CREATE INDEX idx_psl_sample  ON product_stock_ledger(sample_shipment_id);
+
 CREATE INDEX idx_tl_from_tank ON tank_ledger(from_tank_id, txn_date);
+
 CREATE INDEX idx_tl_to_tank   ON tank_ledger(to_tank_id, txn_date);
 
-CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
-  id              INTEGER PRIMARY KEY,
-  lot_code        TEXT UNIQUE,                   -- 原酒受払ID
-  txn_date        TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  txn_type        TEXT NOT NULL CHECK (txn_type IN ('受入','払出')),
-  from_tank_id    INTEGER REFERENCES tanks(id),         -- 受入元（払出の場合：投入元タンク）
-  to_ref          TEXT,                          -- 払出先（受入先タンクID or 蒸留ID。用途混在のため文字列＋下2列で正規化）
-  to_tank_id      INTEGER REFERENCES tanks(id),
-  distillation_id INTEGER REFERENCES distillations(id),
-  quantity        REAL NOT NULL,
-  raw_sake_brand_id INTEGER REFERENCES raw_sake_brands(id), -- 原酒スペック（緩やかな対応をID化）
-  spec_note       TEXT,                          -- 正規化できない自由記述の原酒スペック
-  is_fifo_estimated INTEGER DEFAULT 0,           -- 過去データ一括変換時のFIFO推定フラグ
-  note            TEXT,
-  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
-
--- ============================================================
--- 4. 蒸留・原酒系
--- ============================================================
-
-CREATE TABLE distillations (                     -- 蒸留記録（ヘッダ）
-  id                  INTEGER PRIMARY KEY,
-  distillation_code   TEXT NOT NULL UNIQUE,      -- D+年月+連番（蒸留ID）
-  started_on          TEXT NOT NULL CHECK (started_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 投入開始日
-  started_time        TEXT NOT NULL CHECK (started_time GLOB '[0-9][0-9]:[0-9][0-9]'), -- 投入開始時刻（HH:MM）。24時間経過アラートの計算に使用するため日付と分離して保持
-  input_summary       TEXT,                      -- 使用原酒明細（自由記述サマリ、詳細はdistillation_details）
-  total_input_l       REAL,                      -- 投入量合計
-  planned_duration    TEXT,                      -- 蒸留設定時間
-  status              TEXT NOT NULL DEFAULT '蒸留中', -- 蒸留中/完了
-  output_l            REAL,                      -- 蒸留量（完了時）
-  output_abv          REAL,                      -- アルコール度数（完了時）
-  output_tank_id      INTEGER REFERENCES tanks(id), -- 払出先
-  residue_qty         REAL,                      -- 残渣回収量（サマリ、詳細はdistillation_residues）
-  completed_on         TEXT CHECK (completed_on IS NULL OR completed_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 完了日
-  completed_time        TEXT CHECK (completed_time IS NULL OR completed_time GLOB '[0-9][0-9]:[0-9][0-9]')  -- 完了時刻（HH:MM）
-);
-
-CREATE TABLE distillation_details (
-  id                INTEGER PRIMARY KEY,
-  distillation_id   INTEGER NOT NULL REFERENCES distillations(id),
-  raw_sake_ledger_id INTEGER NOT NULL REFERENCES raw_sake_ledger(id),
-  input_l           REAL NOT NULL,
-  source_tank_id    INTEGER REFERENCES tanks(id),  -- 元容器ID
-  is_cancelled      INTEGER NOT NULL DEFAULT 0,
-  note              TEXT
-);
-
-CREATE TABLE distillation_residues (
-  id               INTEGER PRIMARY KEY,
-  distillation_id  INTEGER NOT NULL REFERENCES distillations(id),
-  collected_on     TEXT NOT NULL CHECK (collected_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 残渣回収日
-  collected_time   TEXT NOT NULL CHECK (collected_time GLOB '[0-9][0-9]:[0-9][0-9]'), -- 残渣回収時刻（HH:MM）。蒸留記録と同様の理由で日付と分離
-  quantity         REAL,
-  abv              REAL,
-  salt_status      TEXT,                         -- 食塩ステータス
-  salt_input_qty   REAL,                         -- 投入量（食塩等）
-  salt_concentration REAL,                       -- 塩分濃度
-  destination      TEXT                          -- 払出先（廃棄先/保管先）
-);
-
--- ============================================================
--- 5. システム系
--- ============================================================
-
-CREATE TABLE resource_locks (
-  id               INTEGER PRIMARY KEY,
-  target_type      TEXT NOT NULL DEFAULT 'distillation',
-  distillation_id  INTEGER REFERENCES distillations(id),
-  locked_by        TEXT NOT NULL,                -- ユーザー
-  locked_at        TEXT NOT NULL DEFAULT (datetime('now')) -- システムが自動設定する監査用タイムスタンプのため日付/時刻分離の対象外（2.0参照）
-);
-
--- ============================================================
--- モニター系ビュー（3章 案1）
--- ============================================================
+CREATE VIEW v_material_stock AS
+SELECT
+  m.id AS material_id,
+  m.name,
+  m.initial_stock
+    + COALESCE(SUM(CASE
+        WHEN l.is_cancelled THEN 0
+        WHEN l.txn_type = '入荷' THEN l.quantity
+        WHEN l.txn_type = '消費' THEN -l.quantity
+        WHEN l.txn_type = '棚卸調整' THEN l.quantity   -- 実測が理論を上回った分
+        WHEN l.txn_type = '欠損' THEN -l.quantity      -- 実測が理論を下回った分
+        ELSE 0 END), 0) AS current_stock
+FROM materials m
+LEFT JOIN material_stock_ledger l ON l.material_id = m.id
+GROUP BY m.id;
 
 CREATE VIEW v_product_stock AS
 SELECT
@@ -386,19 +379,22 @@ FROM products p
 LEFT JOIN product_stock_ledger l ON l.product_id = p.id
 GROUP BY p.id;
 
-CREATE VIEW v_material_stock AS               -- 7-1で提案されていた新設モニター
+CREATE VIEW v_raw_sake_tank_volume AS
 SELECT
-  m.id AS material_id,
-  m.name,
-  m.initial_stock
-    + COALESCE(SUM(CASE
-        WHEN l.is_cancelled THEN 0
-        WHEN l.txn_type = '入荷' THEN l.quantity
-        WHEN l.txn_type = '消費' THEN -l.quantity
-        ELSE 0 END), 0) AS current_stock
-FROM materials m
-LEFT JOIN material_stock_ledger l ON l.material_id = m.id
-GROUP BY m.id;
+  t.id AS tank_id,
+  t.code,
+  t.name,
+  t.max_volume_l,
+  t.initial_volume_l
+    + COALESCE((
+        SELECT SUM(l.quantity) FROM raw_sake_ledger l
+        WHERE l.to_tank_id = t.id AND l.txn_type = '受入'
+      ), 0)
+    - COALESCE((
+        SELECT SUM(l.quantity) FROM raw_sake_ledger l
+        WHERE l.from_tank_id = t.id AND l.txn_type = '払出'
+      ), 0) AS current_volume_l
+FROM tanks t;
 
 CREATE VIEW v_tank_monitor AS
 SELECT

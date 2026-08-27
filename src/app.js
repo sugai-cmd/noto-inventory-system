@@ -26,8 +26,12 @@ function createApp() {
   // 業務系
   app.use('/api/orders', require('./routes/orders'));
   app.use('/api', require('./routes/bottling')); // /api/bottling, /api/boxing, /api/recipe/:productId
+  app.use('/api/distillations', require('./routes/distillations'));
+  app.use('/api/raw-sake-receipts', require('./routes/rawSakeReceipts'));
+  app.use('/api/stocktaking', require('./routes/stocktaking'));
+  app.use('/api/exports', require('./routes/exports'));
 
-  // TODO: 蒸留・棚卸・CSV出力・在庫監査レポートを実装次第マウントする
+  // TODO: 在庫監査レポートを実装次第マウントする
 
   app.use(errorHandler);
   return app;

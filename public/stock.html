@@ -1,0 +1,139 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>在庫 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>商品在庫モニター</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      商品在庫変動履歴の全件から再計算した現在値です（取消済みの行は除外されます）。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>商品名称</th><th class="num">商品（完成品）</th><th class="num">仕掛品</th></tr></thead>
+        <tbody id="productRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>資材在庫モニター</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      現行スプレッドシートには存在しなかった集計です。資材在庫変動履歴から現在庫を再計算し、
+      適正在庫数を下回っているものを警告します。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>資材名</th><th class="num">現在庫</th><th>単位</th>
+            <th class="num">適正在庫</th><th>状態</th><th>発注先</th><th class="num">リードタイム</th>
+          </tr>
+        </thead>
+        <tbody id="materialRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>タンクモニター（浄酎）</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      浄酎容器変動履歴から再計算した現在液量です。原酒タンクの残量は下の表を参照してください。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>容器ID</th><th>容器名称</th><th class="num">現在液量(L)</th><th class="num">最大(L)</th>
+            <th class="num">貯蔵率</th><th class="num">度数</th>
+            <th class="num">300ml換算</th><th class="num">700ml換算</th>
+          </tr>
+        </thead>
+        <tbody id="tankRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>原酒タンク残量</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      原料受払記録（受入・払出）から集計した残量です。浄酎タンクとは別の台帳で管理されています。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>容器ID</th><th>容器名称</th><th class="num">残量(L)</th><th class="num">最大(L)</th></tr></thead>
+        <tbody id="rawTankRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('stock.html');
+
+(async () => {
+  try {
+    const [products, materials, tanks, rawTanks] = await Promise.all([
+      apiGet('/api/products/stock'),
+      apiGet('/api/materials/stock'),
+      apiGet('/api/tanks/monitor'),
+      apiGet('/api/raw-sake-receipts/tanks'),
+    ]);
+
+    el('productRows').innerHTML = products.length
+      ? products.map((p) => `<tr>
+          <td>${escapeHtml(p.name)}</td>
+          <td class="num">${num(p.product_stock)}</td>
+          <td class="num">${num(p.wip_stock)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="3" class="empty">商品が登録されていません</td></tr>';
+
+    el('materialRows').innerHTML = materials.length
+      ? materials.map((m) => `<tr>
+          <td>${escapeHtml(m.name)}</td>
+          <td class="num">${num(m.current_stock, 2)}</td>
+          <td>${escapeHtml(m.unit ?? '')}</td>
+          <td class="num">${m.proper_stock_qty != null ? num(m.proper_stock_qty) : ''}</td>
+          <td>${m.shortage ? '<span class="badge danger">要発注</span>' : '<span class="badge ok">充足</span>'}</td>
+          <td>${escapeHtml(m.supplier_name ?? '')}</td>
+          <td class="num">${m.lead_time_days != null ? `${m.lead_time_days}日` : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" class="empty">資材が登録されていません</td></tr>';
+
+    el('tankRows').innerHTML = tanks.length
+      ? tanks.map((t) => `<tr>
+          <td>${escapeHtml(t.code)}</td>
+          <td>${escapeHtml(t.name)}</td>
+          <td class="num">${num(t.current_volume_l, 1)}</td>
+          <td class="num">${num(t.max_volume_l, 1)}</td>
+          <td class="num">${t.fill_rate != null ? `${(t.fill_rate * 100).toFixed(1)}%` : ''}</td>
+          <td class="num">${t.current_abv ?? ''}</td>
+          <td class="num">${num(t.bottles300ml)}</td>
+          <td class="num">${num(t.bottles700ml)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="8" class="empty">タンクが登録されていません</td></tr>';
+
+    el('rawTankRows').innerHTML = rawTanks.length
+      ? rawTanks.map((t) => `<tr>
+          <td>${escapeHtml(t.code)}</td>
+          <td>${escapeHtml(t.name)}</td>
+          <td class="num">${num(t.current_volume_l, 1)}</td>
+          <td class="num">${num(t.max_volume_l, 1)}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="4" class="empty">原酒の入っているタンクがありません</td></tr>';
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+})();
+</script>
+</body>
+</html>

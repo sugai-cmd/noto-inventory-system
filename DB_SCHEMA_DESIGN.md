@@ -772,6 +772,7 @@ function submitBottling(db, payload) {
 4. まず「受注登録」「発送済にする」「瓶詰め登録」等、優先度の高い機能からAPI・画面を実装
    → **API実装完了（9章）。画面（public/）は次のステップ**
 5. 在庫監査レポート・CSV出力（ゆうパック/マネーフォワード）などの周辺機能を移植
+   → **蒸留・画面・棚卸・CSV出力まで完了（10章）。残るは在庫監査レポート**
 
 ### 7.1 このステップで実際に作成したファイル
 
@@ -1053,7 +1054,133 @@ Expressアプリをインプロセスで起動し、実際のHTTPリクエスト
 
 ### 9.5 未実装（次のステップ）
 
-- 画面（`public/`）：受注登録・瓶詰め・ダッシュボード
-- 蒸留の開始/完了、容器移動・未納税移出、棚卸調整
-- CSV出力（ゆうパック／マネーフォワード）
+- ~~画面（`public/`）~~ → 10-2で実装
+- ~~蒸留の開始/完了~~ → 10-1で実装
+- ~~棚卸調整~~ → 10-3で実装
+- ~~CSV出力（ゆうパック／マネーフォワード）~~ → 10-4で実装
+- 容器移動・未納税移出（`tank_ledger`の残りの受払区分）
 - 在庫監査レポート
+
+---
+
+## 10. 蒸留・画面・棚卸・CSV（実装済み）
+
+### 10-1. 蒸留（`src/services/distillationService.js`）
+
+DATA_STRUCTURE.md 4-7〜4-10、5章の「蒸留の開始・完了」に対応する。
+
+| メソッド | パス | 対応する旧GAS機能 |
+|---|---|---|
+| POST | `/api/raw-sake-receipts` | `submitRawSakeReceipt()`（原酒入荷） |
+| GET | `/api/raw-sake-receipts/tanks` | 原酒タンクの残量一覧（下記の新設ビュー） |
+| POST | `/api/distillations` | `submitDistillationStart()` |
+| POST | `/api/distillations/:id/complete` | 蒸留完了報告処理 |
+| POST | `/api/distillations/details/:id/cancel` | `cancelDistillationDetailItem()`（部分取消） |
+| GET | `/api/distillations/alerts` | `getStaleDistillationAlerts()`（24時間超過アラート） |
+
+**蒸留開始**は蒸留記録（ヘッダ）＋蒸留明細記録＋原料受払記録（払出）を、
+**蒸留完了**は蒸留記録の更新＋浄酎容器変動履歴（継足）＋残渣回収記録を、
+それぞれ1トランザクションで書き込む。
+
+**部分取消**は明細に取消フラグを立てたうえで、原料受払記録に「受入」を1行足して原酒を戻す
+（4-9の「取消時の受入戻し」を踏襲）。同時にヘッダの投入量合計を、取消されていない明細だけで再計算する。
+
+**24時間アラート**は`started_on || ' ' || started_time`を結合して経過時間を判定する。
+2.0で日付と時刻を分離して保持した設計が、ここでそのまま活きている。
+
+#### 新設ビュー `v_raw_sake_tank_volume`（migration 0002）
+
+8-8で「`v_tank_monitor`は`tank_ledger`しか集計しないため原酒タンクの残量が分からない」と
+記録していた点への対応。`raw_sake_ledger`の受入／払出から原酒タンクの残量を集計するビューを追加し、
+**蒸留開始時に「そのタンクから本当にその量を払い出せるか」を検査**できるようにした（GAS版にはなかったガード）。
+
+#### 蒸留IDのプレフィックス（要確認事項）
+
+DATA_STRUCTURE.md上は受注番号（4-1）も蒸留ID（4-7）も同じ`D`+年月+連番で、
+番号だけではどちらの伝票か判別できない。本実装では新規採番分を**`DS`+年月+連番**とした
+（例：`DS2608-0001`）。移行済みの過去データは元のコードをそのまま保持するため影響はない。
+`src/services/distillationService.js`の`DISTILLATION_PREFIX`定数1箇所で変更できる。
+
+### 10-2. 画面（`public/`）
+
+| ファイル | 内容 |
+|---|---|
+| `index.html` | ダッシュボード。未着手受注・蒸留中・要発注資材・商品在庫合計と、24時間超過アラート |
+| `orders.html` | 受注登録（インクリメンタル検索・初期値自動計算・在庫僅少アラート）、受注一覧、発送済処理、CSV出力 |
+| `bottling.html` | 瓶詰め・箱詰め。商品を選ぶとレシピから消費予定資材を事前表示 |
+| `distillation.html` | 原酒入荷、蒸留開始（投入元を複数行で指定）、完了報告、投入明細の部分取消 |
+| `stock.html` | 商品・資材・タンク・原酒タンクの各在庫モニター |
+| `stocktaking.html` | 棚卸。理論値の横に実測値を入力して保存 |
+
+共通処理は`public/assets/js/app.js`に集約している。特に`createSearchSelect()`は、
+2.2で要件としていた「AppSheetで使えていた入力しながら絞り込む操作感」を再現するコンポーネントで、
+キーボード操作（↑↓で選択、Enterで確定、Escで閉じる）にも対応している。
+
+ビルド不要の素のHTML+JSで、`npm start`後に`http://localhost:3000/`を開けばそのまま使える。
+
+### 10-3. 棚卸（`src/services/stocktakingService.js`）
+
+| メソッド | パス | 対応する旧GAS機能 |
+|---|---|---|
+| POST | `/api/stocktaking/products` | `submitProductStocktaking()` |
+| POST | `/api/stocktaking/materials` | （新設。資材の棚卸は現行システムに存在しなかった） |
+| POST | `/api/stocktaking/tanks` | `submitStocktaking()`（タンク） |
+
+台帳の「数量は常に正の数」という制約（4-2 D列）を守るため、
+**実測値と理論値（モニタービューの現在値）の差を求め、符号によって受払区分を出し分ける**：
+
+| 対象 | 実測 > 理論 | 実測 < 理論 |
+|---|---|---|
+| 商品 | `棚卸調整_商品` | `欠損_商品` |
+| 仕掛品 | `棚卸調整_仕掛品` | `欠損_仕掛品` |
+| 資材 | `棚卸調整` | `欠損` |
+| タンク | `棚卸調整`（`to_tank_id`側） | `欠減`（`from_tank_id`側） |
+
+差が0の場合は台帳に行を作らずスキップする（棚卸のたびに無意味な0行が増えるのを防ぐ）。
+タンクは実測度数を入力するとタンクマスタの理論度数も更新する。
+
+#### migration 0003：資材台帳への棚卸区分の追加
+
+`material_stock_ledger.txn_type`は現行シート踏襲で`('入荷','消費')`のみだったため、
+棚卸の差異を記録できなかった。SQLiteはCHECK制約をALTERできないので、テーブルを作り直して
+`('入荷','消費','棚卸調整','欠損')`に拡張し、`v_material_stock`も新区分を集計するよう再作成した。
+
+> 注意：SQLiteは「ビューが参照しているテーブル」のDROP/RENAMEを拒否するため、
+> マイグレーションでは**先にビューを落としてから**テーブルを作り替え、最後にビューを定義し直している。
+
+### 10-4. CSV出力（`src/services/csvExportService.js`）
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| GET | `/api/exports/yupack` | ゆうパック送り状用（宛先・品名・個数） |
+| GET | `/api/exports/moneyforward` | マネーフォワード売上用（取引日・金額・請求/入金予定日） |
+| GET | `/api/exports/product-stock` | 商品在庫（実測記入欄つき。棚卸で印刷して使う想定） |
+| GET | `/api/exports/material-stock` | 資材在庫（同上） |
+| GET | `/api/exports/tank-monitor` | タンク（同上） |
+
+受注系のCSVは`orderIds` / `from` / `to` / `status`で絞り込める。
+受注画面のCSVボタンは、一覧の絞り込み条件をそのまま引き継いで出力する。
+
+**Excelでの文字化けを避けるため、UTF-8 BOM付き・CRLF改行で出力**している。
+カンマ・引用符・改行を含む値は二重引用符でエスケープする。
+
+> 出力列は現行の運用ファイルを推定して構成している。実際のテンプレートに合わせて
+> 調整できるよう、列定義は各関数の先頭にまとめてある。ゆうパックの郵便番号列は
+> 現行データに該当列がないため空欄で出力している。
+
+### 10-5. テスト
+
+`npm test`で52件（全てpass）。
+
+| ファイル | 内容 |
+|---|---|
+| `tests/services/orderFlow.test.js` | 受注登録→瓶詰め→箱詰め→発送済の一連フローと在庫連動 |
+| `tests/services/distillationFlow.test.js` | 原酒入荷→蒸留開始→部分取消→完了、残量ガード、24時間アラート |
+| `tests/services/stocktakingAndExport.test.js` | 商品/資材/タンクの棚卸、差異0のスキップ、CSVの内容・BOM・エスケープ |
+| `tests/services/dateUtil.test.js` | 支払いサイト計算 |
+| `tests/scripts/parseDate.test.js` | 日付/時刻の分離パーサー |
+| `tests/models/masterModels.test.js` | 酒蔵・原酒マスタのCRUD |
+
+画面については、Playwrightで実際にChromiumを起動し、
+受注登録→発送済、原酒入荷→蒸留開始→詳細表示、瓶詰め→在庫不足エラー、
+棚卸の保存、CSVダウンロード（BOM確認）までを通しで動作確認済み。

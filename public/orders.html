@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>受注 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>受注登録</h2>
+    <form id="orderForm">
+      <div class="grid">
+        <div>
+          <label for="customerSearch">得意先</label>
+          <div class="search-wrap">
+            <input type="text" id="customerSearch" placeholder="得意先名で検索（入力すると候補が出ます）" autocomplete="off">
+            <div class="search-results" id="customerResults"></div>
+          </div>
+          <div class="chosen" id="customerChosen">
+            <span class="name"></span>
+            <button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+
+        <div>
+          <label for="productSearch">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="productSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="productResults"></div>
+          </div>
+          <div class="chosen" id="productChosen">
+            <span class="name"></span>
+            <button type="button" class="secondary small">変更</button>
+          </div>
+          <div class="hint" id="productStockHint"></div>
+        </div>
+
+        <div>
+          <label for="orderedOn">受注日</label>
+          <input type="date" id="orderedOn" required>
+        </div>
+
+        <div>
+          <label for="quantity">本数</label>
+          <input type="number" id="quantity" min="1" step="1" value="1" required>
+        </div>
+
+        <div>
+          <label for="unitPrice">単価（商品マスタの上代）</label>
+          <input type="number" id="unitPrice" readonly>
+        </div>
+
+        <div>
+          <label for="markupRate">掛け率（得意先マスタ）</label>
+          <input type="number" id="markupRate" step="0.01" readonly>
+        </div>
+
+        <div>
+          <label for="salesAmount">売価（単価×本数×掛け率）</label>
+          <input type="number" id="salesAmount" readonly>
+        </div>
+
+        <div>
+          <label for="shippingFee">送料</label>
+          <input type="number" id="shippingFee" min="0" step="1" value="0">
+        </div>
+
+        <div>
+          <label for="totalAmount">合計（税込）</label>
+          <input type="number" id="totalAmount" readonly>
+        </div>
+
+        <div>
+          <label for="requestedDeliveryOn">納入希望日</label>
+          <input type="date" id="requestedDeliveryOn">
+        </div>
+
+        <div>
+          <label for="paymentDueOn">入金予定日（支払いサイトから自動計算）</label>
+          <input type="date" id="paymentDueOn">
+          <div class="hint" id="paymentHint"></div>
+        </div>
+
+        <div>
+          <label for="invoicedOn">請求日</label>
+          <input type="date" id="invoicedOn">
+          <div class="hint" id="invoiceHint"></div>
+        </div>
+
+        <div>
+          <label for="salesMethod">販売方法</label>
+          <select id="salesMethod">
+            <option value="買取">買取</option>
+            <option value="委託">委託</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="deliveryMethod">納品方法</label>
+          <select id="deliveryMethod">
+            <option value="配送">配送</option>
+            <option value="手渡し">手渡し</option>
+          </select>
+        </div>
+
+        <div>
+          <label for="deliveryAddress">配送先</label>
+          <input type="text" id="deliveryAddress" placeholder="住所・メモ">
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label for="note">備考</label>
+        <textarea id="note" rows="2"></textarea>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="submitBtn">受注を登録</button>
+        <button type="button" class="secondary" id="resetBtn">クリア</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>受注一覧</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="filterStatus">ステータス</label>
+        <select id="filterStatus">
+          <option value="">すべて</option>
+          <option value="未着手">未着手</option>
+          <option value="発送済">発送済</option>
+        </select>
+      </div>
+      <div>
+        <label for="filterFrom">受注日（開始）</label>
+        <input type="date" id="filterFrom">
+      </div>
+      <div>
+        <label for="filterTo">受注日（終了）</label>
+        <input type="date" id="filterTo">
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>受注番号</th><th>受注日</th><th>得意先</th><th>商品</th>
+            <th class="num">本数</th><th class="num">合計</th>
+            <th>ステータス</th><th>納品日</th><th>入金予定</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="orderRows"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button type="button" class="secondary" id="exportYupack">ゆうパックCSV（上の絞り込み条件で出力）</button>
+      <button type="button" class="secondary" id="exportMf">マネーフォワードCSV</button>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('orders.html');
+
+let customerSelect, productSelect;
+
+/** 得意先・商品・本数が揃ったら、サーバー側で初期値（売価・入金予定日）を計算して反映する */
+async function refreshDefaults() {
+  const customer = customerSelect.value;
+  const product = productSelect.value;
+  const quantity = Number(el('quantity').value);
+  if (!customer || !product || !quantity) return;
+
+  const params = new URLSearchParams({
+    customerId: customer.id,
+    productId: product.id,
+    quantity: String(quantity),
+  });
+  const deliveredOn = el('requestedDeliveryOn').value;
+  if (deliveredOn) params.set('deliveredOn', deliveredOn);
+
+  const d = await apiGet(`/api/orders/defaults?${params}`);
+  el('unitPrice').value = d.unitPrice ?? '';
+  el('markupRate').value = d.markupRate ?? '';
+  el('salesAmount').value = d.salesAmount ?? '';
+  if (d.paymentDueOn) el('paymentDueOn').value = d.paymentDueOn;
+  el('paymentHint').textContent = d.customer
+    ? `支払いサイト: ${d.customer.payment_term_months ?? '-'}ヶ月後 ${d.customer.payment_term_day ?? '末日'}`
+    : '';
+  el('invoiceHint').textContent = d.invoiceDueNote ? `請求日送付期日: ${d.invoiceDueNote}` : '';
+  recalcTotal();
+}
+
+function recalcTotal() {
+  const sales = Number(el('salesAmount').value || 0);
+  const shipping = Number(el('shippingFee').value || 0);
+  el('totalAmount').value = sales + shipping;
+}
+
+async function loadOrders() {
+  const params = new URLSearchParams();
+  if (el('filterStatus').value) params.set('status', el('filterStatus').value);
+  if (el('filterFrom').value) params.set('from', el('filterFrom').value);
+  if (el('filterTo').value) params.set('to', el('filterTo').value);
+
+  const orders = await apiGet(`/api/orders?${params}`);
+  const tbody = el('orderRows');
+
+  if (!orders.length) {
+    tbody.innerHTML = '<tr><td colspan="10" class="empty">該当する受注がありません</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = orders
+    .map((o) => {
+      const badge = o.status === '発送済' ? 'ok' : 'warn';
+      const shipBtn =
+        o.status === '発送済'
+          ? ''
+          : `<button class="small" data-ship="${o.id}">発送済にする</button>`;
+      return `<tr>
+        <td>${escapeHtml(o.order_no)}</td>
+        <td>${escapeHtml(o.ordered_on)}</td>
+        <td>${escapeHtml(o.customer_name)}</td>
+        <td>${escapeHtml(o.product_name)}</td>
+        <td class="num">${num(o.quantity)}</td>
+        <td class="num">${yen(o.total_amount)}</td>
+        <td><span class="badge ${badge}">${escapeHtml(o.status)}</span></td>
+        <td>${escapeHtml(o.delivered_on ?? '')}</td>
+        <td>${escapeHtml(o.payment_due_on ?? '')}</td>
+        <td class="row-actions">${shipBtn}</td>
+      </tr>`;
+    })
+    .join('');
+}
+
+el('orderRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-ship]');
+  if (!btn) return;
+  if (!confirm('この受注を発送済にします。商品在庫から出荷分が引かれます。よろしいですか？')) return;
+
+  btn.disabled = true;
+  try {
+    const result = await apiPost(`/api/orders/${btn.dataset.ship}/ship`, {
+      deliveredOn: todayStr(),
+    });
+    showMessage('messages', 'ok',
+      `${result.order.order_no} を発送済にしました（出荷履歴を作成、入金予定日: ${result.order.payment_due_on ?? '-'}）`);
+    await loadOrders();
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+    btn.disabled = false;
+  }
+});
+
+el('orderForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+
+  if (!customerSelect.value) return showMessage('messages', 'error', '得意先を選択してください');
+  if (!productSelect.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  const payload = {
+    orderedOn: el('orderedOn').value,
+    customerId: customerSelect.value.id,
+    productId: productSelect.value.id,
+    quantity: Number(el('quantity').value),
+    shippingFee: Number(el('shippingFee').value || 0),
+    salesMethod: el('salesMethod').value,
+    deliveryMethod: el('deliveryMethod').value,
+  };
+  for (const [key, id] of [
+    ['requestedDeliveryOn', 'requestedDeliveryOn'],
+    ['paymentDueOn', 'paymentDueOn'],
+    ['invoicedOn', 'invoicedOn'],
+    ['deliveryAddress', 'deliveryAddress'],
+    ['note', 'note'],
+  ]) {
+    const value = el(id).value.trim();
+    if (value) payload[key] = value;
+  }
+
+  el('submitBtn').disabled = true;
+  try {
+    const order = await apiPost('/api/orders', payload);
+    showMessage('messages', 'ok', `受注 ${order.order_no} を登録しました（合計 ${yen(order.total_amount)}）`);
+    resetForm();
+    await loadOrders();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('submitBtn').disabled = false;
+  }
+});
+
+function resetForm() {
+  el('orderForm').reset();
+  el('orderedOn').value = todayStr();
+  el('quantity').value = 1;
+  el('shippingFee').value = 0;
+  customerSelect.reset();
+  productSelect.reset();
+  el('productStockHint').textContent = '';
+  el('paymentHint').textContent = '';
+  el('invoiceHint').textContent = '';
+}
+
+/** 一覧の絞り込み条件をそのままCSV出力にも引き継ぐ */
+function currentFilterParams() {
+  const params = new URLSearchParams();
+  if (el('filterStatus').value) params.set('status', el('filterStatus').value);
+  if (el('filterFrom').value) params.set('from', el('filterFrom').value);
+  if (el('filterTo').value) params.set('to', el('filterTo').value);
+  return params;
+}
+
+el('exportYupack').addEventListener('click', () => {
+  location.href = `/api/exports/yupack?${currentFilterParams()}`;
+});
+el('exportMf').addEventListener('click', () => {
+  location.href = `/api/exports/moneyforward?${currentFilterParams()}`;
+});
+
+el('resetBtn').addEventListener('click', resetForm);
+el('quantity').addEventListener('input', refreshDefaults);
+el('requestedDeliveryOn').addEventListener('change', refreshDefaults);
+el('shippingFee').addEventListener('input', recalcTotal);
+for (const id of ['filterStatus', 'filterFrom', 'filterTo']) {
+  el(id).addEventListener('change', loadOrders);
+}
+
+customerSelect = createSearchSelect({
+  inputId: 'customerSearch',
+  resultsId: 'customerResults',
+  chosenId: 'customerChosen',
+  endpoint: '/api/customers/search',
+  renderLabel: (c) => c.name,
+  renderSub: (c) => `掛率 ${c.markup_rate} / 支払 ${c.payment_term_months ?? '-'}ヶ月後${c.payment_term_day ?? ''}`,
+  onSelect: () => refreshDefaults(),
+});
+
+productSelect = createSearchSelect({
+  inputId: 'productSearch',
+  resultsId: 'productResults',
+  chosenId: 'productChosen',
+  endpoint: '/api/products/search',
+  renderLabel: (p) => p.name,
+  renderSub: (p) => `上代 ${yen(p.list_price)} / 在庫 ${p.product_stock ?? 0}本`,
+  onSelect: (p) => {
+    // 在庫僅少アラート（DATA_STRUCTURE.md 4-3の読み取り先）
+    if (p) {
+      const stock = p.product_stock ?? 0;
+      el('productStockHint').innerHTML =
+        stock <= 10
+          ? `<span class="badge danger">在庫僅少</span> 現在庫 ${stock}本`
+          : `現在庫 ${stock}本`;
+    } else {
+      el('productStockHint').textContent = '';
+    }
+    refreshDefaults();
+  },
+});
+
+el('orderedOn').value = todayStr();
+loadOrders().catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>
