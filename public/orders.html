@@ -163,6 +163,30 @@
       <button type="button" class="secondary" id="exportMf">マネーフォワードCSV</button>
     </div>
   </section>
+
+  <section class="panel">
+    <h2>請求日の一括記録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      納品済みでまだ請求日が入っていない受注の一覧です。請求書を送ったものにチェックして記録します。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th><input type="checkbox" id="invoiceAll" style="width:auto"></th>
+            <th>受注番号</th><th>納品日</th><th>得意先</th><th>商品</th>
+            <th class="num">合計</th><th>請求日送付期日</th>
+          </tr>
+        </thead>
+        <tbody id="invoiceRows"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <label for="bulkInvoicedOn" style="margin:0">請求日</label>
+      <input type="date" id="bulkInvoicedOn" style="width:auto">
+      <button type="button" id="invoiceSubmit">選択した受注に請求日を記録</button>
+    </div>
+  </section>
 </main>
 
 <script src="assets/js/app.js"></script>
@@ -368,7 +392,50 @@ productSelect = createSearchSelect({
   },
 });
 
+async function loadPendingInvoices() {
+  const rows = await apiGet('/api/orders/pending-invoices');
+  el('invoiceRows').innerHTML = rows.length
+    ? rows.map((o) => `<tr>
+        <td><input type="checkbox" class="invoice-check" value="${o.id}" style="width:auto"></td>
+        <td>${escapeHtml(o.order_no)}</td>
+        <td>${escapeHtml(o.delivered_on ?? '')}</td>
+        <td>${escapeHtml(o.customer_name)}</td>
+        <td>${escapeHtml(o.product_name)}</td>
+        <td class="num">${yen(o.total_amount)}</td>
+        <td>${escapeHtml(o.invoice_due_note ?? '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">請求対象の受注はありません</td></tr>';
+}
+
+el('invoiceAll').addEventListener('change', () => {
+  for (const box of document.querySelectorAll('.invoice-check')) box.checked = el('invoiceAll').checked;
+});
+
+el('invoiceSubmit').addEventListener('click', async () => {
+  clearMessage('messages');
+  const ids = [...document.querySelectorAll('.invoice-check:checked')].map((b) => Number(b.value));
+  if (!ids.length) return showMessage('messages', 'error', '対象の受注を選んでください');
+
+  el('invoiceSubmit').disabled = true;
+  try {
+    const payload = { orderIds: ids };
+    if (el('bulkInvoicedOn').value) payload.invoicedOn = el('bulkInvoicedOn').value;
+    const r = await apiPost('/api/orders/invoices/bulk', payload);
+    showMessage('messages', 'ok',
+      `請求日（${r.invoicedOn}）を ${r.updated.length}件に記録しました` +
+      (r.skipped.length ? `（${r.skipped.length}件はスキップ）` : ''));
+    el('invoiceAll').checked = false;
+    await Promise.all([loadOrders(), loadPendingInvoices()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('invoiceSubmit').disabled = false;
+  }
+});
+
 el('orderedOn').value = todayStr();
+el('bulkInvoicedOn').value = todayStr();
+loadPendingInvoices().catch((err) => showMessage('messages', 'error', err.message));
 loadOrders().catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

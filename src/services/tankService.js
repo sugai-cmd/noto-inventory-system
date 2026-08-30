@@ -11,6 +11,8 @@
 const { getConnection } = require('../db/connection');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
+const { generateUid } = require('../utils/uid');
+const operationLogService = require('./operationLogService');
 
 function getTank(db, id, label) {
   const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(id);
@@ -197,4 +199,99 @@ function listLedger({ tankId, limit = 200 } = {}) {
     .all({ tankId, limit });
 }
 
-module.exports = { submitTankTransfer, submitTaxFreeTransfer, listLedger };
+/**
+ * タンクの新規登録（旧 registerTank）。
+ * 容器IDのプレフィックスは種別を表す（T=ステンレスタンク、B=木樽、SP=原酒ポリタンク、
+ * U=残渣タンク、G=一斗瓶、JP=出荷用ポリタンク、Q=QBテナー、DISTL=蒸留機）。
+ */
+function registerTank(input, actor = null) {
+  const db = getConnection();
+
+  const code = (input.code ?? '').trim();
+  const name = (input.name ?? '').trim();
+  if (!code) throw new BusinessRuleError('容器IDを入力してください');
+  if (!name) throw new BusinessRuleError('容器名称を入力してください');
+
+  if (db.prepare('SELECT id FROM tanks WHERE code = ?').get(code)) {
+    throw new BusinessRuleError(`容器ID「${code}」は既に使われています`);
+  }
+  if (db.prepare('SELECT id FROM tanks WHERE name = ?').get(name)) {
+    throw new BusinessRuleError(`容器名称「${name}」は既に使われています`);
+  }
+
+  const initialVolumeL = input.initialVolumeL ?? 0;
+  if (input.maxVolumeL != null && initialVolumeL > input.maxVolumeL) {
+    throw new BusinessRuleError('初期在庫量が最大容量を超えています');
+  }
+
+  const result = db
+    .prepare(
+      `INSERT INTO tanks
+         (uid, code, name, container_type, max_volume_l, location, status,
+          gauge_constant, initial_volume_l, current_volume_l, current_abv, note)
+       VALUES
+         (@uid, @code, @name, @containerType, @maxVolumeL, @location, @status,
+          @gaugeConstant, @initialVolumeL, @initialVolumeL, @currentAbv, @note)`
+    )
+    .run({
+      uid: generateUid(db, 'tanks'),
+      code,
+      name,
+      containerType: input.containerType ?? null,
+      maxVolumeL: input.maxVolumeL ?? null,
+      location: input.location ?? null,
+      status: input.status ?? '稼働中',
+      gaugeConstant: input.gaugeConstant ?? null,
+      initialVolumeL,
+      currentAbv: input.currentAbv ?? null,
+      note: input.note ?? null,
+    });
+
+  operationLogService.record({
+    user: actor,
+    action: 'tank.create',
+    targetType: 'tanks',
+    targetId: result.lastInsertRowid,
+    summary: `タンク「${code} ${name}」を登録`,
+  });
+
+  return db.prepare('SELECT * FROM tanks WHERE id = ?').get(result.lastInsertRowid);
+}
+
+function updateTank(id, input, actor = null) {
+  const db = getConnection();
+  if (!db.prepare('SELECT id FROM tanks WHERE id = ?').get(id)) return null;
+
+  db.prepare(
+    `UPDATE tanks SET
+       name = COALESCE(@name, name),
+       container_type = COALESCE(@containerType, container_type),
+       max_volume_l = COALESCE(@maxVolumeL, max_volume_l),
+       location = COALESCE(@location, location),
+       status = COALESCE(@status, status),
+       gauge_constant = COALESCE(@gaugeConstant, gauge_constant),
+       note = COALESCE(@note, note)
+     WHERE id = @id`
+  ).run({
+    id,
+    name: input.name ?? null,
+    containerType: input.containerType ?? null,
+    maxVolumeL: input.maxVolumeL ?? null,
+    location: input.location ?? null,
+    status: input.status ?? null,
+    gaugeConstant: input.gaugeConstant ?? null,
+    note: input.note ?? null,
+  });
+
+  operationLogService.record({
+    user: actor,
+    action: 'tank.update',
+    targetType: 'tanks',
+    targetId: id,
+    summary: `タンク（id=${id}）を編集`,
+  });
+
+  return db.prepare('SELECT * FROM tanks WHERE id = ?').get(id);
+}
+
+module.exports = { submitTankTransfer, submitTaxFreeTransfer, listLedger, registerTank, updateTank };

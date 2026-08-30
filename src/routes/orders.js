@@ -60,6 +60,11 @@ router.get('/', (req, res) => {
   );
 });
 
+// 請求対象の候補（納品済みかつ未請求）
+router.get('/pending-invoices', (req, res) => {
+  res.json(orderService.listPendingInvoices({ to: req.query.to }));
+});
+
 router.get('/:id', (req, res) => {
   const order = orderModel.findById(Number(req.params.id));
   if (!order) return res.status(404).json({ error: 'not_found' });
@@ -68,7 +73,7 @@ router.get('/:id', (req, res) => {
 
 router.post('/', validateRequest(createSchema), (req, res, next) => {
   try {
-    res.status(201).json(orderService.submitOrder(req.body));
+    res.status(201).json(orderService.submitOrder(req.body, req.user));
   } catch (err) {
     next(err);
   }
@@ -77,7 +82,7 @@ router.post('/', validateRequest(createSchema), (req, res, next) => {
 // 「発送済にする」。受注更新＋商品在庫変動履歴への出荷行追加を1トランザクションで行う。
 router.post('/:id/ship', validateRequest(shipSchema), (req, res, next) => {
   try {
-    res.json(orderService.markOrderAsShipped(Number(req.params.id), req.body));
+    res.json(orderService.markOrderAsShipped(Number(req.params.id), req.body, req.user));
   } catch (err) {
     next(err);
   }
@@ -101,6 +106,24 @@ router.post(
   (req, res, next) => {
     try {
       res.json(orderService.markPaid(Number(req.params.id), req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// 請求日の一括記録（旧 markInvoicesSent）
+router.post(
+  '/invoices/bulk',
+  validateRequest(
+    z.object({
+      orderIds: z.array(z.number().int().positive()).min(1, '対象の受注を選んでください'),
+      invoicedOn: dateOnly.optional(),
+    })
+  ),
+  (req, res, next) => {
+    try {
+      res.json(orderService.markInvoicesSent(req.body.orderIds, req.body, req.user));
     } catch (err) {
       next(err);
     }

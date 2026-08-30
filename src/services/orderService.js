@@ -5,6 +5,7 @@ const orderModel = require('../models/orderModel');
 const { nextOrderNo, nextProductHistoryCode } = require('../utils/codeGenerator');
 const { calcPaymentDueOn, today } = require('../utils/dateUtil');
 const { NotFoundError, ConflictError } = require('../utils/errors');
+const operationLogService = require('./operationLogService');
 
 /**
  * 受注登録画面の初期値を返す（DB_SCHEMA_DESIGN.md 2.3）。
@@ -53,7 +54,7 @@ function getOrderDefaults({ customerId, productId, quantity, deliveredOn }) {
  * 受注登録。単価・掛け率は登録時点のマスタ値をスナップショットとして保存する
  * （後からマスタが変わっても過去の受注金額が変わらないようにするため）。
  */
-function submitOrder(input) {
+function submitOrder(input, actor = null) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -77,12 +78,12 @@ function submitOrder(input) {
            (order_no, ordered_on, customer_id, product_id, quantity, unit_price, markup_rate,
             sales_amount, shipping_fee, total_amount, requested_delivery_on, invoiced_on,
             payment_due_on, paid_on, sales_method, delivery_method, status, delivery_address,
-            delivered_on, note)
+            delivered_on, note, created_by)
          VALUES
            (@orderNo, @orderedOn, @customerId, @productId, @quantity, @unitPrice, @markupRate,
             @salesAmount, @shippingFee, @totalAmount, @requestedDeliveryOn, @invoicedOn,
             @paymentDueOn, @paidOn, @salesMethod, @deliveryMethod, @status, @deliveryAddress,
-            @deliveredOn, @note)`
+            @deliveredOn, @note, @createdBy)`
       )
       .run({
         orderNo,
@@ -105,9 +106,18 @@ function submitOrder(input) {
         deliveryAddress: input.deliveryAddress ?? null,
         deliveredOn: null,
         note: input.note ?? null,
+        createdBy: actor?.id ?? null,
       });
 
-    return orderModel.findById(result.lastInsertRowid);
+    const order = orderModel.findById(result.lastInsertRowid);
+    operationLogService.record({
+      user: actor,
+      action: 'order.create',
+      targetType: 'orders',
+      targetId: order.id,
+      summary: `受注 ${order.order_no} を登録（${order.customer_name} / ${order.product_name} ${order.quantity}本）`,
+    });
+    return order;
   });
 
   return run();
@@ -119,7 +129,7 @@ function submitOrder(input) {
  * 商品在庫変動履歴に出荷行を追加する（DATA_STRUCTURE.md 5章）。
  * order_id を必ずセットするので、6-3で課題だった受注との突合が新規データでは常に成立する。
  */
-function markOrderAsShipped(orderId, { deliveredOn, note } = {}) {
+function markOrderAsShipped(orderId, { deliveredOn, note } = {}, actor = null) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -151,10 +161,10 @@ function markOrderAsShipped(orderId, { deliveredOn, note } = {}) {
       .prepare(
         `INSERT INTO product_stock_ledger
            (history_code, txn_date, product_id, txn_type, quantity, counterparty, order_id,
-            volume_ml, tax_amount, storage_place, data_kind, note)
+            volume_ml, tax_amount, storage_place, data_kind, note, created_by)
          VALUES
            (@historyCode, @txnDate, @productId, '出荷', @quantity, @counterparty, @orderId,
-            @volumeMl, @taxAmount, @storagePlace, '運用中（リアルタイム）', @note)`
+            @volumeMl, @taxAmount, @storagePlace, '運用中（リアルタイム）', @note, @createdBy)`
       )
       .run({
         historyCode: nextProductHistoryCode(db, shippedOn),
@@ -167,7 +177,16 @@ function markOrderAsShipped(orderId, { deliveredOn, note } = {}) {
         taxAmount: product?.tax_per_unit != null ? product.tax_per_unit * order.quantity : null,
         storagePlace: '浄溜所',
         note: note ?? null,
+        createdBy: actor?.id ?? null,
       });
+
+    operationLogService.record({
+      user: actor,
+      action: 'order.ship',
+      targetType: 'orders',
+      targetId: orderId,
+      summary: `受注 ${order.order_no} を発送済にした（${order.product_name} ${order.quantity}本を出荷）`,
+    });
 
     return {
       order: orderModel.findById(orderId),
@@ -204,10 +223,80 @@ function markPaid(orderId, { paidOn } = {}) {
   return orderModel.findById(orderId);
 }
 
+/**
+ * 請求日の一括記録（旧 markInvoicesSent）。
+ * 月末の請求書送付時に、対象の受注をまとめて処理するためのもの。
+ * 1件ずつの成否を返すので、一部だけ失敗しても何が処理されたか分かる。
+ */
+function markInvoicesSent(orderIds, { invoicedOn } = {}, actor = null) {
+  const db = getConnection();
+  const date = invoicedOn ?? today();
+
+  const run = db.transaction(() => {
+    const updated = [];
+    const skipped = [];
+
+    const stmt = db.prepare(
+      `UPDATE orders SET invoiced_on = @invoicedOn, updated_at = datetime('now')
+       WHERE id = @id`
+    );
+
+    for (const id of orderIds) {
+      const order = orderModel.findById(id);
+      if (!order) {
+        skipped.push({ id, reason: '受注が見つかりません' });
+        continue;
+      }
+      if (order.invoiced_on) {
+        skipped.push({ id, orderNo: order.order_no, reason: `既に請求済み（${order.invoiced_on}）` });
+        continue;
+      }
+      stmt.run({ id, invoicedOn: date });
+      updated.push({ id, orderNo: order.order_no });
+    }
+
+    operationLogService.record({
+      user: actor,
+      action: 'order.invoice.bulk',
+      targetType: 'orders',
+      summary: `請求日を一括記録（${date}／${updated.length}件処理・${skipped.length}件スキップ）`,
+      detail: { updated, skipped },
+    });
+
+    return { invoicedOn: date, updated, skipped };
+  });
+
+  return run();
+}
+
+/**
+ * 請求対象の候補を返す。
+ * 納品済みで、まだ請求日が入っていない受注（＝請求書を出すべきもの）。
+ */
+function listPendingInvoices({ to } = {}) {
+  const db = getConnection();
+  const where = ['o.delivered_on IS NOT NULL', 'o.invoiced_on IS NULL'];
+  const params = {};
+  if (to) { where.push('o.delivered_on <= @to'); params.to = to; }
+
+  return db
+    .prepare(
+      `SELECT o.*, c.name AS customer_name, c.invoice_due_note, p.name AS product_name
+       FROM orders o
+       JOIN customers c ON c.id = o.customer_id
+       JOIN products p ON p.id = o.product_id
+       WHERE ${where.join(' AND ')}
+       ORDER BY c.name, o.delivered_on`
+    )
+    .all(params);
+}
+
 module.exports = {
   getOrderDefaults,
   submitOrder,
   markOrderAsShipped,
   markInvoiceSent,
+  markInvoicesSent,
+  listPendingInvoices,
   markPaid,
 };

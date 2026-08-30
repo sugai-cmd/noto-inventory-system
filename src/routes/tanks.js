@@ -1,5 +1,22 @@
 const express = require('express');
+const { z } = require('zod');
 const { getConnection } = require('../db/connection');
+const tankService = require('../services/tankService');
+const { validateRequest } = require('../middlewares/validateRequest');
+
+const createSchema = z.object({
+  code: z.string().min(1, '容器IDは必須です'),
+  name: z.string().min(1, '容器名称は必須です'),
+  containerType: z.string().optional(),
+  maxVolumeL: z.number().positive().optional(),
+  location: z.string().optional(),
+  status: z.string().optional(),
+  gaugeConstant: z.number().optional(),
+  initialVolumeL: z.number().nonnegative().optional(),
+  currentAbv: z.number().optional(),
+  note: z.string().optional(),
+});
+const updateSchema = createSchema.partial().omit({ code: true, initialVolumeL: true });
 
 const router = express.Router();
 
@@ -42,6 +59,24 @@ router.get('/:id', (req, res) => {
   const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(Number(req.params.id));
   if (!tank) return res.status(404).json({ error: 'not_found' });
   res.json(tank);
+});
+
+router.post('/', validateRequest(createSchema), (req, res, next) => {
+  try {
+    res.status(201).json(tankService.registerTank(req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.put('/:id', validateRequest(updateSchema), (req, res, next) => {
+  try {
+    const updated = tankService.updateTank(Number(req.params.id), req.body, req.user);
+    if (!updated) return res.status(404).json({ error: 'not_found' });
+    res.json(updated);
+  } catch (err) {
+    next(err);
+  }
 });
 
 module.exports = router;

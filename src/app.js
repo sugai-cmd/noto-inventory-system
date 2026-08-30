@@ -58,6 +58,9 @@ function createApp({ requireLogin = true } = {}) {
   app.use('/api/exports', require('./routes/exports'));
   app.use('/api/tank-operations', require('./routes/tankOperations'));
   app.use('/api/audit', require('./routes/audit'));
+  app.use('/api/shipments', require('./routes/shipments')); // 返品・サンプル送付・委託販売報告
+  app.use('/api/sales-targets', require('./routes/salesTargets'));
+  app.use('/api/locks', require('./routes/locks'));
 
   app.use(errorHandler);
   return app;

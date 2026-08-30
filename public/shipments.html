@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>返品・サンプル・委託 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>返品</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      得意先から戻ってきた商品を在庫に戻します。受注を指定すると、どの出荷に対する返品か追えます。
+    </p>
+    <form id="returnForm">
+      <div class="grid">
+        <div>
+          <label for="retProductSearch">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="retProductSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="retProductResults"></div>
+          </div>
+          <div class="chosen" id="retProductChosen">
+            <span class="name"></span><button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div>
+          <label for="retCustomerSearch">得意先</label>
+          <div class="search-wrap">
+            <input type="text" id="retCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
+            <div class="search-results" id="retCustomerResults"></div>
+          </div>
+          <div class="chosen" id="retCustomerChosen">
+            <span class="name"></span><button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div><label for="retQuantity">返品本数</label><input type="number" id="retQuantity" min="1" step="1" required></div>
+        <div><label for="retDate">返品日</label><input type="date" id="retDate" required></div>
+        <div><label for="retReason">理由</label><input type="text" id="retReason" placeholder="破損・売れ残り など"></div>
+      </div>
+      <div class="actions"><button type="submit" id="retSubmit">返品を登録</button></div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>サンプル・販促資料送付</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      無償送付を記録します。サンプルIDが採番され、在庫からも引かれます。
+    </p>
+    <form id="sampleForm">
+      <div class="grid">
+        <div>
+          <label for="smpProductSearch">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="smpProductSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="smpProductResults"></div>
+          </div>
+          <div class="chosen" id="smpProductChosen">
+            <span class="name"></span><button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div>
+          <label for="smpCustomerSearch">送付先</label>
+          <div class="search-wrap">
+            <input type="text" id="smpCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
+            <div class="search-results" id="smpCustomerResults"></div>
+          </div>
+          <div class="chosen" id="smpCustomerChosen">
+            <span class="name"></span><button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div><label for="smpQuantity">本数</label><input type="number" id="smpQuantity" min="1" step="1" required></div>
+        <div><label for="smpContact">先方担当者名</label><input type="text" id="smpContact"></div>
+        <div><label for="smpPhone">電話番号</label><input type="text" id="smpPhone"></div>
+        <div><label for="smpDate">発送日</label><input type="date" id="smpDate" required></div>
+        <div><label for="smpFollowup">後追い連絡日</label><input type="date" id="smpFollowup"></div>
+      </div>
+      <div style="margin-top:12px"><label for="smpNote">備考</label><input type="text" id="smpNote"></div>
+      <div class="actions"><button type="submit" id="smpSubmit">サンプル送付を登録</button></div>
+    </form>
+    <h3>送付履歴</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>サンプルID</th><th>発送日</th><th>送付先</th><th>担当者</th><th>商品</th><th class="num">本数</th><th>備考</th></tr></thead>
+        <tbody id="sampleRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>委託販売実績報告</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      委託で預けた分のうち、その月に実際に売れた本数を報告します。入金予定日は報告月の月末になります。
+    </p>
+    <form id="consignmentForm">
+      <div class="grid">
+        <div>
+          <label for="conOrder">対象の委託受注</label>
+          <select id="conOrder" required></select>
+          <div class="hint" id="conHint"></div>
+        </div>
+        <div><label for="conMonth">対象月</label><input type="month" id="conMonth" required></div>
+        <div><label for="conQuantity">実売本数</label><input type="number" id="conQuantity" min="1" step="1" required></div>
+      </div>
+      <div style="margin-top:12px"><label for="conNote">備考</label><input type="text" id="conNote"></div>
+      <div class="actions"><button type="submit" id="conSubmit">実績を報告</button></div>
+    </form>
+    <h3>報告済み一覧</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>対象月</th><th>受注番号</th><th>得意先</th><th>商品</th><th class="num">本数</th><th class="num">売価</th><th>入金予定日</th></tr></thead>
+        <tbody id="consignmentRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('shipments.html');
+
+const retProduct = createSearchSelect({
+  inputId: 'retProductSearch', resultsId: 'retProductResults', chosenId: 'retProductChosen',
+  endpoint: '/api/products/search', renderLabel: (p) => p.name,
+  renderSub: (p) => `在庫 ${p.product_stock ?? 0}本`,
+});
+const retCustomer = createSearchSelect({
+  inputId: 'retCustomerSearch', resultsId: 'retCustomerResults', chosenId: 'retCustomerChosen',
+  endpoint: '/api/customers/search', renderLabel: (c) => c.name,
+});
+const smpProduct = createSearchSelect({
+  inputId: 'smpProductSearch', resultsId: 'smpProductResults', chosenId: 'smpProductChosen',
+  endpoint: '/api/products/search', renderLabel: (p) => p.name,
+  renderSub: (p) => `在庫 ${p.product_stock ?? 0}本`,
+});
+const smpCustomer = createSearchSelect({
+  inputId: 'smpCustomerSearch', resultsId: 'smpCustomerResults', chosenId: 'smpCustomerChosen',
+  endpoint: '/api/customers/search', renderLabel: (c) => c.name,
+});
+
+el('returnForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  if (!retProduct.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  const payload = {
+    productId: retProduct.value.id,
+    quantity: Number(el('retQuantity').value),
+    txnDate: el('retDate').value,
+  };
+  if (retCustomer.value) payload.customerId = retCustomer.value.id;
+  if (el('retReason').value.trim()) payload.reason = el('retReason').value.trim();
+
+  el('retSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/shipments/returns', payload);
+    showMessage('messages', 'ok',
+      `${r.product.name} の返品を登録しました（在庫 ${r.after.product_stock}本）`);
+    el('returnForm').reset();
+    el('retDate').value = todayStr();
+    retProduct.reset(); retCustomer.reset();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('retSubmit').disabled = false;
+  }
+});
+
+async function loadSamples() {
+  const rows = await apiGet('/api/shipments/samples');
+  el('sampleRows').innerHTML = rows.length
+    ? rows.map((s) => `<tr>
+        <td>${escapeHtml(s.sample_no)}</td>
+        <td>${escapeHtml(s.shipped_on)}</td>
+        <td>${escapeHtml(s.customer_name ?? '')}</td>
+        <td>${escapeHtml(s.contact_name ?? '')}</td>
+        <td>${escapeHtml(s.product_name)}</td>
+        <td class="num">${num(s.quantity)}</td>
+        <td>${escapeHtml(s.note ?? '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">送付履歴がありません</td></tr>';
+}
+
+el('sampleForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  if (!smpProduct.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  const payload = {
+    productId: smpProduct.value.id,
+    quantity: Number(el('smpQuantity').value),
+    shippedOn: el('smpDate').value,
+  };
+  if (smpCustomer.value) payload.customerId = smpCustomer.value.id;
+  for (const [id, key] of [['smpContact','contactName'],['smpPhone','phone'],['smpNote','note']]) {
+    if (el(id).value.trim()) payload[key] = el(id).value.trim();
+  }
+  if (el('smpFollowup').value) payload.followupOn = el('smpFollowup').value;
+
+  el('smpSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/shipments/samples', payload);
+    showMessage('messages', 'ok',
+      `サンプル ${r.sampleNo} を登録しました（在庫 ${r.after.product_stock}本）`);
+    el('sampleForm').reset();
+    el('smpDate').value = todayStr();
+    smpProduct.reset(); smpCustomer.reset();
+    await loadSamples();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('smpSubmit').disabled = false;
+  }
+});
+
+let pendingOrders = [];
+
+async function loadConsignment() {
+  pendingOrders = await apiGet('/api/shipments/consignment/pending');
+  el('conOrder').innerHTML = '<option value="">選択してください</option>' +
+    pendingOrders.map((o) =>
+      `<option value="${o.id}">${escapeHtml(o.order_no)} ${escapeHtml(o.customer_name)} / ${escapeHtml(o.product_name)}（残 ${o.remaining_quantity}本）</option>`
+    ).join('');
+
+  const reports = await apiGet('/api/shipments/consignment');
+  el('consignmentRows').innerHTML = reports.length
+    ? reports.map((r) => `<tr>
+        <td>${escapeHtml(r.report_month)}</td>
+        <td>${escapeHtml(r.order_no)}</td>
+        <td>${escapeHtml(r.customer_name)}</td>
+        <td>${escapeHtml(r.product_name)}</td>
+        <td class="num">${num(r.quantity)}</td>
+        <td class="num">${yen(r.sales_amount)}</td>
+        <td>${escapeHtml(r.payment_due_on ?? '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">報告済みの実績がありません</td></tr>';
+}
+
+el('conOrder').addEventListener('change', () => {
+  const order = pendingOrders.find((o) => String(o.id) === el('conOrder').value);
+  el('conHint').textContent = order
+    ? `受注 ${order.quantity}本 / 報告済 ${order.reported_quantity}本 / 残り ${order.remaining_quantity}本`
+    : '';
+});
+
+el('consignmentForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+
+  const payload = {
+    orderId: Number(el('conOrder').value),
+    reportMonth: el('conMonth').value,
+    quantity: Number(el('conQuantity').value),
+  };
+  if (el('conNote').value.trim()) payload.note = el('conNote').value.trim();
+
+  el('conSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/shipments/consignment', payload);
+    showMessage('messages', 'ok',
+      `${r.order_no} の ${r.report_month} 分を報告しました（${r.quantity}本 / 入金予定 ${r.payment_due_on}）`);
+    el('consignmentForm').reset();
+    el('conHint').textContent = '';
+    await loadConsignment();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('conSubmit').disabled = false;
+  }
+});
+
+el('retDate').value = todayStr();
+el('smpDate').value = todayStr();
+el('conMonth').value = todayStr().slice(0, 7);
+Promise.all([loadSamples(), loadConsignment()])
+  .catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

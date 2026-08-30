@@ -33,7 +33,7 @@ CREATE TABLE consignment_reports (
   payment_due_on  TEXT CHECK (payment_due_on IS NULL OR payment_due_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   paid_on         TEXT CHECK (paid_on IS NULL OR paid_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   note            TEXT
-);
+, created_by INTEGER REFERENCES users(id));
 
 CREATE TABLE customers (
   id                 INTEGER PRIMARY KEY,
@@ -95,6 +95,14 @@ CREATE TABLE distillations (                     -- 蒸留記録（ヘッダ）
   residue_qty         REAL,                      -- 残渣回収量（サマリ、詳細はdistillation_residues）
   completed_on         TEXT CHECK (completed_on IS NULL OR completed_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 完了日
   completed_time        TEXT CHECK (completed_time IS NULL OR completed_time GLOB '[0-9][0-9]:[0-9][0-9]')  -- 完了時刻（HH:MM）
+, created_by INTEGER REFERENCES users(id));
+
+CREATE TABLE login_attempts (
+  id         INTEGER PRIMARY KEY,
+  username   TEXT NOT NULL,
+  succeeded  INTEGER NOT NULL,
+  ip_address TEXT,
+  attempted_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE "material_stock_ledger" (
@@ -113,7 +121,7 @@ CREATE TABLE "material_stock_ledger" (
   note             TEXT,
   created_at       TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, created_by INTEGER REFERENCES users(id));
 
 CREATE TABLE materials (
   id                INTEGER PRIMARY KEY,
@@ -133,6 +141,18 @@ CREATE TABLE materials (
   note              TEXT,
   created_at        TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE operation_logs (
+  id          INTEGER PRIMARY KEY,
+  occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
+  user_id     INTEGER REFERENCES users(id),
+  username    TEXT,              -- 利用者が削除されても誰の操作か分かるよう控えておく
+  action      TEXT NOT NULL,     -- 例: 'order.create', 'bottling.submit'
+  target_type TEXT,              -- 例: 'orders'
+  target_id   INTEGER,
+  summary     TEXT,              -- 画面に出す一行説明
+  detail_json TEXT               -- 補足情報（任意）
 );
 
 CREATE TABLE orders (
@@ -159,7 +179,7 @@ CREATE TABLE orders (
   note               TEXT,
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, created_by INTEGER REFERENCES users(id));
 
 CREATE TABLE product_recipes (
   id           INTEGER PRIMARY KEY,
@@ -191,7 +211,7 @@ CREATE TABLE product_stock_ledger (
   is_cancelled   INTEGER NOT NULL DEFAULT 0,    -- 取消フラグ（旧: 備考先頭「取消済み」を正式列化）
   note           TEXT,
   created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at     TEXT NOT NULL DEFAULT (datetime('now')),  -- 通常のUPDATEでの訂正を許容するため追加
+  updated_at     TEXT NOT NULL DEFAULT (datetime('now')), created_by INTEGER REFERENCES users(id),  -- 通常のUPDATEでの訂正を許容するため追加
   CHECK (order_id IS NULL OR sample_shipment_id IS NULL) -- 出荷の発生源は受注かサンプルのどちらか一方のみ
 );
 
@@ -248,7 +268,7 @@ CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
   note            TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, created_by INTEGER REFERENCES users(id));
 
 CREATE TABLE resource_locks (
   id               INTEGER PRIMARY KEY,
@@ -279,7 +299,7 @@ CREATE TABLE sample_shipments (
   note               TEXT
   -- 対応する出荷履歴行への参照は product_stock_ledger.sample_shipment_id 側に一本化
   -- （orders ⇔ product_stock_ledger.order_id と同じ片方向FKパターンに揃える。8-1参照）
-);
+, created_by INTEGER REFERENCES users(id));
 
 CREATE TABLE sessions (
   token       TEXT PRIMARY KEY,
@@ -308,7 +328,7 @@ CREATE TABLE tank_ledger (                       -- 浄酎容器変動履歴
   note               TEXT,
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, created_by INTEGER REFERENCES users(id));
 
 CREATE TABLE tanks (
   id                  INTEGER PRIMARY KEY,
@@ -338,11 +358,19 @@ CREATE TABLE users (
   last_login_at TEXT,
   created_at    TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at    TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, totp_secret TEXT, totp_enabled INTEGER NOT NULL DEFAULT 0, totp_recovery_codes TEXT);
+
+CREATE INDEX idx_login_attempts_lookup ON login_attempts(username, attempted_at);
 
 CREATE INDEX idx_msl_material ON material_stock_ledger(material_id, txn_date);
 
 CREATE INDEX idx_msl_product_ledger ON material_stock_ledger(product_ledger_id);
+
+CREATE INDEX idx_operation_logs_target ON operation_logs(target_type, target_id);
+
+CREATE INDEX idx_operation_logs_time ON operation_logs(occurred_at);
+
+CREATE INDEX idx_operation_logs_user ON operation_logs(user_id);
 
 CREATE INDEX idx_orders_customer ON orders(customer_id);
 

@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const authService = require('../services/authService');
+const operationLogService = require('../services/operationLogService');
 const { validateRequest } = require('../middlewares/validateRequest');
 const {
   setSessionCookie,
@@ -14,6 +15,8 @@ const router = express.Router();
 const loginSchema = z.object({
   username: z.string().min(1, 'ログインIDを入力してください'),
   password: z.string().min(1, 'パスワードを入力してください'),
+  // 2要素認証が有効な利用者のみ必要
+  totpCode: z.string().optional(),
 });
 
 const createUserSchema = z.object({
@@ -38,6 +41,7 @@ router.post('/login', validateRequest(loginSchema), (req, res, next) => {
     const { token, expiresAt, user } = authService.login({
       ...req.body,
       userAgent: req.headers['user-agent'],
+      ipAddress: req.ip,
     });
     setSessionCookie(res, token, expiresAt, { secure: isSecure(req) });
     res.json({ user });
@@ -80,6 +84,60 @@ router.post('/users', requireAuth, requireAdmin, validateRequest(createUserSchem
   } catch (err) {
     next(err);
   }
+});
+
+// --- 2要素認証 ---
+
+// 設定を始める（秘密鍵とQR用URIを返す。この時点ではまだ有効にならない）
+router.post('/totp/setup', requireAuth, (req, res, next) => {
+  try {
+    res.json(authService.beginTotpSetup(req.user.id));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 認証アプリのコードを確認して有効化する（リカバリコードはここでだけ平文で返る）
+router.post(
+  '/totp/confirm',
+  requireAuth,
+  validateRequest(z.object({ code: z.string().min(6) })),
+  (req, res, next) => {
+    try {
+      res.json(authService.confirmTotpSetup(req.user.id, req.body.code));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// 解除（パスワードの再入力が必要）
+router.post(
+  '/totp/disable',
+  requireAuth,
+  validateRequest(z.object({ password: z.string().min(1) })),
+  (req, res, next) => {
+    try {
+      authService.disableTotp(req.user.id, req.body.password);
+      res.json({ ok: true });
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// --- 操作ログ（管理者のみ） ---
+router.get('/operation-logs', requireAuth, requireAdmin, (req, res) => {
+  res.json(
+    operationLogService.list({
+      from: req.query.from,
+      to: req.query.to,
+      userId: req.query.userId ? Number(req.query.userId) : undefined,
+      action: req.query.action,
+      targetType: req.query.targetType,
+      limit: Math.min(Number(req.query.limit) || 200, 1000),
+    })
+  );
 });
 
 module.exports = router;

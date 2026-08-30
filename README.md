@@ -36,12 +36,20 @@ node scripts/create-user.js --list  # ユーザー一覧
 | `/tanks.html` | 容器移動・未納税移出・タンク入出庫履歴 |
 | `/stock.html` | 商品／資材／タンク／原酒タンクの在庫モニター |
 | `/stocktaking.html` | 棚卸 |
+| `/shipments.html` | 返品・サンプル送付・委託販売実績報告 |
+| `/materials.html` | 資材入荷・資材マスタ・入出庫履歴 |
 | `/audit.html` | 在庫監査レポート |
+| `/sales-targets.html` | 売上目標と進捗 |
+| `/settings.html` | 2要素認証・パスワード変更・利用者管理・操作ログ |
 
 ## ログイン
 
 利用にはログインが必要です。ユーザーは `npm run create-user` で追加します。
 パスワードはscryptでハッシュ化して保存され、復元できません。
+
+- 同じIDで5回続けてログインに失敗すると、15分間受け付けなくなります
+- 2要素認証（認証アプリ）を `/settings.html` から有効にできます
+- 誰がいつ何を登録したかは操作ログに残り、管理者が `/settings.html` で確認できます
 
 社外（自宅など）から使う場合は、インターネットに直接公開せず
 Tailscale等のVPN経由でアクセスしてください（[docs/SETUP.md](docs/SETUP.md) 3章）。

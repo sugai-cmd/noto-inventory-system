@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>資材 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>資材入荷</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      仕入れた資材を在庫に加えます。ロット数が設定されている資材は、その倍数でのみ入荷できます。
+    </p>
+    <form id="receiptForm">
+      <div class="grid">
+        <div>
+          <label for="rMaterial">資材</label>
+          <select id="rMaterial" required></select>
+          <div class="hint" id="rHint"></div>
+        </div>
+        <div>
+          <label for="rQuantity">入荷数</label>
+          <input type="number" id="rQuantity" min="0.01" step="0.01" required>
+        </div>
+        <div>
+          <label for="rUnitPrice">単価（未入力ならマスタの単価）</label>
+          <input type="number" id="rUnitPrice" min="0" step="1">
+        </div>
+        <div>
+          <label for="rSupplier">仕入先</label>
+          <input type="text" id="rSupplier">
+        </div>
+        <div>
+          <label for="rDate">入荷日</label>
+          <input type="date" id="rDate" required>
+        </div>
+      </div>
+      <div style="margin-top:12px">
+        <label for="rNote">備考</label>
+        <input type="text" id="rNote">
+      </div>
+      <div class="actions">
+        <button type="submit" id="rSubmit">入荷を登録</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>資材マスタ</h2>
+    <form id="materialForm">
+      <div class="grid">
+        <div><label for="mName">資材名</label><input type="text" id="mName" required></div>
+        <div><label for="mUnit">単位</label><input type="text" id="mUnit" placeholder="本・枚・個"></div>
+        <div><label for="mUnitPrice">単価(円)</label><input type="number" id="mUnitPrice" min="0" step="1"></div>
+        <div><label for="mLotSize">ロット数</label><input type="number" id="mLotSize" min="1" step="1"></div>
+        <div><label for="mProper">適正在庫数</label><input type="number" id="mProper" min="0" step="1"></div>
+        <div><label for="mInitial">初期在庫数</label><input type="number" id="mInitial" min="0" step="1" value="0"></div>
+        <div><label for="mSupplier">発注先</label><input type="text" id="mSupplier"></div>
+        <div><label for="mLead">リードタイム(日)</label><input type="number" id="mLead" min="0" step="1"></div>
+      </div>
+      <div class="actions">
+        <button type="submit" id="mSubmit">資材を登録</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>資材在庫</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>資材名</th><th class="num">現在庫</th><th>単位</th><th class="num">適正在庫</th>
+            <th class="num">ロット</th><th>状態</th><th>発注先</th><th class="num">リードタイム</th>
+          </tr>
+        </thead>
+        <tbody id="stockRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>入出庫履歴</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="filterMaterial">資材で絞り込む</label>
+        <select id="filterMaterial"></select>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>日付</th><th>資材</th><th>受払</th><th class="num">数量</th><th class="num">単価</th><th class="num">金額</th><th>相手先</th><th>備考</th></tr>
+        </thead>
+        <tbody id="ledgerRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('materials.html');
+
+let materials = [];
+
+async function loadMaterials() {
+  materials = await apiGet('/api/materials');
+  const options = '<option value="">選択してください</option>' +
+    materials.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
+  const keep = el('rMaterial').value;
+  el('rMaterial').innerHTML = options;
+  el('rMaterial').value = keep;
+  el('filterMaterial').innerHTML = '<option value="">すべて</option>' +
+    materials.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
+}
+
+el('rMaterial').addEventListener('change', async () => {
+  const id = el('rMaterial').value;
+  if (!id) { el('rHint').textContent = ''; return; }
+  const d = await apiGet(`/api/materials/${id}/receipt-defaults`);
+  el('rHint').textContent =
+    `現在庫 ${num(d.currentStock, 2)}${d.unit ?? ''}` +
+    (d.lotSize ? ` / ${d.lotSize}${d.unit ?? ''}単位で入荷` : '') +
+    (d.unitPrice != null ? ` / 単価 ${yen(d.unitPrice)}` : '');
+  if (d.lotSize && !el('rQuantity').value) el('rQuantity').value = d.lotSize;
+  if (d.supplierName && !el('rSupplier').value) el('rSupplier').value = d.supplierName;
+});
+
+async function loadStock() {
+  const rows = await apiGet('/api/materials/stock');
+  el('stockRows').innerHTML = rows.length
+    ? rows.map((m) => `<tr>
+        <td>${escapeHtml(m.name)}</td>
+        <td class="num">${num(m.current_stock, 2)}</td>
+        <td>${escapeHtml(m.unit ?? '')}</td>
+        <td class="num">${m.proper_stock_qty != null ? num(m.proper_stock_qty) : ''}</td>
+        <td class="num">${m.lot_size != null ? num(m.lot_size) : ''}</td>
+        <td>${m.shortage ? '<span class="badge danger">要発注</span>' : '<span class="badge ok">充足</span>'}</td>
+        <td>${escapeHtml(m.supplier_name ?? '')}</td>
+        <td class="num">${m.lead_time_days != null ? `${m.lead_time_days}日` : ''}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">資材が登録されていません</td></tr>';
+}
+
+async function loadLedger() {
+  const params = new URLSearchParams();
+  if (el('filterMaterial').value) params.set('materialId', el('filterMaterial').value);
+  const rows = await apiGet(`/api/materials/ledger?${params}`);
+  el('ledgerRows').innerHTML = rows.length
+    ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
+        <td>${escapeHtml(r.txn_date)}</td>
+        <td>${escapeHtml(r.material_name)}</td>
+        <td>${escapeHtml(r.txn_type)}</td>
+        <td class="num">${num(r.quantity, 2)}${escapeHtml(r.unit ?? '')}</td>
+        <td class="num">${r.unit_price != null ? yen(r.unit_price) : ''}</td>
+        <td class="num">${r.total_price != null ? yen(r.total_price) : ''}</td>
+        <td>${escapeHtml(r.counterparty ?? '')}</td>
+        <td>${escapeHtml(r.note ?? '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">履歴がありません</td></tr>';
+}
+
+el('filterMaterial').addEventListener('change', loadLedger);
+
+el('receiptForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  const payload = {
+    materialId: Number(el('rMaterial').value),
+    quantity: Number(el('rQuantity').value),
+    txnDate: el('rDate').value,
+  };
+  if (el('rUnitPrice').value) payload.unitPrice = Number(el('rUnitPrice').value);
+  if (el('rSupplier').value.trim()) payload.supplier = el('rSupplier').value.trim();
+  if (el('rNote').value.trim()) payload.note = el('rNote').value.trim();
+
+  el('rSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/materials/receipts', payload);
+    showMessage('messages', 'ok',
+      `${r.material.name} を入荷しました（在庫 ${num(r.after.current_stock, 2)}${r.material.unit ?? ''}）`);
+    el('receiptForm').reset();
+    el('rDate').value = todayStr();
+    el('rHint').textContent = '';
+    await Promise.all([loadStock(), loadLedger()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('rSubmit').disabled = false;
+  }
+});
+
+el('materialForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  const payload = { name: el('mName').value.trim() };
+  const numeric = { mUnitPrice: 'unitPrice', mLotSize: 'lotSize', mProper: 'properStockQty', mInitial: 'initialStock', mLead: 'leadTimeDays' };
+  for (const [id, key] of Object.entries(numeric)) {
+    if (el(id).value !== '') payload[key] = Number(el(id).value);
+  }
+  if (el('mUnit').value.trim()) payload.unit = el('mUnit').value.trim();
+  if (el('mSupplier').value.trim()) payload.supplierName = el('mSupplier').value.trim();
+
+  el('mSubmit').disabled = true;
+  try {
+    const m = await apiPost('/api/materials', payload);
+    showMessage('messages', 'ok', `資材「${m.name}」を登録しました`);
+    el('materialForm').reset();
+    el('mInitial').value = 0;
+    await Promise.all([loadMaterials(), loadStock()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('mSubmit').disabled = false;
+  }
+});
+
+el('rDate').value = todayStr();
+Promise.all([loadMaterials(), loadStock(), loadLedger()])
+  .catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

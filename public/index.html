@@ -31,6 +31,11 @@
     </div>
   </div>
 
+  <section class="panel" id="salesPanel">
+    <h2>今月の売上進捗</h2>
+    <div id="salesProgress"></div>
+  </section>
+
   <section class="panel">
     <h2>未着手の受注</h2>
     <div class="table-scroll">
@@ -72,12 +77,13 @@ const LOW_STOCK_THRESHOLD = 20;
 
 (async () => {
   try {
-    const [orders, products, materials, distillations, staleDistillations] = await Promise.all([
+    const [orders, products, materials, distillations, staleDistillations, progress] = await Promise.all([
       apiGet('/api/orders?status=' + encodeURIComponent('未着手')),
       apiGet('/api/products/stock'),
       apiGet('/api/materials/stock'),
       apiGet('/api/distillations?status=' + encodeURIComponent('蒸留中')),
       apiGet('/api/distillations/alerts'),
+      apiGet('/api/sales-targets/progress'),
     ]);
 
     const shortages = materials.filter((m) => m.shortage);
@@ -97,6 +103,21 @@ const LOW_STOCK_THRESHOLD = 20;
         ).join('')}</ul>
       </div>`;
     }
+
+    // 売上目標に対する進捗（目標未設定なら設定を促す）
+    el('salesProgress').innerHTML = progress.targetAmount == null
+      ? `<p class="muted" style="margin:0;font-size:13px">
+           ${progress.targetMonth} の売上目標が未設定です。
+           <a href="sales-targets.html">売上目標を設定する</a>
+         </p>`
+      : `<div class="stat-row">
+           <div class="stat"><div class="label">目標</div><div class="value">${yen(progress.targetAmount)}</div></div>
+           <div class="stat"><div class="label">実績</div><div class="value">${yen(progress.actualAmount)}</div></div>
+           <div class="stat"><div class="label">達成率</div><div class="value">${progress.progressRate}<span class="unit">%</span></div></div>
+           <div class="stat"><div class="label">残り</div><div class="value">${yen(progress.remainingAmount)}</div></div>
+         </div>
+         <p class="hint">内訳: 買取 ${yen(progress.breakdown.purchase.amount)}（${progress.breakdown.purchase.count}件） /
+            委託 ${yen(progress.breakdown.consignment.amount)}（${progress.breakdown.consignment.count}件）</p>`;
 
     el('pendingRows').innerHTML = orders.length
       ? orders.slice(0, 20).map((o) => `<tr>

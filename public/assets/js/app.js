@@ -186,11 +186,15 @@ function renderNav(current) {
     ['index.html', 'ダッシュボード'],
     ['orders.html', '受注'],
     ['bottling.html', '瓶詰め・箱詰め'],
+    ['shipments.html', '返品・サンプル・委託'],
     ['distillation.html', '蒸留'],
     ['tanks.html', 'タンク操作'],
+    ['materials.html', '資材'],
     ['stock.html', '在庫'],
     ['stocktaking.html', '棚卸'],
     ['audit.html', '在庫監査'],
+    ['sales-targets.html', '売上目標'],
+    ['settings.html', '設定'],
   ];
   document.body.insertAdjacentHTML(
     'afterbegin',
