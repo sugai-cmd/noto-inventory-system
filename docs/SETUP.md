@@ -62,11 +62,39 @@ Node 22以上を必要とします。古いNodeでは `npm install` がその場
 ```bash
 cd ~
 git clone https://github.com/sugai-cmd/noto-inventory-system.git
-cd noto-inventory-system
+```
+
+**ここでいったん止めて、取得できたか確認してください。**
+`git clone` が失敗していても、空のフォルダだけが残ることがあります。
+
+```bash
+cd ~/noto-inventory-system
+ls package.json
+```
+
+`package.json` と表示されれば成功です。続けます。
+
+```bash
 npm install
 ```
 
 `npm install` は数分かかることがあります。
+
+> **`ls package.json` で `No such file or directory` と出た場合**、
+> または `npm install` が `Could not read package.json` で止まる場合は、
+> clone が中身を持ってこられていません。
+> フォルダを消さずに退避してから、やり直してください。
+>
+> ```bash
+> cd ~
+> mv noto-inventory-system noto-inventory-system.ng
+> git clone https://github.com/sugai-cmd/noto-inventory-system.git
+> ```
+>
+> 今度は**画面に出るメッセージを読んでください。**
+> `Resolving deltas: 100%` まで出れば成功です。原因の切り分けは
+> [docs/SETUP-MAC.md](SETUP-MAC.md) の 0-9 にまとめてあります。
+> やり直しがうまくいったら `rm -rf ~/noto-inventory-system.ng` で退避分を消せます。
 
 ### 2-3. 設定ファイルを作る
 

@@ -278,6 +278,52 @@ Node.js のバージョンが古いです。`node -v` を確認して 22 未満�
 nodejs.org と GitHub の公式サイトからダウンロードしたものであることを
 確認してから許可してください。
 
+### `npm install` が `Could not read package.json` で止まる
+
+```
+npm error enoent Could not read package.json:
+  ... no such file or directory, open '/Users/xxx/noto-inventory-system/package.json'
+```
+
+フォルダはあるのに中身が無い、つまり **`git clone` が完了していない**状態です。
+`npm` の問題ではないので、`npm` を入れ直しても直りません。
+
+まず何があるか見てください。
+
+```bash
+cd ~/noto-inventory-system
+ls -a
+```
+
+| `ls -a` の結果 | 状態 | 対処 |
+|---|---|---|
+| `.` と `..` だけ | 空。cloneが失敗して器だけ残った | 下の「やり直し」 |
+| `noto-inventory-system` というフォルダがある | cloneの場所が一段深い | 下の「やり直し」で置き直す |
+| `.git` と `src` などがある | 途中で切れた | 下の「やり直し」 |
+
+**やり直し**（消さずに退避するので、間違えても失われません）
+
+```bash
+cd ~
+mv noto-inventory-system noto-inventory-system.ng
+git clone https://github.com/sugai-cmd/noto-inventory-system.git
+cd noto-inventory-system
+ls package.json          # ここで package.json と出ることを確認
+npm install
+```
+
+うまくいったら `rm -rf ~/noto-inventory-system.ng` で退避分を消せます。
+
+**それでも同じなら、`git clone` の出力を読んでください。** 原因はほぼここに出ています。
+
+| 出たメッセージ | 意味・対処 |
+|---|---|
+| `git: command not found` / `no developer tools were found` | Gitがまだ入っていません。0-3 をやり直す |
+| `already exists and is not an empty directory` | 既存フォルダが残っています。上の `mv` で退避 |
+| `Could not resolve host: github.com` | ネットワークに届いていません。Wi-Fiや社内フィルタを確認 |
+| `Repository not found` | URLの綴り違い（`sugai-cmd`）。公開リポジトリなので認証は不要です |
+| 何も出ずにすぐ戻る | 成功しています。`ls package.json` で確認 |
+
 ### `git clone` で `Repository not found` / パスワードを聞かれる
 
 リポジトリを非公開に切り替えた場合です。0-5 の「非公開にする場合の注意」を参照して、
