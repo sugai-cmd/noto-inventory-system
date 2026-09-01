@@ -1,0 +1,424 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>蒸留 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+  <div id="alerts"></div>
+
+  <section class="panel">
+    <h2>原酒入荷</h2>
+    <form id="receiptForm">
+      <div class="grid">
+        <div>
+          <label for="rDate">受入日</label>
+          <input type="date" id="rDate" required>
+        </div>
+        <div>
+          <label for="rTank">受入先タンク</label>
+          <select id="rTank" required></select>
+        </div>
+        <div>
+          <label for="rQuantity">受入量 (L)</label>
+          <input type="number" id="rQuantity" min="0.1" step="0.1" required>
+        </div>
+        <div>
+          <label for="rBrand">原酒銘柄（任意）</label>
+          <select id="rBrand"></select>
+          <div class="hint">未登録の銘柄は「原酒スペック」に自由記述で残せます</div>
+        </div>
+        <div>
+          <label for="rSupplier">受入元（酒蔵名）</label>
+          <input type="text" id="rSupplier" placeholder="自由入力可">
+        </div>
+        <div>
+          <label for="rSpec">原酒スペック</label>
+          <input type="text" id="rSpec" placeholder="銘柄・度数など">
+        </div>
+      </div>
+      <div class="actions">
+        <button type="submit" id="rSubmit">原酒入荷を登録</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>蒸留開始</h2>
+    <form id="startForm">
+      <div class="grid">
+        <div>
+          <label for="sDate">投入開始日</label>
+          <input type="date" id="sDate" required>
+        </div>
+        <div>
+          <label for="sTime">投入開始時刻</label>
+          <input type="time" id="sTime" required>
+          <div class="hint">24時間経過アラートの起点になります</div>
+        </div>
+        <div>
+          <label for="sDuration">蒸留設定時間</label>
+          <input type="text" id="sDuration" placeholder="例: 8時間">
+        </div>
+      </div>
+
+      <h3>投入する原酒（複数指定できます）</h3>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>投入元タンク</th><th class="num">投入量 (L)</th><th>備考</th><th></th></tr>
+          </thead>
+          <tbody id="inputRows"></tbody>
+          <tfoot>
+            <tr>
+              <th>合計</th>
+              <th class="num" id="inputTotal">0</th>
+              <th colspan="2"></th>
+            </tr>
+          </tfoot>
+        </table>
+      </div>
+      <div class="actions">
+        <button type="button" class="secondary" id="addRow">投入元を追加</button>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="sSubmit">蒸留を開始</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>蒸留記録</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="filterStatus">ステータス</label>
+        <select id="filterStatus">
+          <option value="">すべて</option>
+          <option value="蒸留中">蒸留中</option>
+          <option value="完了">完了</option>
+        </select>
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>蒸留ID</th><th>開始</th><th>使用原酒</th>
+            <th class="num">投入量(L)</th><th>状態</th>
+            <th class="num">蒸留量(L)</th><th>払出先</th><th>操作</th>
+          </tr>
+        </thead>
+        <tbody id="distillationRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel" id="detailPanel" style="display:none">
+    <h2>蒸留詳細 <span id="detailCode"></span></h2>
+    <div id="detailBody"></div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('distillation.html');
+
+let tanks = [];
+let rawSakeTanks = [];
+
+async function loadTanks() {
+  const [all, raw, brands] = await Promise.all([
+    apiGet('/api/tanks'),
+    apiGet('/api/raw-sake-receipts/tanks'),
+    apiGet('/api/raw-sake-brands'),
+  ]);
+  tanks = all;
+  rawSakeTanks = raw;
+
+  const tankOptions = '<option value="">選択してください</option>' +
+    all.map((t) => `<option value="${t.id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}</option>`).join('');
+  el('rTank').innerHTML = tankOptions;
+
+  el('rBrand').innerHTML = '<option value="">（指定しない）</option>' +
+    brands.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+}
+
+function rawTankOptions() {
+  return '<option value="">選択してください</option>' +
+    rawSakeTanks
+      .map((t) => `<option value="${t.tank_id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`)
+      .join('');
+}
+
+function addInputRow() {
+  const tr = document.createElement('tr');
+  tr.innerHTML = `
+    <td><select class="in-tank" required>${rawTankOptions()}</select></td>
+    <td><input type="number" class="in-volume num" min="0.1" step="0.1" required></td>
+    <td><input type="text" class="in-note"></td>
+    <td><button type="button" class="danger small remove-row">削除</button></td>`;
+  el('inputRows').appendChild(tr);
+}
+
+function recalcInputTotal() {
+  const total = [...document.querySelectorAll('.in-volume')]
+    .reduce((sum, input) => sum + Number(input.value || 0), 0);
+  el('inputTotal').textContent = num(total, 1);
+}
+
+el('addRow').addEventListener('click', addInputRow);
+el('inputRows').addEventListener('click', (e) => {
+  if (e.target.closest('.remove-row')) {
+    e.target.closest('tr').remove();
+    recalcInputTotal();
+  }
+});
+el('inputRows').addEventListener('input', recalcInputTotal);
+
+/** 24時間以上「蒸留中」のままの蒸留を上部に警告表示する */
+async function loadAlerts() {
+  const stale = await apiGet('/api/distillations/alerts');
+  el('alerts').innerHTML = stale.length
+    ? `<div class="msg error">
+         <strong>24時間以上「蒸留中」のままの蒸留が ${stale.length} 件あります</strong>
+         <ul>${stale.map((d) => `<li>${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)} ${escapeHtml(d.started_time)}・経過 ${d.elapsed_hours}時間）</li>`).join('')}</ul>
+       </div>`
+    : '';
+}
+
+async function loadDistillations() {
+  const params = new URLSearchParams();
+  if (el('filterStatus').value) params.set('status', el('filterStatus').value);
+  const rows = await apiGet(`/api/distillations?${params}`);
+  const tbody = el('distillationRows');
+
+  if (!rows.length) {
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">蒸留記録がありません</td></tr>';
+    return;
+  }
+
+  tbody.innerHTML = rows
+    .map((d) => {
+      const badge = d.status === '完了' ? 'ok' : 'warn';
+      const completeBtn = d.status === '完了'
+        ? ''
+        : `<button class="small" data-complete="${d.id}">完了報告</button>`;
+      return `<tr>
+        <td>${escapeHtml(d.distillation_code)}</td>
+        <td>${escapeHtml(d.started_on)} ${escapeHtml(d.started_time ?? '')}</td>
+        <td>${escapeHtml(d.input_summary ?? '')}</td>
+        <td class="num">${num(d.total_input_l, 1)}</td>
+        <td><span class="badge ${badge}">${escapeHtml(d.status)}</span></td>
+        <td class="num">${d.output_l != null ? num(d.output_l, 1) : ''}</td>
+        <td>${escapeHtml(d.output_tank_name ?? '')}</td>
+        <td class="row-actions">
+          <button class="secondary small" data-detail="${d.id}">詳細</button>
+          ${completeBtn}
+        </td>
+      </tr>`;
+    })
+    .join('');
+}
+
+async function showDetail(id) {
+  const d = await apiGet(`/api/distillations/${id}`);
+  el('detailPanel').style.display = '';
+  el('detailCode').textContent = d.distillation_code;
+
+  const details = d.details.map((row) => `
+    <tr class="${row.is_cancelled ? 'muted' : ''}">
+      <td>${escapeHtml(row.lot_code ?? '')}</td>
+      <td>${escapeHtml(row.source_tank_name ?? '')}</td>
+      <td class="num">${num(row.input_l, 1)}</td>
+      <td>${row.is_cancelled ? '<span class="badge muted">取消済み</span>' : ''}</td>
+      <td>${escapeHtml(row.note ?? '')}</td>
+      <td>${row.is_cancelled || d.status === '完了'
+        ? ''
+        : `<button class="danger small" data-cancel-detail="${row.id}">取消</button>`}</td>
+    </tr>`).join('');
+
+  const residues = d.residues.length
+    ? d.residues.map((r) => `
+        <tr>
+          <td>${escapeHtml(r.collected_on)} ${escapeHtml(r.collected_time ?? '')}</td>
+          <td class="num">${num(r.quantity, 1)}</td>
+          <td class="num">${r.abv ?? ''}</td>
+          <td>${escapeHtml(r.salt_status ?? '')}</td>
+          <td>${escapeHtml(r.destination ?? '')}</td>
+        </tr>`).join('')
+    : '<tr><td colspan="5" class="empty">残渣回収記録はありません</td></tr>';
+
+  el('detailBody').innerHTML = `
+    <h3>投入明細</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>原酒受払ID</th><th>投入元</th><th class="num">投入量(L)</th><th>状態</th><th>備考</th><th></th></tr></thead>
+        <tbody>${details}</tbody>
+      </table>
+    </div>
+    <h3>残渣回収</h3>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>回収日時</th><th class="num">回収量</th><th class="num">度数</th><th>食塩</th><th>払出先</th></tr></thead>
+        <tbody>${residues}</tbody>
+      </table>
+    </div>`;
+  el('detailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+let currentDetailId = null;
+
+el('detailBody').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-cancel-detail]');
+  if (!btn) return;
+  const reason = prompt('取消理由を入力してください');
+  if (reason === null) return;
+
+  try {
+    const r = await apiPost(`/api/distillations/details/${btn.dataset.cancelDetail}/cancel`, { reason });
+    showMessage('messages', 'ok',
+      `投入明細を取り消しました（原酒をタンクへ戻しました。投入量合計 ${num(r.totalInputL, 1)}L）`);
+    await Promise.all([loadDistillations(), loadTanks()]);
+    await showDetail(currentDetailId);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+});
+
+el('distillationRows').addEventListener('click', async (e) => {
+  const detailBtn = e.target.closest('[data-detail]');
+  if (detailBtn) {
+    currentDetailId = Number(detailBtn.dataset.detail);
+    try { await showDetail(currentDetailId); }
+    catch (err) { showMessage('messages', 'error', err.message); }
+    return;
+  }
+
+  const completeBtn = e.target.closest('[data-complete]');
+  if (!completeBtn) return;
+
+  const id = completeBtn.dataset.complete;
+  const outputL = prompt('得られた浄酎量 (L) を入力してください');
+  if (outputL === null) return;
+  const outputAbv = prompt('アルコール度数 (%) を入力してください（任意）');
+  const tankList = tanks.map((t) => `${t.id}: ${t.code} ${t.name}`).join('\n');
+  const outputTankId = prompt(`払出先タンクのIDを入力してください\n\n${tankList}`);
+  if (outputTankId === null) return;
+
+  const payload = {
+    completedOn: todayStr(),
+    completedTime: nowTimeStr(),
+    outputTankId: Number(outputTankId),
+    outputL: Number(outputL),
+  };
+  if (outputAbv) payload.outputAbv = Number(outputAbv);
+
+  const residueQty = prompt('残渣回収量を入力してください（不要なら空欄）');
+  if (residueQty) {
+    payload.residue = {
+      collectedOn: todayStr(),
+      collectedTime: nowTimeStr(),
+      quantity: Number(residueQty),
+    };
+  }
+
+  try {
+    const r = await apiPost(`/api/distillations/${id}/complete`, payload);
+    showMessage('messages', 'ok',
+      `${r.distillation.distillation_code} を完了しました（浄酎タンクへ ${num(r.distillation.output_l, 1)}L を継足）`);
+    await Promise.all([loadDistillations(), loadAlerts(), loadTanks()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+el('receiptForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+
+  const payload = {
+    txnDate: el('rDate').value,
+    toTankId: Number(el('rTank').value),
+    quantity: Number(el('rQuantity').value),
+  };
+  if (el('rBrand').value) payload.rawSakeBrandId = Number(el('rBrand').value);
+  if (el('rSupplier').value.trim()) payload.supplier = el('rSupplier').value.trim();
+  if (el('rSpec').value.trim()) payload.specNote = el('rSpec').value.trim();
+
+  el('rSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/raw-sake-receipts', payload);
+    showMessage('messages', 'ok',
+      `原酒入荷を登録しました（${escapeHtml(r.tankVolume.name)} 残量 ${num(r.tankVolume.current_volume_l, 1)}L）`);
+    el('receiptForm').reset();
+    el('rDate').value = todayStr();
+    await loadTanks();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('rSubmit').disabled = false;
+  }
+});
+
+el('startForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+
+  const items = [...el('inputRows').querySelectorAll('tr')].map((tr) => ({
+    tankId: Number(tr.querySelector('.in-tank').value),
+    volumeL: Number(tr.querySelector('.in-volume').value),
+    note: tr.querySelector('.in-note').value.trim() || undefined,
+  })).filter((i) => i.tankId && i.volumeL);
+
+  if (!items.length) return showMessage('messages', 'error', '投入する原酒を1つ以上指定してください');
+
+  const payload = {
+    startedOn: el('sDate').value,
+    startedTime: el('sTime').value,
+    items,
+  };
+  if (el('sDuration').value.trim()) payload.plannedDuration = el('sDuration').value.trim();
+
+  el('sSubmit').disabled = true;
+  try {
+    const r = await apiPost('/api/distillations', payload);
+    showMessage('messages', 'ok',
+      `蒸留 ${r.distillationCode} を開始しました（投入量合計 ${num(r.totalInputL, 1)}L）`);
+    el('startForm').reset();
+    el('inputRows').innerHTML = '';
+    addInputRow();
+    recalcInputTotal();
+    el('sDate').value = todayStr();
+    el('sTime').value = nowTimeStr();
+    await Promise.all([loadDistillations(), loadTanks(), loadAlerts()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('sSubmit').disabled = false;
+  }
+});
+
+el('filterStatus').addEventListener('change', loadDistillations);
+
+el('rDate').value = todayStr();
+el('sDate').value = todayStr();
+el('sTime').value = nowTimeStr();
+
+(async () => {
+  try {
+    await loadTanks();
+    addInputRow();
+    await Promise.all([loadDistillations(), loadAlerts()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+})();
+</script>
+</body>
+</html>

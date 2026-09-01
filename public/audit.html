@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>在庫監査 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>在庫監査レポート</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      台帳全体を突合し、不整合の疑いがある箇所を洗い出します。
+      <strong>データは一切書き換えません</strong>。何度でも実行できます。
+    </p>
+    <div class="actions">
+      <button type="button" id="runBtn">監査を実行</button>
+      <span class="muted" id="generatedAt"></span>
+    </div>
+    <div class="stat-row" id="summary" style="margin-top:16px"></div>
+  </section>
+
+  <div id="report"></div>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('audit.html');
+
+/** 表を組み立てる。行が0件なら「問題なし」を出す */
+function section(title, description, headers, rows, renderRow) {
+  const body = rows.length
+    ? rows.map(renderRow).join('')
+    : `<tr><td colspan="${headers.length}" class="empty">問題は見つかりませんでした</td></tr>`;
+
+  return `<section class="panel">
+    <h2>${escapeHtml(title)} ${rows.length ? `<span class="badge danger">${rows.length}件</span>` : '<span class="badge ok">問題なし</span>'}</h2>
+    ${description ? `<p class="muted" style="margin-top:0;font-size:13px">${description}</p>` : ''}
+    <div class="table-scroll">
+      <table>
+        <thead><tr>${headers.map((h) => `<th>${escapeHtml(h)}</th>`).join('')}</tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
+async function runAudit() {
+  clearMessage('messages');
+  el('runBtn').disabled = true;
+  el('report').innerHTML = '<div class="panel"><div class="empty">監査中…</div></div>';
+
+  try {
+    const r = await apiGet('/api/audit');
+
+    el('generatedAt').textContent =
+      `最終実行: ${new Date(r.generatedAt).toLocaleString('ja-JP')}`;
+
+    el('summary').innerHTML = `
+      <div class="stat">
+        <div class="label">検出された問題</div>
+        <div class="value" style="color:${r.totalIssues ? 'var(--danger)' : 'var(--ok)'}">${r.totalIssues}</div>
+      </div>` +
+      r.sections.map((s) => `
+        <div class="stat">
+          <div class="label">${escapeHtml(s.label)}</div>
+          <div class="value" style="color:${s.count ? 'var(--danger)' : 'var(--ok)'}">${s.count}</div>
+        </div>`).join('');
+
+    const ns = r.negativeStock;
+    const negativeRows = [
+      ...ns.products.flatMap((p) => {
+        const out = [];
+        if (p.product_stock < 0) out.push({ kind: '商品', name: p.name, value: p.product_stock });
+        if (p.wip_stock < 0) out.push({ kind: '仕掛品', name: p.name, value: p.wip_stock });
+        return out;
+      }),
+      ...ns.materials.map((m) => ({ kind: '資材', name: m.name, value: m.current_stock })),
+      ...ns.tanks.map((t) => ({ kind: 'タンク', name: `${t.code} ${t.name}`, value: t.current_volume_l })),
+      ...ns.rawSakeTanks.map((t) => ({ kind: '原酒タンク', name: `${t.code} ${t.name}`, value: t.current_volume_l })),
+    ];
+
+    const os = r.orderShipments;
+    const orderRows = [
+      ...os.shippedWithoutLedger.map((o) => ({
+        kind: '出荷履歴なし',
+        detail: `${o.order_no}（${o.customer_name} / ${o.product_name} ${o.quantity}本・納品 ${o.delivered_on ?? '-'}）`,
+      })),
+      ...os.ledgerWithoutShippedStatus.map((l) => ({
+        kind: 'ステータス未更新',
+        detail: `${l.order_no}（状態: ${l.status}・出荷 ${l.history_code ?? ''} ${l.txn_date}）`,
+      })),
+      ...os.quantityMismatch.map((q) => ({
+        kind: '本数不一致',
+        detail: `${q.order_no}（${q.product_name}: 受注 ${q.order_quantity}本 ↔ 出荷 ${q.shipped_quantity}本）`,
+      })),
+    ];
+
+    const orphans = r.orphans;
+    const orphanRows = [
+      ...orphans.bottlingWithoutTankLedger.map((b) => ({
+        kind: '瓶詰めにタンク払出なし',
+        detail: `${b.history_code ?? ''} ${b.txn_date} ${b.product_name} ${b.quantity}本`,
+      })),
+      ...orphans.completedDistillationWithoutFill.map((d) => ({
+        kind: '完了蒸留に継足なし',
+        detail: `${d.distillation_code}（開始 ${d.started_on}・蒸留量 ${d.output_l ?? '-'}L）`,
+      })),
+      ...orphans.foreignKeyIssues.map((f) => ({
+        kind: '参照先が存在しない',
+        detail: `${f.table} rowid=${f.rowid} → ${f.parent}`,
+      })),
+    ];
+
+    el('report').innerHTML =
+      section(
+        '① 重複の疑いがある在庫変動',
+        '同じ日・同じ商品・同じ受払・同じ数量の行が複数あります。意図的な繰り返し作業の可能性もあるため、内容をご確認ください。',
+        ['日付', '商品', '受払', '数量', '件数', '商品履歴ID'],
+        r.duplicates,
+        (d) => `<tr>
+          <td>${escapeHtml(d.txn_date)}</td>
+          <td>${escapeHtml(d.product_name)}</td>
+          <td>${escapeHtml(d.txn_type)}</td>
+          <td class="num">${num(d.quantity)}</td>
+          <td class="num">${d.count}</td>
+          <td>${escapeHtml(d.history_codes ?? '')}</td>
+        </tr>`
+      ) +
+      section(
+        '② 在庫がマイナスになっているもの',
+        '記録漏れか、入力順の誤りが疑われます。',
+        ['区分', '対象', '現在値'],
+        negativeRows,
+        (n) => `<tr>
+          <td>${escapeHtml(n.kind)}</td>
+          <td>${escapeHtml(n.name)}</td>
+          <td class="num" style="color:var(--danger)">${num(n.value, 2)}</td>
+        </tr>`
+      ) +
+      section(
+        '③ 受注と出荷履歴の不整合',
+        `受注番号で厳密に突合しています。なお、受注にもサンプルにも紐付かない出荷が ${r.unlinkedShipmentCount} 件あります（移行した過去データでは珍しくありません）。`,
+        ['種類', '内容'],
+        orderRows,
+        (o) => `<tr><td>${escapeHtml(o.kind)}</td><td>${escapeHtml(o.detail)}</td></tr>`
+      ) +
+      section(
+        '④ レシピと資材消費の差異',
+        '瓶詰め・箱詰めについて、レシピからの理論消費量と実際の消費記録を突合しています。',
+        ['商品履歴ID', '日付', '工程', '商品', '本数', '資材', '理論', '実績', '差'],
+        r.materialConsumption,
+        (m) => `<tr>
+          <td>${escapeHtml(m.historyCode ?? '')}</td>
+          <td>${escapeHtml(m.txnDate)}</td>
+          <td>${escapeHtml(m.txnType)}</td>
+          <td>${escapeHtml(m.productName)}</td>
+          <td class="num">${num(m.quantity)}</td>
+          <td>${escapeHtml(m.materialName)}${m.note ? `<br><span class="hint">${escapeHtml(m.note)}</span>` : ''}</td>
+          <td class="num">${num(m.expected, 2)}</td>
+          <td class="num">${num(m.actual, 2)}</td>
+          <td class="num" style="color:var(--danger)">${m.diff > 0 ? '+' : ''}${num(m.diff, 2)}</td>
+        </tr>`
+      ) +
+      section(
+        '⑤ 紐付け漏れ',
+        '複数の台帳にまたがって記録されるはずの操作で、片方しか残っていないものです。',
+        ['種類', '内容'],
+        orphanRows,
+        (o) => `<tr><td>${escapeHtml(o.kind)}</td><td>${escapeHtml(o.detail)}</td></tr>`
+      );
+  } catch (err) {
+    el('report').innerHTML = '';
+    showMessage('messages', 'error', err.message);
+  } finally {
+    el('runBtn').disabled = false;
+  }
+}
+
+el('runBtn').addEventListener('click', runAudit);
+runAudit();
+</script>
+</body>
+</html>

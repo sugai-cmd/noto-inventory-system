@@ -1,0 +1,236 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>棚卸 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>棚卸の進め方</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      各表の「実測」欄に数えた値を入力して保存すると、理論値との差が自動で計算され、
+      差の符号に応じた区分（増加なら棚卸調整、減少なら欠損／欠減）で台帳に記録されます。
+      差が0の行は台帳を汚さないよう記録をスキップします。
+    </p>
+    <div class="actions">
+      <a href="/api/exports/product-stock"><button type="button" class="secondary">商品在庫CSV（実測記入欄つき）</button></a>
+      <a href="/api/exports/material-stock"><button type="button" class="secondary">資材在庫CSV</button></a>
+      <a href="/api/exports/tank-monitor"><button type="button" class="secondary">タンクCSV</button></a>
+    </div>
+    <div class="grid" style="margin-top:12px">
+      <div>
+        <label for="stDate">棚卸日</label>
+        <input type="date" id="stDate">
+      </div>
+      <div>
+        <label for="stReason">理由・メモ（全行に付記されます）</label>
+        <input type="text" id="stReason" placeholder="例: 月次実地棚卸">
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>商品・仕掛品</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>商品名称</th>
+            <th class="num">理論（商品）</th><th class="num">実測（商品）</th>
+            <th class="num">理論（仕掛品）</th><th class="num">実測（仕掛品）</th>
+            <th></th>
+          </tr>
+        </thead>
+        <tbody id="productRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>資材</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>資材名</th><th class="num">理論在庫</th><th class="num">実測</th><th>単位</th><th></th></tr>
+        </thead>
+        <tbody id="materialRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>タンク（浄酎）</h2>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>容器ID</th><th>容器名称</th>
+            <th class="num">理論液量(L)</th><th class="num">実測液量(L)</th>
+            <th class="num">実測度数(%)</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="tankRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('stocktaking.html');
+
+function commonFields() {
+  const fields = {};
+  if (el('stDate').value) fields.txnDate = el('stDate').value;
+  if (el('stReason').value.trim()) fields.reason = el('stReason').value.trim();
+  return fields;
+}
+
+/** 保存結果を共通の書式でメッセージ表示する */
+function describeDiff(diff, unit = '') {
+  if (diff === 0) return '差異なし（記録なし）';
+  const sign = diff > 0 ? '+' : '';
+  return `差異 ${sign}${num(diff, 2)}${unit}`;
+}
+
+async function loadProducts() {
+  const rows = await apiGet('/api/products/stock');
+  el('productRows').innerHTML = rows.length
+    ? rows.map((p) => `<tr data-product="${p.product_id}">
+        <td>${escapeHtml(p.name)}</td>
+        <td class="num theoretical-product">${num(p.product_stock)}</td>
+        <td><input type="number" class="actual-product" step="1" min="0" placeholder="未入力"></td>
+        <td class="num theoretical-wip">${num(p.wip_stock)}</td>
+        <td><input type="number" class="actual-wip" step="1" min="0" placeholder="未入力"></td>
+        <td><button class="small" data-save-product="${p.product_id}">保存</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="empty">商品が登録されていません</td></tr>';
+}
+
+async function loadMaterials() {
+  const rows = await apiGet('/api/materials/stock');
+  el('materialRows').innerHTML = rows.length
+    ? rows.map((m) => `<tr data-material="${m.material_id}">
+        <td>${escapeHtml(m.name)}</td>
+        <td class="num theoretical">${num(m.current_stock, 2)}</td>
+        <td><input type="number" class="actual" step="0.01" min="0" placeholder="未入力"></td>
+        <td>${escapeHtml(m.unit ?? '')}</td>
+        <td><button class="small" data-save-material="${m.material_id}">保存</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="empty">資材が登録されていません</td></tr>';
+}
+
+async function loadTanks() {
+  const rows = await apiGet('/api/tanks/monitor');
+  el('tankRows').innerHTML = rows.length
+    ? rows.map((t) => `<tr data-tank="${t.tank_id}">
+        <td>${escapeHtml(t.code)}</td>
+        <td>${escapeHtml(t.name)}</td>
+        <td class="num theoretical">${num(t.current_volume_l, 1)}</td>
+        <td><input type="number" class="actual" step="0.1" min="0" placeholder="未入力"></td>
+        <td><input type="number" class="actual-abv" step="0.1" placeholder="${t.current_abv ?? ''}"></td>
+        <td><button class="small" data-save-tank="${t.tank_id}">保存</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="empty">タンクが登録されていません</td></tr>';
+}
+
+el('productRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-save-product]');
+  if (!btn) return;
+  clearMessage('messages');
+  const tr = btn.closest('tr');
+  const productValue = tr.querySelector('.actual-product').value;
+  const wipValue = tr.querySelector('.actual-wip').value;
+
+  if (productValue === '' && wipValue === '') {
+    return showMessage('messages', 'error', '実測値（商品または仕掛品）を入力してください');
+  }
+
+  const payload = { productId: Number(btn.dataset.saveProduct), ...commonFields() };
+  if (productValue !== '') payload.actualProductStock = Number(productValue);
+  if (wipValue !== '') payload.actualWipStock = Number(wipValue);
+
+  btn.disabled = true;
+  try {
+    const r = await apiPost('/api/stocktaking/products', payload);
+    const summary = r.adjustments
+      .map((a) => `${a.target}: ${describeDiff(a.diff, '本')}`)
+      .join(' / ');
+    showMessage('messages', 'ok', `${r.product.name} の棚卸を保存しました（${summary}）`);
+    tr.querySelector('.theoretical-product').textContent = num(r.after.product_stock);
+    tr.querySelector('.theoretical-wip').textContent = num(r.after.wip_stock);
+    tr.querySelector('.actual-product').value = '';
+    tr.querySelector('.actual-wip').value = '';
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+el('materialRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-save-material]');
+  if (!btn) return;
+  clearMessage('messages');
+  const tr = btn.closest('tr');
+  const value = tr.querySelector('.actual').value;
+  if (value === '') return showMessage('messages', 'error', '実測値を入力してください');
+
+  btn.disabled = true;
+  try {
+    const r = await apiPost('/api/stocktaking/materials', {
+      materialId: Number(btn.dataset.saveMaterial),
+      actualStock: Number(value),
+      ...commonFields(),
+    });
+    showMessage('messages', 'ok', `${r.material.name} の棚卸を保存しました（${describeDiff(r.diff)}）`);
+    tr.querySelector('.theoretical').textContent = num(r.after.current_stock, 2);
+    tr.querySelector('.actual').value = '';
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+el('tankRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-save-tank]');
+  if (!btn) return;
+  clearMessage('messages');
+  const tr = btn.closest('tr');
+  const value = tr.querySelector('.actual').value;
+  if (value === '') return showMessage('messages', 'error', '実測液量を入力してください');
+
+  const payload = {
+    tankId: Number(btn.dataset.saveTank),
+    actualVolumeL: Number(value),
+    ...commonFields(),
+  };
+  const abv = tr.querySelector('.actual-abv').value;
+  if (abv !== '') payload.abv = Number(abv);
+
+  btn.disabled = true;
+  try {
+    const r = await apiPost('/api/stocktaking/tanks', payload);
+    showMessage('messages', 'ok', `${r.tank.name} の棚卸を保存しました（${describeDiff(r.diff, 'L')}）`);
+    tr.querySelector('.theoretical').textContent = num(r.after.current_volume_l, 1);
+    tr.querySelector('.actual').value = '';
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+el('stDate').value = todayStr();
+Promise.all([loadProducts(), loadMaterials(), loadTanks()])
+  .catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

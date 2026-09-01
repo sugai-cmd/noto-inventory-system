@@ -1,0 +1,110 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>売上目標 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>売上目標の設定</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      同じ月に再設定すると上書きされます。実績は納品日ベース、委託販売は実績報告された分だけを計上します。
+    </p>
+    <form id="targetForm">
+      <div class="grid">
+        <div><label for="tMonth">対象月</label><input type="month" id="tMonth" required></div>
+        <div><label for="tAmount">目標売上高（円）</label><input type="number" id="tAmount" min="0" step="1000" required></div>
+        <div><label for="tNote">備考</label><input type="text" id="tNote"></div>
+      </div>
+      <div class="actions"><button type="submit" id="tSubmit">目標を設定</button></div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>進捗</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div><label for="pMonth">表示する月</label><input type="month" id="pMonth"></div>
+    </div>
+    <div id="progressBox"></div>
+  </section>
+
+  <section class="panel">
+    <h2>設定済みの目標</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>対象月</th><th class="num">目標売上高</th><th>備考</th></tr></thead>
+        <tbody id="targetRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('sales-targets.html');
+
+async function loadProgress() {
+  const month = el('pMonth').value;
+  const p = await apiGet(`/api/sales-targets/progress?month=${month}`);
+
+  el('progressBox').innerHTML = p.targetAmount == null
+    ? `<p class="muted" style="margin:0">${escapeHtml(p.targetMonth)} の目標は未設定です（実績 ${yen(p.actualAmount)}）</p>`
+    : `<div class="stat-row">
+         <div class="stat"><div class="label">目標</div><div class="value">${yen(p.targetAmount)}</div></div>
+         <div class="stat"><div class="label">実績</div><div class="value">${yen(p.actualAmount)}</div></div>
+         <div class="stat"><div class="label">達成率</div><div class="value">${p.progressRate}<span class="unit">%</span></div></div>
+         <div class="stat"><div class="label">残り</div><div class="value">${yen(p.remainingAmount)}</div></div>
+       </div>
+       <p class="hint">内訳: 買取 ${yen(p.breakdown.purchase.amount)}（${p.breakdown.purchase.count}件） /
+          委託 ${yen(p.breakdown.consignment.amount)}（${p.breakdown.consignment.count}件）</p>`;
+}
+
+async function loadTargets() {
+  const rows = await apiGet('/api/sales-targets');
+  el('targetRows').innerHTML = rows.length
+    ? rows.map((t) => `<tr>
+        <td>${escapeHtml(t.target_month)}</td>
+        <td class="num">${yen(t.target_amount)}</td>
+        <td>${escapeHtml(t.note ?? '')}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="3" class="empty">目標が設定されていません</td></tr>';
+}
+
+el('targetForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  el('tSubmit').disabled = true;
+  try {
+    const payload = {
+      targetMonth: el('tMonth').value,
+      targetAmount: Number(el('tAmount').value),
+    };
+    if (el('tNote').value.trim()) payload.note = el('tNote').value.trim();
+
+    const t = await apiPost('/api/sales-targets', payload);
+    showMessage('messages', 'ok', `${t.target_month} の目標を ${yen(t.target_amount)} に設定しました`);
+    el('targetForm').reset();
+    el('tMonth').value = todayStr().slice(0, 7);
+    await Promise.all([loadTargets(), loadProgress()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('tSubmit').disabled = false;
+  }
+});
+
+el('pMonth').addEventListener('change', () => loadProgress().catch((e) => showMessage('messages','error',e.message)));
+
+el('tMonth').value = todayStr().slice(0, 7);
+el('pMonth').value = todayStr().slice(0, 7);
+Promise.all([loadTargets(), loadProgress()])
+  .catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

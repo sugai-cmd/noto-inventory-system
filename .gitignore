@@ -1,0 +1,19 @@
+node_modules/
+db/*.sqlite
+db/*.sqlite-journal
+db/*.sqlite-wal
+db/*.sqlite-shm
+.env
+*.log
+
+# 移行元の実データ・実行結果（業務データのためコミットしない。8-6）
+scripts/data/csv/*
+!scripts/data/csv/.gitkeep
+scripts/data/aliases.json
+scripts/migration-report/*
+!scripts/migration-report/.gitkeep
+
+# 実行ログ・バックアップ
+logs/
+backups/
+certs/
