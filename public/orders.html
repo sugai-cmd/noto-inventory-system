@@ -48,6 +48,9 @@
         <div>
           <label for="quantity">本数</label>
           <input type="number" id="quantity" min="1" step="1" value="1" required>
+          <div class="hint">
+            複数商品の受注は「明細に追加」を押して並べてください（同じ受注番号の複数行になります）
+          </div>
         </div>
 
         <div>
@@ -68,6 +71,17 @@
         <div>
           <label for="shippingFee">送料</label>
           <input type="number" id="shippingFee" min="0" step="1" value="0">
+          <div class="actions" style="margin-top:6px">
+            <button type="button" class="secondary small" id="quoteBtn">送料を計算</button>
+          </div>
+          <div class="hint" id="shippingHint"></div>
+          <div id="cartonPickWrap" style="display:none;margin-top:6px">
+            <select id="cartonPick"></select>
+            <div class="actions" style="margin-top:6px">
+              <button type="button" class="secondary small" id="cartonApplyBtn">この段ボールで計算</button>
+              <button type="button" class="secondary small" id="cartonSaveBtn">対応表に追加</button>
+            </div>
+          </div>
         </div>
 
         <div>
@@ -112,6 +126,17 @@
           <label for="deliveryAddress">配送先</label>
           <input type="text" id="deliveryAddress" placeholder="住所・メモ">
         </div>
+      </div>
+
+      <div class="actions">
+        <button type="button" class="secondary" id="addItemBtn">明細に追加</button>
+      </div>
+
+      <div class="table-scroll" id="itemsWrap" style="display:none;margin-top:12px">
+        <table>
+          <thead><tr><th>商品</th><th class="num">本数</th><th class="num">単価</th><th class="num">売価</th><th></th></tr></thead>
+          <tbody id="itemRows"></tbody>
+        </table>
       </div>
 
       <div style="margin-top:12px">
@@ -289,13 +314,14 @@ el('orderForm').addEventListener('submit', async (e) => {
   clearMessage('messages');
 
   if (!customerSelect.value) return showMessage('messages', 'error', '得意先を選択してください');
-  if (!productSelect.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  const items = currentItems();
+  if (!items.length) return showMessage('messages', 'error', '商品を選択してください');
 
   const payload = {
     orderedOn: el('orderedOn').value,
     customerId: customerSelect.value.id,
-    productId: productSelect.value.id,
-    quantity: Number(el('quantity').value),
+    items: items.map((i) => ({ productId: i.productId, quantity: i.quantity })),
     shippingFee: Number(el('shippingFee').value || 0),
     salesMethod: el('salesMethod').value,
     deliveryMethod: el('deliveryMethod').value,
@@ -314,7 +340,9 @@ el('orderForm').addEventListener('submit', async (e) => {
   el('submitBtn').disabled = true;
   try {
     const order = await apiPost('/api/orders', payload);
-    showMessage('messages', 'ok', `受注 ${order.order_no} を登録しました（合計 ${yen(order.total_amount)}）`);
+    const total = order.lines.reduce((sum, l) => sum + (l.total_amount ?? 0), 0);
+    showMessage('messages', 'ok',
+      `受注 ${order.order_no} を登録しました（${order.lines.length}明細・合計 ${yen(total)}）`);
     resetForm();
     await loadOrders();
   } catch (err) {
@@ -334,7 +362,135 @@ function resetForm() {
   el('productStockHint').textContent = '';
   el('paymentHint').textContent = '';
   el('invoiceHint').textContent = '';
+  items = [];
+  renderItems();
+  el('shippingHint').textContent = '';
+  el('cartonPickWrap').style.display = 'none';
 }
+
+// --- 明細（1受注で複数商品＝同じ受注番号の複数行） --------------------------
+
+let items = [];
+
+/** 明細に積んだものがあればそれ、無ければ今フォームで選んでいる1件 */
+function currentItems() {
+  if (items.length) return items;
+  if (!productSelect.value) return [];
+  return [
+    {
+      productId: productSelect.value.id,
+      productName: productSelect.value.name,
+      quantity: Number(el('quantity').value),
+      unitPrice: Number(el('unitPrice').value) || null,
+      salesAmount: Number(el('salesAmount').value) || null,
+    },
+  ];
+}
+
+function renderItems() {
+  el('itemsWrap').style.display = items.length ? '' : 'none';
+  el('itemRows').innerHTML = items
+    .map((item, i) => `<tr>
+      <td>${escapeHtml(item.productName)}</td>
+      <td class="num">${num(item.quantity)}</td>
+      <td class="num">${yen(item.unitPrice)}</td>
+      <td class="num">${yen(item.salesAmount)}</td>
+      <td><button type="button" class="danger small" data-item-del="${i}">削除</button></td>
+    </tr>`)
+    .join('');
+}
+
+el('addItemBtn').addEventListener('click', () => {
+  clearMessage('messages');
+  if (!productSelect.value) return showMessage('messages', 'error', '商品を選択してください');
+  const quantity = Number(el('quantity').value);
+  if (!quantity || quantity < 1) return showMessage('messages', 'error', '本数を入力してください');
+
+  items.push({
+    productId: productSelect.value.id,
+    productName: productSelect.value.name,
+    quantity,
+    unitPrice: Number(el('unitPrice').value) || null,
+    salesAmount: Number(el('salesAmount').value) || null,
+  });
+  renderItems();
+  productSelect.reset();
+  el('quantity').value = 1;
+  el('productStockHint').textContent = '';
+});
+
+el('itemRows').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-item-del]');
+  if (!btn) return;
+  items.splice(Number(btn.dataset.itemDel), 1);
+  renderItems();
+});
+
+// --- 送料の自動計算 ----------------------------------------------------------
+
+async function quoteShipping(cartonSize) {
+  clearMessage('messages');
+  const list = currentItems();
+  if (!list.length) return showMessage('messages', 'error', '商品を選択してください');
+
+  const address = el('deliveryAddress').value.trim() || customerSelect.value?.address || '';
+  const payload = {
+    address,
+    items: list.map((i) => ({ productId: i.productId, quantity: i.quantity })),
+  };
+  if (cartonSize) payload.cartonSize = cartonSize;
+
+  try {
+    const q = await apiPost('/api/shipping/quote', payload);
+
+    if (q.resolved) {
+      el('shippingFee').value = q.fee;
+      el('shippingHint').textContent =
+        `${q.prefecture}（${q.zone}）× ${q.cartonSize} → ${yen(q.fee)}`;
+      el('cartonPickWrap').style.display = 'none';
+      recalcTotal();
+      return;
+    }
+
+    el('shippingHint').textContent = q.reasons.join(' / ');
+    // 段ボールさえ決まれば計算できる状態なら、その場で選べるようにする
+    const canPick = q.zone && q.cartonOptions.length;
+    el('cartonPickWrap').style.display = canPick ? '' : 'none';
+    if (canPick) {
+      el('cartonPick').innerHTML = q.cartonOptions
+        .map((c) => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`)
+        .join('');
+    }
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
+
+el('quoteBtn').addEventListener('click', () => quoteShipping());
+el('cartonApplyBtn').addEventListener('click', () => quoteShipping(el('cartonPick').value));
+
+el('cartonSaveBtn').addEventListener('click', async () => {
+  clearMessage('messages');
+  const list = currentItems();
+  if (list.length !== 1) {
+    return showMessage('messages', 'error',
+      '対応表は「商品×本数」の1対1なので、明細が1件のときだけ追加できます');
+  }
+  try {
+    await apiPost('/api/shipping/carton-rules', {
+      productId: list[0].productId,
+      quantity: list[0].quantity,
+      cartonSize: el('cartonPick').value,
+    });
+    const saved = el('cartonPick').value;
+    // 先に再計算する（quoteShippingが冒頭でメッセージを消すため、順番を逆にすると表示が消える）
+    await quoteShipping();
+    showMessage('messages', 'ok',
+      `対応表に追加しました（${list[0].productName} ${list[0].quantity}本 → ${saved}）。次回から自動で決まります`);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
 
 /** 一覧の絞り込み条件をそのままCSV出力にも引き継ぐ */
 function currentFilterParams() {

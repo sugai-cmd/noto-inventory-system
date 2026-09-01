@@ -25,6 +25,29 @@
     </form>
   </section>
 
+  <section class="panel" id="notesPanel" style="display:none">
+    <h2>営業メモ</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      訪問・提案・やりとりの記録です。上書きではなく追記していきます。
+    </p>
+    <form id="noteForm">
+      <div class="grid">
+        <div><label for="noteDate">日付</label><input type="date" id="noteDate" required></div>
+        <div style="grid-column:span 2">
+          <label for="noteBody">内容</label>
+          <input type="text" id="noteBody" placeholder="例: 新商品を提案。次回は9月に再訪" required>
+        </div>
+      </div>
+      <div class="actions"><button type="submit">メモを追加</button></div>
+    </form>
+    <div class="table-scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>日付</th><th>内容</th><th>記録者</th><th></th></tr></thead>
+        <tbody id="noteRows"></tbody>
+      </table>
+    </div>
+  </section>
+
   <section class="panel" id="recipePanel" style="display:none">
     <h2>製品レシピ</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
@@ -59,6 +82,38 @@
         <tbody id="listRows"></tbody>
       </table>
     </div>
+  </section>
+
+  <section class="panel">
+    <h2>CSVで一括登録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      得意先・資材・酒蔵は、表計算ソフトからコピーしたCSVを貼り付けて一括登録できます。
+      1行目は見出しです。<strong>すでに同じ名前がある行は更新</strong>になります。
+      まず「確認だけする」で内容を見てから取り込んでください。
+    </p>
+    <div class="grid">
+      <div>
+        <label for="importKind">種別</label>
+        <select id="importKind">
+          <option value="customers">得意先</option>
+          <option value="materials">資材</option>
+          <option value="breweries">酒蔵</option>
+        </select>
+      </div>
+      <div style="grid-column:span 2">
+        <label for="importHeader">見出し行（このとおりに並べてください）</label>
+        <input type="text" id="importHeader" readonly>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label for="importCsv">CSV</label>
+      <textarea id="importCsv" rows="6" placeholder="見出し行を含めて貼り付けてください"></textarea>
+    </div>
+    <div class="actions">
+      <button type="button" class="secondary" id="importDryRun">確認だけする</button>
+      <button type="button" id="importRun">取り込む</button>
+    </div>
+    <div id="importResult"></div>
   </section>
 </main>
 
@@ -137,6 +192,7 @@ const MASTERS = {
       { key: 'list_price', label: '上代', num: true, yen: true },
       { key: 'category', label: 'カテゴリ' },
     ],
+    extraActions: [{ action: 'duplicate', label: '複製' }],
   },
 
   tanks: {
@@ -145,9 +201,10 @@ const MASTERS = {
     nameKey: 'name',
     hint: 'タンク操作・蒸留画面で選べる容器の一覧です。残量は入出庫履歴から再計算されるため、ここでは編集できません。',
     fields: [
+      { key: 'containerType', label: '容器種別', type: 'tankType',
+        hint: '種別を選ぶと容器IDが自動で決まります' },
       { key: 'code', label: '容器ID', type: 'text', required: true, createOnly: true },
       { key: 'name', label: '容器名称', type: 'text', required: true },
-      { key: 'containerType', label: '容器タイプ', type: 'text' },
       { key: 'maxVolumeL', label: '最大容量(L)', type: 'number', step: '0.1' },
       { key: 'location', label: '設置場所', type: 'text' },
       { key: 'status', label: '状態', type: 'text', placeholder: '使用中 / 空' },
@@ -164,7 +221,10 @@ const MASTERS = {
       { key: 'max_volume_l', label: '最大容量', format: (r) => (r.max_volume_l != null ? `${num(r.max_volume_l, 1)}L` : '') },
       { key: 'location', label: '設置場所' },
       { key: 'status', label: '状態' },
+      { key: 'discarded_on', label: '廃棄' },
     ],
+    extraActions: [{ action: 'discard', label: '廃棄', danger: true }],
+    listQuery: '?includeDiscarded=1',
   },
 
   breweries: {
@@ -226,6 +286,7 @@ let currentTab = 'customers';
 let editingId = null;
 let records = [];
 let breweries = [];
+let tankPrefixes = [];
 let materials = [];
 let recipeDraft = [];
 
@@ -281,7 +342,15 @@ function renderForm() {
       const ph = f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : '';
 
       let control;
-      if (f.type === 'brewery') {
+      if (f.type === 'tankType') {
+        control =
+          `<select id="f_${f.key}"${disabled}>
+             <option value="">（未設定）</option>
+             ${tankPrefixes.map((t) =>
+               `<option value="${escapeHtml(t.containerType)}">${escapeHtml(t.containerType)}（${escapeHtml(t.prefix)}）</option>`
+             ).join('')}
+           </select>`;
+      } else if (f.type === 'brewery') {
         control =
           `<select id="f_${f.key}"${disabled}>
              <option value="">（未設定）</option>
@@ -309,6 +378,21 @@ function renderForm() {
     })
     .join('');
 
+  const tankTypeSelect = el('f_containerType');
+  if (tankTypeSelect && currentTab === 'tanks') {
+    tankTypeSelect.addEventListener('change', async () => {
+      if (editingId != null || !tankTypeSelect.value) return;
+      try {
+        const next = await apiGet(
+          `/api/tanks/next-code?containerType=${encodeURIComponent(tankTypeSelect.value)}`
+        );
+        el('f_code').value = next.code;
+      } catch (err) {
+        showMessage('messages', 'error', err.message);
+      }
+    });
+  }
+
   const brewerySelect = el('f_brewery');
   if (brewerySelect) {
     brewerySelect.addEventListener('change', () => {
@@ -317,6 +401,7 @@ function renderForm() {
   }
 
   el('recipePanel').style.display = s.hasRecipe && editing ? '' : 'none';
+  el('notesPanel').style.display = currentTab === 'customers' && editing ? '' : 'none';
 }
 
 /** 一覧の行（スネークケース）を入力欄（キャメルケース）に流し込む */
@@ -428,7 +513,7 @@ async function loadList() {
   el('listHead').innerHTML =
     s.columns.map((c) => `<th${c.num ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('') +
     '<th></th>';
-  records = await apiGet(s.endpoint);
+  records = await apiGet(`${s.endpoint}${s.listQuery ?? ''}`);
   renderRows();
 }
 
@@ -454,8 +539,14 @@ function renderRows() {
         const del = s.canDelete
           ? `<button type="button" class="danger small" data-del="${r.id}">削除</button>`
           : '';
-        return `<tr>${cells}<td><div class="row-actions">
-            <button type="button" class="secondary small" data-edit="${r.id}">編集</button>${del}
+        const extra = (s.extraActions ?? [])
+          .filter(() => !r.discarded_on)
+          .map((a) =>
+            `<button type="button" class="${a.danger ? 'danger' : 'secondary'} small"
+                     data-action="${a.action}" data-id="${r.id}">${escapeHtml(a.label)}</button>`)
+          .join('');
+        return `<tr class="${r.discarded_on ? 'muted' : ''}">${cells}<td><div class="row-actions">
+            <button type="button" class="secondary small" data-edit="${r.id}">編集</button>${del}${extra}
           </div></td></tr>`;
       }).join('')
     : `<tr><td colspan="${span}" class="empty">${q ? '該当するものがありません' : `${s.label}が登録されていません`}</td></tr>`;
@@ -466,9 +557,45 @@ el('listFilter').addEventListener('input', renderRows);
 el('listRows').addEventListener('click', async (e) => {
   const edit = e.target.closest('[data-edit]');
   const del = e.target.closest('[data-del]');
+  const action = e.target.closest('[data-action]');
   if (edit) return startEdit(Number(edit.dataset.edit));
   if (del) return removeRecord(Number(del.dataset.del));
+  if (action?.dataset.action === 'discard') return discardTank(Number(action.dataset.id));
+  if (action?.dataset.action === 'duplicate') return duplicateProduct(Number(action.dataset.id));
 });
+
+/** タンクの廃棄。行は消さずに一覧から外れる */
+async function discardTank(id) {
+  const tank = records.find((r) => r.id === id);
+  const reason = prompt(`${tank?.name ?? id} を廃棄します。理由を入力してください`);
+  if (reason == null) return;
+
+  clearMessage('messages');
+  try {
+    await apiPost(`/api/tanks/${id}/discard`, { reason: reason.trim() || null });
+    showMessage('messages', 'ok', `${tank?.name ?? id} を廃棄しました（履歴は残ります）`);
+    await loadList();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
+
+/** 商品の複製。レシピごと引き継ぎ、在庫の起点は引き継がない */
+async function duplicateProduct(id) {
+  const product = records.find((r) => r.id === id);
+  const name = prompt('複製後の商品名称を入力してください', `${product?.name ?? ''} のコピー`);
+  if (name == null || !name.trim()) return;
+
+  clearMessage('messages');
+  try {
+    const created = await apiPost(`/api/products/${id}/duplicate`, { name: name.trim() });
+    showMessage('messages', 'ok',
+      `「${created.name}」を作りました（レシピも引き継いでいます。在庫の起点は0です）`);
+    await loadList();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
 
 async function startEdit(id) {
   const s = spec();
@@ -480,6 +607,7 @@ async function startEdit(id) {
   fillForm(record);
 
   if (s.hasRecipe) await loadRecipe(id);
+  if (currentTab === 'customers') await loadNotes(id);
   el('formTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
@@ -581,17 +709,115 @@ el('recipeSave').addEventListener('click', async () => {
   }
 });
 
+// --- 営業メモ ---------------------------------------------------------------
+
+async function loadNotes(customerId) {
+  const notes = await apiGet(`/api/customers/${customerId}/notes`);
+  el('noteDate').value = todayStr();
+  el('noteRows').innerHTML = notes.length
+    ? notes.map((n) => `<tr>
+        <td>${escapeHtml(n.noted_on)}</td>
+        <td>${escapeHtml(n.body)}</td>
+        <td>${escapeHtml(n.created_by_name ?? '')}</td>
+        <td><button type="button" class="danger small" data-note-del="${n.id}">削除</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">メモがありません</td></tr>';
+}
+
+el('noteForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  try {
+    await apiPost(`/api/customers/${editingId}/notes`, {
+      notedOn: el('noteDate').value,
+      body: el('noteBody').value.trim(),
+    });
+    el('noteBody').value = '';
+    await loadNotes(editingId);
+    showMessage('messages', 'ok', 'メモを追加しました');
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+el('noteRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-note-del]');
+  if (!btn || !confirm('このメモを削除します。よろしいですか？')) return;
+  try {
+    await api('DELETE', `/api/customers/notes/${btn.dataset.noteDel}`);
+    await loadNotes(editingId);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+});
+
+// --- CSV一括登録 ------------------------------------------------------------
+
+async function loadImportTemplate() {
+  const template = await apiGet(`/api/master-import/template/${el('importKind').value}`);
+  el('importHeader').value = template.header;
+}
+
+el('importKind').addEventListener('change', () => {
+  el('importResult').innerHTML = '';
+  loadImportTemplate().catch((err) => showMessage('messages', 'error', err.message));
+});
+
+async function runImport(dryRun) {
+  clearMessage('messages');
+  el('importResult').innerHTML = '';
+  const csv = el('importCsv').value.trim();
+  if (!csv) return showMessage('messages', 'error', 'CSVを貼り付けてください');
+
+  try {
+    const r = await apiPost('/api/master-import', {
+      kind: el('importKind').value,
+      csv,
+      dryRun,
+    });
+
+    if (r.errors.length) {
+      el('importResult').innerHTML =
+        `<div class="msg error"><strong>取り込めませんでした</strong>
+           <ul>${r.errors.map((e) => `<li>${e.line}行目: ${escapeHtml(e.message)}</li>`).join('')}</ul>
+         </div>`;
+      return;
+    }
+
+    el('importResult').innerHTML =
+      `<div class="msg ok">
+         ${dryRun ? '確認結果' : '取り込みました'}：新規 ${r.created}件 / 更新 ${r.updated}件
+         <ul>${r.rows.slice(0, 30).map((row) =>
+           `<li>${row.line}行目: ${escapeHtml(row.name)}（${escapeHtml(row.action)}）</li>`).join('')}</ul>
+       </div>`;
+
+    if (!dryRun) {
+      el('importCsv').value = '';
+      if (currentTab === el('importKind').value) await loadList();
+      if (el('importKind').value === 'breweries') breweries = await apiGet('/api/breweries');
+      if (el('importKind').value === 'materials') materials = await apiGet('/api/materials');
+    }
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
+
+el('importDryRun').addEventListener('click', () => runImport(true));
+el('importRun').addEventListener('click', () => runImport(false));
+
 // --- 初期化 -----------------------------------------------------------------
 
 (async () => {
   try {
-    [breweries, materials] = await Promise.all([
+    [breweries, materials, tankPrefixes] = await Promise.all([
       apiGet('/api/breweries'),
       apiGet('/api/materials'),
+      apiGet('/api/tanks/prefixes'),
     ]);
   } catch {
     // 取得できなくても得意先・商品の登録はできるので、ここでは止めない
   }
+  await loadImportTemplate();
   await switchTab('customers');
 })().catch((err) => showMessage('messages', 'error', err.message));
 </script>

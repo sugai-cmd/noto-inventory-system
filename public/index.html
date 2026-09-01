@@ -49,6 +49,40 @@
   </section>
 
   <section class="panel">
+    <h2>本日の出荷予定</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>受注番号</th><th>得意先</th><th>商品</th><th class="num">本数</th><th>配送方法</th><th>届け先</th></tr></thead>
+        <tbody id="shipmentsDueRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>入金予定日を過ぎている受注</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>受注番号</th><th>得意先</th><th>商品</th><th class="num">金額</th><th>入金予定日</th><th class="num">超過</th></tr></thead>
+        <tbody id="unpaidRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>次回注文の予測</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      直近の注文間隔の平均から見込んだ日付です。間隔のばらつきが大きい得意先は確度「低」と出るので、
+      催促の判断はそちらも見てください。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>得意先</th><th>前回の注文</th><th class="num">平均間隔</th><th>次回予測</th><th>確度</th><th class="num">回数</th></tr></thead>
+        <tbody id="forecastRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
     <h2>在庫が少ない商品</h2>
     <div class="table-scroll">
       <table>
@@ -77,13 +111,18 @@ const LOW_STOCK_THRESHOLD = 20;
 
 (async () => {
   try {
-    const [orders, products, materials, distillations, staleDistillations, progress] = await Promise.all([
+    const [orders, products, materials, distillations, staleDistillations, progress,
+           shipmentsDue, unpaid, forecast, staleLots] = await Promise.all([
       apiGet('/api/orders?status=' + encodeURIComponent('未着手')),
       apiGet('/api/products/stock'),
       apiGet('/api/materials/stock'),
       apiGet('/api/distillations?status=' + encodeURIComponent('蒸留中')),
       apiGet('/api/distillations/alerts'),
       apiGet('/api/sales-targets/progress'),
+      apiGet('/api/dashboard/shipments-due'),
+      apiGet('/api/dashboard/unpaid'),
+      apiGet('/api/dashboard/order-forecast'),
+      apiGet('/api/wip-lots/stale'),
     ]);
 
     const shortages = materials.filter((m) => m.shortage);
@@ -95,14 +134,31 @@ const LOW_STOCK_THRESHOLD = 20;
       products.reduce((sum, p) => sum + (p.product_stock ?? 0), 0)
     );
 
+    const alertBlocks = [];
     if (staleDistillations.length) {
-      el('alerts').innerHTML = `<div class="msg error">
+      alertBlocks.push(`<div class="msg error">
         <strong>24時間以上「蒸留中」のままの蒸留が ${staleDistillations.length} 件あります</strong>
         <ul>${staleDistillations.map((d) =>
           `<li>${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)} ${escapeHtml(d.started_time)}・経過 ${d.elapsed_hours}時間）</li>`
         ).join('')}</ul>
-      </div>`;
+        <p style="margin:6px 0 0"><a href="distillation.html">蒸留画面で確認する</a></p>
+      </div>`);
     }
+    if (staleLots.length) {
+      alertBlocks.push(`<div class="msg error">
+        <strong>瓶詰めから7日以上たっている仕掛品が ${staleLots.length} 件あります</strong>
+        <ul>${staleLots.slice(0, 10).map((l) =>
+          `<li>${escapeHtml(l.history_code)}／${escapeHtml(l.product_name)} 残${num(l.remaining)}本（瓶詰め ${escapeHtml(l.txn_date)}・${l.elapsed_days}日経過）</li>`
+        ).join('')}</ul>
+        <p style="margin:6px 0 0"><a href="bottling.html">箱詰め画面へ</a></p>
+      </div>`);
+    }
+    if (unpaid.length) {
+      alertBlocks.push(`<div class="msg error">
+        <strong>入金予定日を過ぎて未入金の受注が ${unpaid.length} 件あります</strong>
+      </div>`);
+    }
+    el('alerts').innerHTML = alertBlocks.join('');
 
     // 売上目標に対する進捗（目標未設定なら設定を促す）
     el('salesProgress').innerHTML = progress.targetAmount == null
@@ -130,6 +186,40 @@ const LOW_STOCK_THRESHOLD = 20;
           <td>${escapeHtml(o.requested_delivery_on ?? '')}</td>
         </tr>`).join('')
       : '<tr><td colspan="7" class="empty">未着手の受注はありません</td></tr>';
+
+    el('shipmentsDueRows').innerHTML = shipmentsDue.length
+      ? shipmentsDue.map((o) => `<tr>
+          <td>${escapeHtml(o.order_no)}${o.line_no > 1 ? `-${o.line_no}` : ''}</td>
+          <td>${escapeHtml(o.customer_name)}</td>
+          <td>${escapeHtml(o.product_name)}</td>
+          <td class="num">${num(o.quantity)}</td>
+          <td>${escapeHtml(o.delivery_method ?? '')}</td>
+          <td>${escapeHtml(o.delivery_address ?? '')}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="6" class="empty">本日の出荷予定はありません</td></tr>';
+
+    el('unpaidRows').innerHTML = unpaid.length
+      ? unpaid.map((o) => `<tr>
+          <td>${escapeHtml(o.order_no)}${o.line_no > 1 ? `-${o.line_no}` : ''}</td>
+          <td>${escapeHtml(o.customer_name)}</td>
+          <td>${escapeHtml(o.product_name)}</td>
+          <td class="num">${yen(o.total_amount)}</td>
+          <td>${escapeHtml(o.payment_due_on)}</td>
+          <td class="num">${o.overdue_days}日</td>
+        </tr>`).join('')
+      : '<tr><td colspan="6" class="empty">期日を過ぎた未入金はありません</td></tr>';
+
+    const CONFIDENCE_BADGE = { 高: 'ok', 中: 'warn', 低: 'muted' };
+    el('forecastRows').innerHTML = forecast.length
+      ? forecast.map((f) => `<tr>
+          <td>${escapeHtml(f.customerName)}</td>
+          <td>${escapeHtml(f.lastOrderedOn)}</td>
+          <td class="num">${f.averageIntervalDays}日</td>
+          <td>${escapeHtml(f.predictedNextOn)}</td>
+          <td><span class="badge ${CONFIDENCE_BADGE[f.confidence]}">${escapeHtml(f.confidence)}</span></td>
+          <td class="num">${f.orderCount}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="6" class="empty">予測できる得意先がまだありません（3回以上の注文が必要です）</td></tr>';
 
     const lowStock = products.filter((p) => (p.product_stock ?? 0) <= LOW_STOCK_THRESHOLD);
     el('lowStockRows').innerHTML = lowStock.length

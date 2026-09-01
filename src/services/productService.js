@@ -188,4 +188,51 @@ function findById(id) {
   return db.prepare('SELECT * FROM products WHERE id = ?').get(id);
 }
 
-module.exports = { registerProductWithRecipe, updateProduct, updateProductRecipe, getRecipe };
+
+/**
+ * 既存商品からの複製登録（GAS版 README 3章「商品は複製登録可」）。
+ * 容量違い・ラベル違いの商品を作るときに、レシピごと引き継ぐ。
+ * 名前とコードはUNIQUEなので必ず新しい値を指定してもらう。
+ */
+function duplicateProduct(sourceId, overrides = {}, actor = null) {
+  const db = getConnection();
+  const source = db.prepare('SELECT * FROM products WHERE id = ?').get(sourceId);
+  if (!source) throw new NotFoundError(`複製元の商品が見つかりません (id=${sourceId})`);
+  if (!overrides.name || !String(overrides.name).trim()) {
+    throw new BusinessRuleError('複製後の商品名称を入力してください');
+  }
+
+  const recipe = db
+    .prepare('SELECT material_id, qty_required, process FROM product_recipes WHERE product_id = ?')
+    .all(sourceId)
+    .map((r) => ({ materialId: r.material_id, qtyRequired: r.qty_required, process: r.process }));
+
+  const input = {
+    // コードはUNIQUEなので引き継がない（指定があればそれを使う）
+    code: overrides.code ?? null,
+    name: String(overrides.name).trim(),
+    volumeMl: overrides.volumeMl ?? source.volume_ml ?? undefined,
+    abv: overrides.abv ?? source.abv ?? undefined,
+    containerType: overrides.containerType ?? source.container_type ?? undefined,
+    unit: overrides.unit ?? source.unit ?? undefined,
+    listPrice: overrides.listPrice ?? source.list_price ?? undefined,
+    janCode: overrides.janCode ?? undefined, // JANは商品ごとに違うので引き継がない
+    targetExtractSpec: overrides.targetExtractSpec ?? source.target_extract_spec ?? undefined,
+    category: overrides.category ?? source.category ?? undefined,
+    taxPerUnit: overrides.taxPerUnit ?? source.tax_per_unit ?? undefined,
+    // 在庫の起点は引き継がない。複製した瞬間に在庫があることになってしまう。
+    initialProductStock: 0,
+    initialWipStock: 0,
+    note: overrides.note ?? source.note ?? undefined,
+    recipe: overrides.copyRecipe === false ? undefined : recipe,
+  };
+  for (const key of Object.keys(input)) {
+    if (input[key] === undefined || input[key] === null) delete input[key];
+  }
+  if (overrides.code) input.code = overrides.code;
+
+  return registerProductWithRecipe(input, actor);
+}
+
+module.exports = {
+  duplicateProduct, registerProductWithRecipe, updateProduct, updateProductRecipe, getRecipe };

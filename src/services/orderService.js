@@ -4,7 +4,7 @@ const { getConnection } = require('../db/connection');
 const orderModel = require('../models/orderModel');
 const { nextOrderNo, nextProductHistoryCode } = require('../utils/codeGenerator');
 const { calcPaymentDueOn, today } = require('../utils/dateUtil');
-const { NotFoundError, ConflictError } = require('../utils/errors');
+const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
 
 /**
@@ -53,74 +53,114 @@ function getOrderDefaults({ customerId, productId, quantity, deliveredOn }) {
 /**
  * 受注登録。単価・掛け率は登録時点のマスタ値をスナップショットとして保存する
  * （後からマスタが変わっても過去の受注金額が変わらないようにするため）。
+ *
+ * 1つの受注で複数商品を頼まれた場合は、**同じ受注番号で複数行**になる
+ * （DATA_STRUCTURE.md 3章。GAS版の「商品明細は行追加式」と同じ形）。
+ * itemsを渡せば複数明細、従来どおり productId / quantity を直接渡せば1明細。
+ * 送料は受注番号に対して1つなので、1行目にだけ載せる。
  */
 function submitOrder(input, actor = null) {
   const db = getConnection();
+
+  const items = normalizeItems(input);
 
   const run = db.transaction(() => {
     const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(input.customerId);
     if (!customer) throw new NotFoundError(`得意先が見つかりません (id=${input.customerId})`);
 
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(input.productId);
-    if (!product) throw new NotFoundError(`商品が見つかりません (id=${input.productId})`);
-
-    const unitPrice = input.unitPrice ?? product.list_price ?? 0;
-    const markupRate = input.markupRate ?? customer.markup_rate ?? 1;
-    const salesAmount = input.salesAmount ?? Math.round(unitPrice * input.quantity * markupRate);
-    const shippingFee = input.shippingFee ?? 0;
-    const totalAmount = input.totalAmount ?? salesAmount + shippingFee;
-
     const orderNo = input.orderNo ?? nextOrderNo(db, input.orderedOn);
+    const shippingFee = input.shippingFee ?? 0;
+    const markupRate = input.markupRate ?? customer.markup_rate ?? 1;
 
-    const result = db
-      .prepare(
-        `INSERT INTO orders
-           (order_no, ordered_on, customer_id, product_id, quantity, unit_price, markup_rate,
-            sales_amount, shipping_fee, total_amount, requested_delivery_on, invoiced_on,
-            payment_due_on, paid_on, sales_method, delivery_method, status, delivery_address,
-            delivered_on, note, created_by)
-         VALUES
-           (@orderNo, @orderedOn, @customerId, @productId, @quantity, @unitPrice, @markupRate,
-            @salesAmount, @shippingFee, @totalAmount, @requestedDeliveryOn, @invoicedOn,
-            @paymentDueOn, @paidOn, @salesMethod, @deliveryMethod, @status, @deliveryAddress,
-            @deliveredOn, @note, @createdBy)`
-      )
-      .run({
-        orderNo,
-        orderedOn: input.orderedOn,
-        customerId: input.customerId,
-        productId: input.productId,
-        quantity: input.quantity,
-        unitPrice,
-        markupRate,
-        salesAmount,
-        shippingFee,
-        totalAmount,
-        requestedDeliveryOn: input.requestedDeliveryOn ?? null,
-        invoicedOn: input.invoicedOn ?? null,
-        paymentDueOn: input.paymentDueOn ?? null,
-        paidOn: null,
-        salesMethod: input.salesMethod ?? null,
-        deliveryMethod: input.deliveryMethod ?? null,
-        status: input.status ?? '未着手',
-        deliveryAddress: input.deliveryAddress ?? null,
-        deliveredOn: null,
-        note: input.note ?? null,
-        createdBy: actor?.id ?? null,
-      });
+    const created = items.map((item, index) => {
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(item.productId);
+      if (!product) throw new NotFoundError(`商品が見つかりません (id=${item.productId})`);
 
-    const order = orderModel.findById(result.lastInsertRowid);
+      const unitPrice = item.unitPrice ?? product.list_price ?? 0;
+      const salesAmount =
+        item.salesAmount ?? Math.round(unitPrice * item.quantity * markupRate);
+      // 送料は受注単位。1行目にだけ計上して二重計上を防ぐ。
+      const lineShippingFee = index === 0 ? shippingFee : 0;
+      const totalAmount =
+        items.length === 1 && input.totalAmount != null
+          ? input.totalAmount
+          : salesAmount + lineShippingFee;
+
+      const result = db
+        .prepare(
+          `INSERT INTO orders
+             (order_no, line_no, ordered_on, customer_id, product_id, quantity, unit_price,
+              markup_rate, sales_amount, shipping_fee, total_amount, requested_delivery_on,
+              invoiced_on, payment_due_on, paid_on, sales_method, delivery_method, status,
+              delivery_address, shipping_zone, carton_size, delivered_on, note, created_by)
+           VALUES
+             (@orderNo, @lineNo, @orderedOn, @customerId, @productId, @quantity, @unitPrice,
+              @markupRate, @salesAmount, @shippingFee, @totalAmount, @requestedDeliveryOn,
+              @invoicedOn, @paymentDueOn, @paidOn, @salesMethod, @deliveryMethod, @status,
+              @deliveryAddress, @shippingZone, @cartonSize, @deliveredOn, @note, @createdBy)`
+        )
+        .run({
+          orderNo,
+          lineNo: index + 1,
+          orderedOn: input.orderedOn,
+          customerId: input.customerId,
+          productId: item.productId,
+          quantity: item.quantity,
+          unitPrice,
+          markupRate,
+          salesAmount,
+          shippingFee: lineShippingFee,
+          totalAmount,
+          requestedDeliveryOn: input.requestedDeliveryOn ?? null,
+          invoicedOn: input.invoicedOn ?? null,
+          paymentDueOn: input.paymentDueOn ?? null,
+          paidOn: null,
+          salesMethod: input.salesMethod ?? null,
+          deliveryMethod: input.deliveryMethod ?? null,
+          status: input.status ?? '未着手',
+          deliveryAddress: input.deliveryAddress ?? null,
+          shippingZone: input.shippingZone ?? null,
+          cartonSize: input.cartonSize ?? null,
+          deliveredOn: null,
+          note: input.note ?? null,
+          createdBy: actor?.id ?? null,
+        });
+
+      return orderModel.findById(result.lastInsertRowid);
+    });
+
+    const summaryLines = created
+      .map((o) => `${o.product_name} ${o.quantity}本`)
+      .join(' / ');
     operationLogService.record({
       user: actor,
       action: 'order.create',
       targetType: 'orders',
-      targetId: order.id,
-      summary: `受注 ${order.order_no} を登録（${order.customer_name} / ${order.product_name} ${order.quantity}本）`,
+      targetId: created[0].id,
+      summary: `受注 ${orderNo} を登録（${created[0].customer_name} / ${summaryLines}）`,
     });
-    return order;
+
+    // 1明細のときの戻り値は従来どおり受注1件。複数明細は lines で全行を返す。
+    return { ...created[0], lines: created };
   });
 
   return run();
+}
+
+/** 明細の指定を items 配列に揃える（単品指定も受け付ける） */
+function normalizeItems(input) {
+  if (Array.isArray(input.items) && input.items.length) return input.items;
+  if (input.productId) {
+    return [
+      {
+        productId: input.productId,
+        quantity: input.quantity,
+        unitPrice: input.unitPrice,
+        salesAmount: input.salesAmount,
+      },
+    ];
+  }
+  throw new BusinessRuleError('商品が指定されていません');
 }
 
 /**

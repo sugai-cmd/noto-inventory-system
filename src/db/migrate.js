@@ -4,6 +4,9 @@ const { getConnection } = require('./connection');
 
 const MIGRATIONS_DIR = path.resolve(__dirname, '..', '..', 'db', 'migrations');
 
+// このコメントで始まるマイグレーションは、ランナー側でトランザクションに包まない。
+const NO_TRANSACTION_MARKER = '-- migrate:no-transaction';
+
 /**
  * db/migrations/*.sql をファイル名の昇順に適用する軽量マイグレーションランナー。
  * 適用済みのファイル名は schema_migrations テーブルに記録し、二重適用を防ぐ。
@@ -31,12 +34,20 @@ function migrate() {
     if (applied.has(file)) continue;
 
     const sql = fs.readFileSync(path.join(MIGRATIONS_DIR, file), 'utf8');
-    const runMigration = db.transaction(() => {
+
+    if (sql.startsWith(NO_TRANSACTION_MARKER)) {
+      // テーブル再作成のように外部キーを一時的に切る必要があるものは、
+      // ファイル側でBEGIN/COMMITとPRAGMAを面倒みる（PRAGMAはトランザクション内では効かない）。
       db.exec(sql);
       db.prepare('INSERT INTO schema_migrations (filename) VALUES (?)').run(file);
-    });
+    } else {
+      const runMigration = db.transaction(() => {
+        db.exec(sql);
+        db.prepare('INSERT INTO schema_migrations (filename) VALUES (?)').run(file);
+      });
+      runMigration();
+    }
 
-    runMigration();
     console.log(`[migrate] applied: ${file}`);
   }
 
