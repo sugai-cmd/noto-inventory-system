@@ -66,6 +66,21 @@ function createApp({ requireLogin = true } = {}) {
   app.use('/api/ledger-cancel', require('./routes/ledgerCancel')); // 記録の取り消し
   app.use('/api/master-import', require('./routes/masterImport')); // マスタのCSV一括登録
 
+  // 存在しない /api/... は、Expressの既定のHTML404ではなくJSONで返す。
+  // HTMLが返ると画面側のJSON.parseが落ち、利用者には
+  // 「Unexpected token '<'」としか出ない（原因が分からない）。
+  // 実際にこれが起きるのは、git pullで画面ファイルだけ新しくなり、
+  // サーバーを再起動していないとき。メッセージでその場で気づけるようにする。
+  app.use('/api', (req, res) => {
+    res.status(404).json({
+      error: 'unknown_endpoint',
+      message:
+        `この機能はサーバー側にありません（${req.method} /api${req.path}）。` +
+        '画面だけが新しく、サーバーが更新前のまま動いている可能性があります。' +
+        'サーバー機でアプリを再起動してください。',
+    });
+  });
+
   app.use(errorHandler);
   return app;
 }

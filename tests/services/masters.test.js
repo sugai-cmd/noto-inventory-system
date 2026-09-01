@@ -166,3 +166,27 @@ test('原酒を編集・削除できる', async () => {
   const removed = await api('DELETE', `/api/raw-sake-brands/${created.body.id}`);
   assert.equal(removed.status, 204);
 });
+
+// --- 存在しないAPI ---
+
+test('存在しない /api/... はHTMLではなくJSONで404を返す', async () => {
+  const { status, body, res } = await api('GET', '/api/does-not-exist');
+  assert.equal(status, 404);
+  assert.match(res.headers.get('content-type'), /application\/json/);
+  assert.equal(body.error, 'unknown_endpoint');
+  // 原因（サーバーが古いまま）に気づける文言になっていること
+  assert.match(body.message, /再起動/);
+  assert.match(body.message, /GET \/api\/does-not-exist/);
+});
+
+test('存在しないAPIへのPOSTも同じ形で返る', async () => {
+  const { status, body } = await api('POST', '/api/nope', { a: 1 });
+  assert.equal(status, 404);
+  assert.equal(body.error, 'unknown_endpoint');
+  assert.match(body.message, /POST \/api\/nope/);
+});
+
+test('画面ファイルの404は従来どおり（APIの404だけを変えている）', async () => {
+  const { status } = await api('GET', '/no-such-page.html');
+  assert.equal(status, 404);
+});

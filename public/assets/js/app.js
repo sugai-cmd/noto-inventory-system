@@ -8,7 +8,24 @@ async function api(method, path, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   const text = await res.text();
-  const data = text ? JSON.parse(text) : null;
+
+  // JSONでない応答（ログイン画面へのリダイレクトHTMLや、
+  // 古いサーバーが返すExpress既定の404ページなど）をそのままJSON.parseすると
+  // 「Unexpected token '<'」という、原因の分からないエラーになる。
+  let data = null;
+  if (text) {
+    try {
+      data = JSON.parse(text);
+    } catch {
+      const err = new Error(
+        res.status === 404
+          ? `この機能がサーバーにありません（${path}）。サーバー機でアプリを再起動してください。`
+          : `サーバーから予期しない応答が返りました（HTTP ${res.status}／${path}）。`
+      );
+      err.status = res.status;
+      throw err;
+    }
+  }
 
   if (!res.ok) {
     const err = new Error(data?.message || `エラーが発生しました (HTTP ${res.status})`);

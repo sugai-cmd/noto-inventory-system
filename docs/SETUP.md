@@ -335,7 +335,7 @@ launchctl load ~/Library/LaunchAgents/jp.noto-naorai.inventory.plist     # 再�
 
 ### 6-1. サーバー機で確認すること
 
-- [ ] `npm test` が全て通る（165件）
+- [ ] `npm test` が全て通る（168件）
 - [ ] `npm start` でエラーなく起動する
 - [ ] <http://localhost:3000> でログイン画面が出る
 - [ ] 作成したIDでログインできる
@@ -458,6 +458,26 @@ node scripts/create-user.js --list    # IDが登録されているか確認
 
 パスワードを忘れた場合は、同じIDは作れないので新しいIDを作るか、
 管理者に依頼して作り直してください。
+
+### 「この機能がサーバーにありません」と出る
+
+`git pull` で**画面ファイルだけが新しくなり、サーバーが更新前のまま動いている**状態です。
+Node.jsは起動時にプログラムを読み込むので、更新しただけでは反映されません。
+**サーバーを再起動してください。**
+
+```bash
+# 常時起動を設定している場合
+launchctl unload ~/Library/LaunchAgents/jp.noto-naorai.inventory.plist
+launchctl load   ~/Library/LaunchAgents/jp.noto-naorai.inventory.plist
+
+# 手動で npm start している場合は Control + C で止めて、もう一度
+npm start
+```
+
+各PCのブラウザも `Command + Shift + R` で読み込み直してください。
+
+> 以前は同じ状況で「Unexpected token '<'」とだけ表示され、原因が分かりませんでした。
+> 現在は足りない機能の名前と対処が出ます。
 
 ### エラーが出る・動きが変
 
