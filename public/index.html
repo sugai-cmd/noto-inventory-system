@@ -111,19 +111,39 @@ const LOW_STOCK_THRESHOLD = 20;
 
 (async () => {
   try {
-    const [orders, products, materials, distillations, staleDistillations, progress,
-           shipmentsDue, unpaid, forecast, staleLots] = await Promise.all([
-      apiGet('/api/orders?status=' + encodeURIComponent('未着手')),
-      apiGet('/api/products/stock'),
-      apiGet('/api/materials/stock'),
-      apiGet('/api/distillations?status=' + encodeURIComponent('蒸留中')),
-      apiGet('/api/distillations/alerts'),
-      apiGet('/api/sales-targets/progress'),
-      apiGet('/api/dashboard/shipments-due'),
-      apiGet('/api/dashboard/unpaid'),
-      apiGet('/api/dashboard/order-forecast'),
-      apiGet('/api/wip-lots/stale'),
-    ]);
+    // 1つの取得が失敗しても、取れたものは表示する。
+    // 全部まとめて落とすと、画面が「-」だらけになって原因も分からなくなるため。
+    const sources = [
+      ['orders', '/api/orders?status=' + encodeURIComponent('未着手'), []],
+      ['products', '/api/products/stock', []],
+      ['materials', '/api/materials/stock', []],
+      ['distillations', '/api/distillations?status=' + encodeURIComponent('蒸留中'), []],
+      ['staleDistillations', '/api/distillations/alerts', []],
+      ['progress', '/api/sales-targets/progress', { targetAmount: null, targetMonth: '' }],
+      ['shipmentsDue', '/api/dashboard/shipments-due', []],
+      ['unpaid', '/api/dashboard/unpaid', []],
+      ['forecast', '/api/dashboard/order-forecast', []],
+      ['staleLots', '/api/wip-lots/stale', []],
+    ];
+
+    const settled = await Promise.allSettled(sources.map(([, path]) => apiGet(path)));
+    const data = {};
+    const failures = [];
+    settled.forEach((result, i) => {
+      const [key, , fallback] = sources[i];
+      if (result.status === 'fulfilled') {
+        data[key] = result.value;
+      } else {
+        data[key] = fallback;
+        failures.push(result.reason.message);
+      }
+    });
+    const { orders, products, materials, distillations, staleDistillations, progress,
+            shipmentsDue, unpaid, forecast, staleLots } = data;
+
+    if (failures.length) {
+      showMessage('messages', 'error', [...new Set(failures)].join(' / '));
+    }
 
     const shortages = materials.filter((m) => m.shortage);
 

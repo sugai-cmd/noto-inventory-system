@@ -808,17 +808,23 @@ el('importRun').addEventListener('click', () => runImport(false));
 // --- 初期化 -----------------------------------------------------------------
 
 (async () => {
-  try {
-    [breweries, materials, tankPrefixes] = await Promise.all([
-      apiGet('/api/breweries'),
-      apiGet('/api/materials'),
-      apiGet('/api/tanks/prefixes'),
-    ]);
-  } catch {
-    // 取得できなくても得意先・商品の登録はできるので、ここでは止めない
-  }
-  await loadImportTemplate();
+  // 補助的な取得（酒蔵・資材・タンク種別・CSVの見出し）は、
+  // 失敗しても得意先・商品の登録はできるので、ここで画面を止めない。
+  const [b, m, t] = await Promise.allSettled([
+    apiGet('/api/breweries'),
+    apiGet('/api/materials'),
+    apiGet('/api/tanks/prefixes'),
+  ]);
+  breweries = b.status === 'fulfilled' ? b.value : [];
+  materials = m.status === 'fulfilled' ? m.value : [];
+  tankPrefixes = t.status === 'fulfilled' ? t.value : [];
+
+  let failure = [b, m, t].find((r) => r.status === 'rejected')?.reason ?? null;
+  await loadImportTemplate().catch((err) => { failure = failure ?? err; });
+
+  // switchTabがメッセージ欄を消すので、警告はその後に出す
   await switchTab('customers');
+  if (failure) showMessage('messages', 'error', failure.message);
 })().catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>
