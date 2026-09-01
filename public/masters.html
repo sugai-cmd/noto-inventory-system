@@ -1,0 +1,599 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>マスタ | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <div class="tabs" id="tabs"></div>
+
+  <section class="panel">
+    <h2 id="formTitle">新規登録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px" id="formHint"></p>
+    <form id="masterForm">
+      <div class="grid" id="formFields"></div>
+      <div class="actions">
+        <button type="submit" id="submitBtn">登録</button>
+        <button type="button" id="cancelBtn" class="secondary" style="display:none">編集をやめる</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel" id="recipePanel" style="display:none">
+    <h2>製品レシピ</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      1本あたりに必要な資材を登録します。瓶詰め・箱詰めのときに、ここの数量で資材在庫が引き落とされます。
+      同じ資材と工程の組み合わせは1行だけです。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>資材</th><th class="num">必要数（1本あたり）</th><th>工程</th><th></th></tr>
+        </thead>
+        <tbody id="recipeRows"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button type="button" id="recipeAdd" class="secondary">行を追加</button>
+      <button type="button" id="recipeSave">レシピを保存</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2 id="listTitle">一覧</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="listFilter">絞り込み</label>
+        <input type="text" id="listFilter" placeholder="名称などで絞り込む">
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr id="listHead"></tr></thead>
+        <tbody id="listRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('masters.html');
+
+// ---------------------------------------------------------------------------
+// マスタごとの定義。fieldsが入力欄、columnsが一覧の列。
+//   type: text | number | int | date | month | brewery
+//   createOnly: 登録時のみ入力できる（APIが更新を受け付けない項目）
+//   omitIfEmpty: 空欄なら送らない（UNIQUE制約のあるコード項目など）
+// ---------------------------------------------------------------------------
+const MASTERS = {
+  customers: {
+    label: '得意先',
+    endpoint: '/api/customers',
+    nameKey: 'name',
+    hint: '受注登録画面の得意先検索に出てくる一覧です。掛率と支払いサイトは、受注の請求日・入金予定日の初期値に使われます。',
+    fields: [
+      { key: 'code', label: '得意先コード', type: 'text', omitIfEmpty: true },
+      { key: 'name', label: '得意先名', type: 'text', required: true },
+      { key: 'segment', label: '区分', type: 'text' },
+      { key: 'businessType', label: '業態', type: 'text' },
+      { key: 'markupRate', label: '掛率', type: 'number', step: '0.01', hint: '上代に掛ける率。1で上代どおり' },
+      { key: 'address', label: '住所', type: 'text' },
+      { key: 'paymentTermMonths', label: '支払いサイト（月数）', type: 'int', hint: '締めから何ヶ月後の入金か' },
+      { key: 'paymentTermDay', label: '支払いサイト（日）', type: 'text', placeholder: '末日 / 25日' },
+      { key: 'invoiceDueNote', label: '請求書送付期日', type: 'text' },
+      { key: 'salesRep', label: '担当者', type: 'text' },
+      { key: 'salesSubRep', label: 'サブ担当者', type: 'text' },
+      { key: 'salesChannel', label: '流通経路', type: 'text' },
+      { key: 'lastVisitedOn', label: '最終訪問日', type: 'date' },
+      { key: 'onboardedMonth', label: '取引開始月', type: 'month' },
+      { key: 'note', label: '備考', type: 'text' },
+    ],
+    columns: [
+      { key: 'code', label: 'コード' },
+      { key: 'name', label: '得意先名' },
+      { key: 'segment', label: '区分' },
+      { key: 'markup_rate', label: '掛率', num: true, digits: 2 },
+      { key: 'sales_rep', label: '担当者' },
+      { key: 'payment_term_months', label: '支払サイト', format: (r) =>
+          r.payment_term_months != null ? `${r.payment_term_months}ヶ月 ${r.payment_term_day ?? ''}` : '' },
+    ],
+  },
+
+  products: {
+    label: '商品',
+    endpoint: '/api/products',
+    nameKey: 'name',
+    hasRecipe: true,
+    hint: '受注・瓶詰め画面の商品検索に出てくる一覧です。編集を始めると、下に製品レシピの欄が開きます。',
+    fields: [
+      { key: 'code', label: '商品ID', type: 'text', omitIfEmpty: true },
+      { key: 'name', label: '商品名称', type: 'text', required: true },
+      { key: 'volumeMl', label: '容量(ml)', type: 'int' },
+      { key: 'abv', label: '規定度数(%)', type: 'number', step: '0.1' },
+      { key: 'containerType', label: '容器タイプ', type: 'text' },
+      { key: 'unit', label: '単位', type: 'text', placeholder: '本' },
+      { key: 'listPrice', label: '上代(円)', type: 'number', step: '1' },
+      { key: 'janCode', label: 'JANコード', type: 'text' },
+      { key: 'category', label: '商品カテゴリ', type: 'text' },
+      { key: 'targetExtractSpec', label: '目標エキス分基準', type: 'text' },
+      { key: 'taxPerUnit', label: '課税額(円)', type: 'number', step: '1' },
+      { key: 'initialProductStock', label: '初期商品在庫数', type: 'int',
+        hint: '在庫は履歴から再計算されます。ここは その起点 なので、運用開始後は基本さわらないでください' },
+      { key: 'initialWipStock', label: '初期仕掛品在庫数', type: 'int' },
+      { key: 'note', label: '備考', type: 'text' },
+    ],
+    columns: [
+      { key: 'code', label: '商品ID' },
+      { key: 'name', label: '商品名称' },
+      { key: 'volume_ml', label: '容量', format: (r) => (r.volume_ml != null ? `${num(r.volume_ml)}ml` : '') },
+      { key: 'abv', label: '度数', format: (r) => (r.abv != null ? `${num(r.abv, 1)}%` : '') },
+      { key: 'list_price', label: '上代', num: true, yen: true },
+      { key: 'category', label: 'カテゴリ' },
+    ],
+  },
+
+  tanks: {
+    label: 'タンク',
+    endpoint: '/api/tanks',
+    nameKey: 'name',
+    hint: 'タンク操作・蒸留画面で選べる容器の一覧です。残量は入出庫履歴から再計算されるため、ここでは編集できません。',
+    fields: [
+      { key: 'code', label: '容器ID', type: 'text', required: true, createOnly: true },
+      { key: 'name', label: '容器名称', type: 'text', required: true },
+      { key: 'containerType', label: '容器タイプ', type: 'text' },
+      { key: 'maxVolumeL', label: '最大容量(L)', type: 'number', step: '0.1' },
+      { key: 'location', label: '設置場所', type: 'text' },
+      { key: 'status', label: '状態', type: 'text', placeholder: '使用中 / 空' },
+      { key: 'gaugeConstant', label: '検尺定数', type: 'number', step: '0.001' },
+      { key: 'currentAbv', label: '現在のアルコール度数(%)', type: 'number', step: '0.1' },
+      { key: 'initialVolumeL', label: '初期在庫量(L)', type: 'number', step: '0.1', createOnly: true,
+        hint: '残量再計算の起点。登録後は入出庫の記録で増減します' },
+      { key: 'note', label: '備考', type: 'text' },
+    ],
+    columns: [
+      { key: 'code', label: '容器ID' },
+      { key: 'name', label: '容器名称' },
+      { key: 'container_type', label: 'タイプ' },
+      { key: 'max_volume_l', label: '最大容量', format: (r) => (r.max_volume_l != null ? `${num(r.max_volume_l, 1)}L` : '') },
+      { key: 'location', label: '設置場所' },
+      { key: 'status', label: '状態' },
+    ],
+  },
+
+  breweries: {
+    label: '酒蔵',
+    endpoint: '/api/breweries',
+    nameKey: 'name',
+    canDelete: true,
+    hint: '原酒の仕入れ先です。スプレッドシートからの移行対象外なので、ここから順次登録してください。',
+    fields: [
+      { key: 'name', label: '酒蔵名', type: 'text', required: true },
+      { key: 'address', label: '住所', type: 'text' },
+      { key: 'phone', label: '電話番号', type: 'text' },
+      { key: 'contact', label: '担当者', type: 'text' },
+      { key: 'startedOn', label: '取引開始日', type: 'date' },
+    ],
+    columns: [
+      { key: 'name', label: '酒蔵名' },
+      { key: 'address', label: '住所' },
+      { key: 'phone', label: '電話番号' },
+      { key: 'contact', label: '担当者' },
+      { key: 'started_on', label: '取引開始日' },
+    ],
+  },
+
+  'raw-sake-brands': {
+    label: '原酒',
+    endpoint: '/api/raw-sake-brands',
+    nameKey: 'name',
+    canDelete: true,
+    hint: '原酒の銘柄です。こちらも移行対象外なので、ここから順次登録してください。酒蔵は先に「酒蔵」タブで登録しておくと選べます。',
+    fields: [
+      { key: 'name', label: '銘柄名', type: 'text', required: true },
+      { key: 'brewery', label: '酒蔵', type: 'brewery' },
+      { key: 'abv', label: '度数(%)', type: 'number', step: '0.1' },
+      { key: 'sakeMeterValue', label: '日本酒度', type: 'number', step: '0.1' },
+      { key: 'status', label: '状態', type: 'text' },
+      { key: 'producedOn', label: '製造年月', type: 'text', placeholder: '2026-08 / 令和8年8月',
+        hint: '和暦などの自由記述も入れられます' },
+      { key: 'registeredOn', label: '登録日', type: 'date' },
+      { key: 'initialStock', label: '初期在庫(L)', type: 'number', step: '0.1', createOnly: true },
+      { key: 'note', label: '備考', type: 'text' },
+    ],
+    columns: [
+      { key: 'name', label: '銘柄名' },
+      // 原酒マスタは酒蔵をIDで持つ（未登録の酒蔵名はbrewery_name_rawに退避される）
+      { key: 'brewery_id', label: '酒蔵', format: (r) =>
+          breweries.find((b) => b.id === r.brewery_id)?.name ?? r.brewery_name_raw ?? '' },
+      { key: 'abv', label: '度数', format: (r) => (r.abv != null ? `${num(r.abv, 1)}%` : '') },
+      { key: 'sake_meter_value', label: '日本酒度', num: true, digits: 1 },
+      { key: 'status', label: '状態' },
+      { key: 'produced_on', label: '製造年月' },
+    ],
+  },
+};
+
+const TAB_ORDER = ['customers', 'products', 'tanks', 'breweries', 'raw-sake-brands'];
+
+let currentTab = 'customers';
+let editingId = null;
+let records = [];
+let breweries = [];
+let materials = [];
+let recipeDraft = [];
+
+// --- タブ -------------------------------------------------------------------
+
+el('tabs').innerHTML = TAB_ORDER
+  .map((k) => `<button type="button" data-tab="${k}">${escapeHtml(MASTERS[k].label)}</button>`)
+  .join('');
+
+el('tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-tab]');
+  if (btn) switchTab(btn.dataset.tab);
+});
+
+async function switchTab(tab) {
+  currentTab = tab;
+  editingId = null;
+  el('listFilter').value = '';
+  for (const b of el('tabs').querySelectorAll('button')) {
+    b.classList.toggle('active', b.dataset.tab === tab);
+  }
+  clearMessage('messages');
+  renderForm();
+  await loadList();
+}
+
+// --- 入力欄 -----------------------------------------------------------------
+
+function spec() {
+  return MASTERS[currentTab];
+}
+
+function renderForm() {
+  const s = spec();
+  const editing = editingId != null;
+
+  el('formTitle').textContent = editing
+    ? `${s.label}を編集`
+    : `${s.label}を新規登録`;
+  el('formHint').textContent = s.hint;
+  el('submitBtn').textContent = editing ? '変更を保存' : '登録';
+  el('cancelBtn').style.display = editing ? '' : 'none';
+
+  el('formFields').innerHTML = s.fields
+    .map((f) => {
+      const disabled = editing && f.createOnly ? ' disabled' : '';
+      const note = editing && f.createOnly
+        ? '<div class="hint">登録後は変更できません</div>'
+        : f.hint
+          ? `<div class="hint">${escapeHtml(f.hint)}</div>`
+          : '';
+      const required = f.required ? ' required' : '';
+      const ph = f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : '';
+
+      let control;
+      if (f.type === 'brewery') {
+        control =
+          `<select id="f_${f.key}"${disabled}>
+             <option value="">（未設定）</option>
+             ${breweries.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('')}
+             <option value="__free__">一覧にない酒蔵名を直接入力</option>
+           </select>
+           <input type="text" id="f_${f.key}_free" style="display:none;margin-top:6px"
+                  placeholder="酒蔵名を入力">`;
+      } else if (f.type === 'date') {
+        control = `<input type="date" id="f_${f.key}"${required}${disabled}>`;
+      } else if (f.type === 'month') {
+        control = `<input type="month" id="f_${f.key}"${required}${disabled}>`;
+      } else if (f.type === 'number' || f.type === 'int') {
+        const step = f.type === 'int' ? '1' : (f.step ?? 'any');
+        control = `<input type="number" step="${step}" id="f_${f.key}"${required}${disabled}${ph}>`;
+      } else {
+        control = `<input type="text" id="f_${f.key}"${required}${disabled}${ph}>`;
+      }
+
+      return `<div>
+        <label for="f_${f.key}">${escapeHtml(f.label)}${f.required ? ' <span style="color:var(--danger)">*</span>' : ''}</label>
+        ${control}
+        ${note}
+      </div>`;
+    })
+    .join('');
+
+  const brewerySelect = el('f_brewery');
+  if (brewerySelect) {
+    brewerySelect.addEventListener('change', () => {
+      el('f_brewery_free').style.display = brewerySelect.value === '__free__' ? '' : 'none';
+    });
+  }
+
+  el('recipePanel').style.display = s.hasRecipe && editing ? '' : 'none';
+}
+
+/** 一覧の行（スネークケース）を入力欄（キャメルケース）に流し込む */
+function fillForm(record) {
+  for (const f of spec().fields) {
+    const input = el(`f_${f.key}`);
+    if (!input) continue;
+
+    if (f.type === 'brewery') {
+      const free = el('f_brewery_free');
+      if (record.brewery_id) {
+        input.value = String(record.brewery_id);
+        free.style.display = 'none';
+        free.value = '';
+      } else if (record.brewery_name_raw) {
+        input.value = '__free__';
+        free.style.display = '';
+        free.value = record.brewery_name_raw;
+      } else {
+        input.value = '';
+        free.style.display = 'none';
+      }
+      continue;
+    }
+
+    const value = record[snake(f.key)];
+    input.value = value == null ? '' : String(value);
+  }
+}
+
+function snake(key) {
+  return key.replace(/[A-Z]/g, (c) => `_${c.toLowerCase()}`);
+}
+
+/** 入力欄からAPIに送る本体を組み立てる */
+function buildPayload() {
+  const editing = editingId != null;
+  const payload = {};
+
+  for (const f of spec().fields) {
+    if (editing && f.createOnly) continue;
+    const input = el(`f_${f.key}`);
+    if (!input) continue;
+
+    if (f.type === 'brewery') {
+      if (input.value === '__free__') {
+        const name = el('f_brewery_free').value.trim();
+        if (name) payload.breweryName = name;
+      } else if (input.value) {
+        payload.breweryId = Number(input.value);
+      }
+      continue;
+    }
+
+    const raw = input.value.trim();
+    if (f.type === 'number' || f.type === 'int' || f.type === 'date' || f.type === 'month') {
+      // 数値・日付は空欄なら送らない（送ると形式チェックに引っかかるため）
+      if (raw === '') continue;
+      payload[f.key] = f.type === 'date' || f.type === 'month' ? raw : Number(raw);
+    } else {
+      if (raw === '' && f.omitIfEmpty) continue;
+      payload[f.key] = raw;
+    }
+  }
+  return payload;
+}
+
+el('masterForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  const s = spec();
+  el('submitBtn').disabled = true;
+
+  try {
+    const payload = buildPayload();
+    const saved = editingId != null
+      ? await api('PUT', `${s.endpoint}/${editingId}`, payload)
+      : await apiPost(s.endpoint, payload);
+
+    showMessage('messages', 'ok',
+      editingId != null
+        ? `${s.label}「${saved[s.nameKey]}」を更新しました`
+        : `${s.label}「${saved[s.nameKey]}」を登録しました`);
+
+    if (currentTab === 'breweries') breweries = await apiGet('/api/breweries');
+    editingId = null;
+    el('masterForm').reset();
+    renderForm();
+    await loadList();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('submitBtn').disabled = false;
+  }
+});
+
+el('cancelBtn').addEventListener('click', () => {
+  editingId = null;
+  el('masterForm').reset();
+  renderForm();
+  clearMessage('messages');
+});
+
+// --- 一覧 -------------------------------------------------------------------
+
+async function loadList() {
+  const s = spec();
+  el('listTitle').textContent = `${s.label}の一覧`;
+  el('listHead').innerHTML =
+    s.columns.map((c) => `<th${c.num ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('') +
+    '<th></th>';
+  records = await apiGet(s.endpoint);
+  renderRows();
+}
+
+function renderRows() {
+  const s = spec();
+  const q = el('listFilter').value.trim().toLowerCase();
+  const shown = q
+    ? records.filter((r) =>
+        Object.values(r).some((v) => v != null && String(v).toLowerCase().includes(q)))
+    : records;
+
+  const span = s.columns.length + 1;
+  el('listRows').innerHTML = shown.length
+    ? shown.map((r) => {
+        const cells = s.columns.map((c) => {
+          let text;
+          if (c.format) text = c.format(r);
+          else if (c.yen) text = yen(r[c.key]);
+          else if (c.num) text = r[c.key] != null ? num(r[c.key], c.digits ?? 0) : '';
+          else text = r[c.key] ?? '';
+          return `<td${c.num ? ' class="num"' : ''}>${escapeHtml(text)}</td>`;
+        }).join('');
+        const del = s.canDelete
+          ? `<button type="button" class="danger small" data-del="${r.id}">削除</button>`
+          : '';
+        return `<tr>${cells}<td><div class="row-actions">
+            <button type="button" class="secondary small" data-edit="${r.id}">編集</button>${del}
+          </div></td></tr>`;
+      }).join('')
+    : `<tr><td colspan="${span}" class="empty">${q ? '該当するものがありません' : `${s.label}が登録されていません`}</td></tr>`;
+}
+
+el('listFilter').addEventListener('input', renderRows);
+
+el('listRows').addEventListener('click', async (e) => {
+  const edit = e.target.closest('[data-edit]');
+  const del = e.target.closest('[data-del]');
+  if (edit) return startEdit(Number(edit.dataset.edit));
+  if (del) return removeRecord(Number(del.dataset.del));
+});
+
+async function startEdit(id) {
+  const s = spec();
+  clearMessage('messages');
+  editingId = id;
+  renderForm();
+
+  const record = records.find((r) => r.id === id) ?? await apiGet(`${s.endpoint}/${id}`);
+  fillForm(record);
+
+  if (s.hasRecipe) await loadRecipe(id);
+  el('formTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+async function removeRecord(id) {
+  const s = spec();
+  const record = records.find((r) => r.id === id);
+  if (!confirm(`${s.label}「${record?.[s.nameKey] ?? id}」を削除します。よろしいですか？`)) return;
+
+  clearMessage('messages');
+  try {
+    await api('DELETE', `${s.endpoint}/${id}`);
+    showMessage('messages', 'ok', `${s.label}「${record?.[s.nameKey] ?? id}」を削除しました`);
+    if (editingId === id) {
+      editingId = null;
+      el('masterForm').reset();
+      renderForm();
+    }
+    if (currentTab === 'breweries') breweries = await apiGet('/api/breweries');
+    await loadList();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
+
+// --- 製品レシピ -------------------------------------------------------------
+
+async function loadRecipe(productId) {
+  const rows = await apiGet(`/api/products/${productId}/recipe`);
+  recipeDraft = rows.map((r) => ({
+    materialId: r.material_id,
+    qtyRequired: r.qty_required,
+    process: r.process,
+  }));
+  renderRecipe();
+}
+
+function renderRecipe() {
+  el('recipeRows').innerHTML = recipeDraft.length
+    ? recipeDraft.map((row, i) => `<tr>
+        <td>
+          <select data-recipe="${i}" data-field="materialId">
+            <option value="">選択してください</option>
+            ${materials.map((m) =>
+              `<option value="${m.id}"${m.id === row.materialId ? ' selected' : ''}>${escapeHtml(m.name)}</option>`
+            ).join('')}
+          </select>
+        </td>
+        <td class="num">
+          <input type="number" min="0.01" step="0.01" data-recipe="${i}" data-field="qtyRequired"
+                 value="${row.qtyRequired ?? ''}">
+        </td>
+        <td>
+          <select data-recipe="${i}" data-field="process">
+            <option value="瓶詰"${row.process === '瓶詰' ? ' selected' : ''}>瓶詰</option>
+            <option value="箱詰"${row.process === '箱詰' ? ' selected' : ''}>箱詰</option>
+          </select>
+        </td>
+        <td><button type="button" class="danger small" data-recipe-del="${i}">削除</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">レシピが未登録です。「行を追加」から登録してください</td></tr>';
+}
+
+el('recipeRows').addEventListener('change', (e) => {
+  const target = e.target.closest('[data-recipe]');
+  if (!target) return;
+  const row = recipeDraft[Number(target.dataset.recipe)];
+  const field = target.dataset.field;
+  row[field] = field === 'process' ? target.value : Number(target.value);
+});
+
+el('recipeRows').addEventListener('click', (e) => {
+  const del = e.target.closest('[data-recipe-del]');
+  if (!del) return;
+  recipeDraft.splice(Number(del.dataset.recipeDel), 1);
+  renderRecipe();
+});
+
+el('recipeAdd').addEventListener('click', () => {
+  recipeDraft.push({ materialId: null, qtyRequired: null, process: '瓶詰' });
+  renderRecipe();
+});
+
+el('recipeSave').addEventListener('click', async () => {
+  clearMessage('messages');
+  const incomplete = recipeDraft.some((r) => !r.materialId || !r.qtyRequired);
+  if (incomplete) {
+    showMessage('messages', 'error', '資材と必要数が入っていない行があります');
+    return;
+  }
+
+  el('recipeSave').disabled = true;
+  try {
+    await api('PUT', `/api/products/${editingId}/recipe`, { recipe: recipeDraft });
+    showMessage('messages', 'ok', 'レシピを保存しました');
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('recipeSave').disabled = false;
+  }
+});
+
+// --- 初期化 -----------------------------------------------------------------
+
+(async () => {
+  try {
+    [breweries, materials] = await Promise.all([
+      apiGet('/api/breweries'),
+      apiGet('/api/materials'),
+    ]);
+  } catch {
+    // 取得できなくても得意先・商品の登録はできるので、ここでは止めない
+  }
+  await switchTab('customers');
+})().catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

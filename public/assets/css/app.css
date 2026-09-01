@@ -159,3 +159,13 @@ tbody tr:hover { background: #f9fafc; }
 .empty { padding: 24px; text-align: center; color: var(--muted); }
 .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .row-actions { display: flex; gap: 6px; }
+
+/* マスタ画面のタブ */
+.tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
+.tabs button {
+  background: none; border: none; border-radius: 0; color: var(--muted);
+  padding: 9px 16px; font-size: 14px; margin-bottom: -2px;
+  border-bottom: 2px solid transparent;
+}
+.tabs button:hover { background: #eef1f5; color: var(--text); }
+.tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; background: none; }
