@@ -168,13 +168,18 @@ test('完了済みの蒸留は二重完了・明細取消ができない', async
 });
 
 test('24時間超の蒸留中アラートが検出される（旧 getStaleDistillationAlerts）', async () => {
-  // 昨日開始してまだ蒸留中の記録を作る
-  const yesterday = new Date(Date.now() - 30 * 60 * 60 * 1000);
-  const ymd = `${yesterday.getFullYear()}-${String(yesterday.getMonth() + 1).padStart(2, '0')}-${String(yesterday.getDate()).padStart(2, '0')}`;
+  // 30時間前に開始してまだ蒸留中の記録を作る。
+  // 日付と時刻は別カラムなので（2.0）、どちらも同じ時点から求める。
+  // 時刻を固定値にすると、テストを流した時間帯によって経過時間が24時間を
+  // 割り込んでしまうため。
+  const startedAt = new Date(Date.now() - 30 * 60 * 60 * 1000);
+  const p2 = (n) => String(n).padStart(2, '0');
+  const ymd = `${startedAt.getFullYear()}-${p2(startedAt.getMonth() + 1)}-${p2(startedAt.getDate())}`;
+  const hm = `${p2(startedAt.getHours())}:${p2(startedAt.getMinutes())}`;
   db.prepare(
     `INSERT INTO distillations (distillation_code, started_on, started_time, status, total_input_l)
-     VALUES ('DS-STALE', ?, '09:00', '蒸留中', 10)`
-  ).run(ymd);
+     VALUES ('DS-STALE', ?, ?, '蒸留中', 10)`
+  ).run(ymd, hm);
 
   const { status, body } = await api('GET', '/api/distillations/alerts');
   assert.equal(status, 200);

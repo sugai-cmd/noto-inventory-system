@@ -16,6 +16,9 @@
     "url": "git+https://github.com/sugai-cmd/noto-inventory-system.git"
   },
   "license": "UNLICENSED",
+  "engines": {
+    "node": ">=22"
+  },
   "dependencies": {
     "better-sqlite3": "^13.0.3",
     "csv-parse": "^7.0.2",

@@ -34,18 +34,28 @@
 
 ## 2. サーバー機（Mac）の準備
 
-### 2-1. Node.jsをインストールする
+> **Git も Node.js も入っていない、まっさらな Mac から始める場合は
+> 先に [docs/SETUP-MAC.md](SETUP-MAC.md) を読んでください。**
+> ターミナルの使い方、Xcode Command Line Tools（Gitが入る）、GitHubアカウントの要否、
+> Node.jsのインストールまでを、前提知識なしで進められるようにまとめてあります。
+
+### 2-1. Node.jsとGitを確認する
 
 ターミナル（アプリケーション → ユーティリティ → ターミナル）を開いて確認します。
 
 ```bash
 node -v
+git --version
 ```
 
-`v20` 以上が表示されればOKです。「command not found」と出たらインストールします。
+`node -v` が **`v22` 以上**であればOKです（データベース部品のbetter-sqlite3が
+Node 22以上を必要とします。古いNodeでは `npm install` がその場で止まります）。
 
-- <https://nodejs.org/ja> から **LTS版** をダウンロードしてインストール
-- インストール後、ターミナルを開き直して `node -v` を再確認
+「command not found」と出た場合は [docs/SETUP-MAC.md](SETUP-MAC.md) を参照してください。
+
+- Node.js: <https://nodejs.org/ja> から **LTS版** をダウンロードしてインストール
+  （インストール後、**ターミナルを開き直してから** `node -v` を再確認）
+- Git: `xcode-select --install` を実行
 
 ### 2-2. アプリを配置する
 
@@ -191,7 +201,12 @@ PLIST
 
 1. `/Users/YOUR_NAME/` → 実際のパス。`cd ~/noto-inventory-system && pwd` で確認できます
 2. `/usr/local/bin/node` → `which node` の結果に合わせる
-   （Apple Silicon の Mac では `/opt/homebrew/bin/node` のことが多いです）
+   - nodejs.org の公式インストーラで入れた場合は、Apple Silicon でも Intel でも
+     `/usr/local/bin/node` なので**書き換え不要**です
+   - Homebrew で入れた場合は Apple Silicon だと `/opt/homebrew/bin/node` になります
+
+> `launchd` は普段ターミナルが使っているパス設定を引き継ぎません。
+> ここは必ず**絶対パス**（`/` で始まる）で書いてください。
 
 ### 4-2. ログ置き場を作って登録する
 

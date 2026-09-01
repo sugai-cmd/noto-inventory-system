@@ -6,11 +6,16 @@ Node.js + SQLite のローカルサーバー型アプリとして作り直した
 
 ## セットアップ
 
+Node.js **22以上**が必要です。
+
 ```bash
 npm install
 npm run create-user   # 最初の管理者を作る（初回のみ）
 npm start             # http://localhost:3000 で起動
 ```
+
+**Git も Node.js も入っていないMacに一から入れる場合は
+[docs/SETUP-MAC.md](docs/SETUP-MAC.md) から始めてください。**
 
 **会社と自宅の複数PCで使う場合の手順は [docs/SETUP.md](docs/SETUP.md) を参照してください。**
 サーバー機の準備、Tailscaleを使ったHTTPS接続、常時起動、バックアップ、
@@ -100,6 +105,7 @@ node scripts/migrate-from-sheets.js
 
 | ファイル | 内容 |
 |---|---|
+| `docs/SETUP-MAC.md` | まっさらなMacの下準備（ターミナル・Git・GitHub・Node.js） |
 | `docs/SETUP.md` | 導入手順・複数PC設定・常時起動・バックアップ・動作確認チェックリスト |
 | `DB_SCHEMA_DESIGN.md` | テーブル設計・プロジェクト構造・移行手順・実装済み機能の詳細 |
 | `DATA_STRUCTURE.md` | 現行スプレッドシート（21シート）の仕様。移行元の記録として保持 |
