@@ -194,6 +194,7 @@ function renderNav(current) {
     ['stocktaking.html', '棚卸'],
     ['audit.html', '在庫監査'],
     ['sales-targets.html', '売上目標'],
+    ['masters.html', 'マスタ'],
     ['settings.html', '設定'],
   ];
   document.body.insertAdjacentHTML(
