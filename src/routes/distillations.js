@@ -99,4 +99,15 @@ router.post(
   }
 );
 
+// 未対応アラートの消込
+router.post('/:id/acknowledge-alert', (req, res, next) => {
+  try {
+    res.json(
+      distillationService.acknowledgeStaleAlert(Number(req.params.id), req.body ?? {}, req.user)
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

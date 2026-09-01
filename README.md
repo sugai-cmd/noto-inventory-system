@@ -45,7 +45,8 @@ node scripts/create-user.js --list  # ユーザー一覧
 | `/materials.html` | 資材入荷・資材マスタ・入出庫履歴 |
 | `/audit.html` | 在庫監査レポート |
 | `/sales-targets.html` | 売上目標と進捗 |
-| `/masters.html` | マスタ登録（得意先・商品／製品レシピ・タンク・酒蔵・原酒） |
+| `/masters.html` | マスタ登録（得意先・商品／製品レシピ・タンク・酒蔵・原酒）・CSV一括登録 |
+| `/shipping.html` | 送料設定（都道府県の地帯・料金表・段ボール対応表） |
 | `/settings.html` | 2要素認証・パスワード変更・利用者管理・操作ログ |
 
 資材マスタは資材入荷とまとめて `/materials.html` にあります。

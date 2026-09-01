@@ -49,9 +49,23 @@ router.get('/monitor', (req, res) => {
   );
 });
 
+// 廃棄したタンクは既定で返さない（選択肢に出さないため）。?includeDiscarded=1 で全件。
 router.get('/', (req, res) => {
-  const db = getConnection();
-  res.json(db.prepare('SELECT * FROM tanks ORDER BY code').all());
+  res.json(tankService.listTanks({ includeDiscarded: req.query.includeDiscarded === '1' }));
+});
+
+/** 容器種別ごとのプレフィックス一覧（画面の種別プルダウン用） */
+router.get('/prefixes', (req, res) => {
+  res.json(tankService.listTankPrefixes());
+});
+
+/** 種別を選んだときの次の容器ID（自動採番） */
+router.get('/next-code', (req, res, next) => {
+  try {
+    res.json(tankService.nextTankCode(String(req.query.containerType ?? '')));
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.get('/:id', (req, res) => {
@@ -74,6 +88,20 @@ router.put('/:id', validateRequest(updateSchema), (req, res, next) => {
     const updated = tankService.updateTank(Number(req.params.id), req.body, req.user);
     if (!updated) return res.status(404).json({ error: 'not_found' });
     res.json(updated);
+  } catch (err) {
+    next(err);
+  }
+});
+
+const discardSchema = z.object({
+  discardedOn: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  reason: z.string().optional(),
+});
+
+/** 廃棄。行は消さずに廃棄日を入れて一覧から外す */
+router.post('/:id/discard', validateRequest(discardSchema), (req, res, next) => {
+  try {
+    res.json(tankService.discardTank(Number(req.params.id), req.body, req.user));
   } catch (err) {
     next(err);
   }

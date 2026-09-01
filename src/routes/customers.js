@@ -1,6 +1,7 @@
 const express = require('express');
 const { z } = require('zod');
 const customerModel = require('../models/customerModel');
+const customerNoteService = require('../services/customerNoteService');
 const { validateRequest } = require('../middlewares/validateRequest');
 
 const router = express.Router();
@@ -60,6 +61,32 @@ router.put('/:id', validateRequest(updateSchema), (req, res, next) => {
   } catch (err) {
     next(err);
   }
+});
+
+// 営業メモ（得意先ごとの追記ログ）
+const noteSchema = z.object({
+  notedOn: dateOnly.optional(),
+  body: z.string().min(1, 'メモの内容を入力してください'),
+});
+
+router.get('/:id/notes', (req, res) => {
+  res.json(customerNoteService.list(Number(req.params.id)));
+});
+
+router.post('/:id/notes', validateRequest(noteSchema), (req, res, next) => {
+  try {
+    res.status(201).json(
+      customerNoteService.add({ customerId: Number(req.params.id), ...req.body }, req.user)
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/notes/:noteId', (req, res) => {
+  const deleted = customerNoteService.remove(Number(req.params.noteId));
+  if (!deleted) return res.status(404).json({ error: 'not_found' });
+  res.status(204).end();
 });
 
 module.exports = router;

@@ -7,6 +7,7 @@
 // ここではSQLiteのトランザクションで全書き込みをまとめ、失敗時は全部ロールバックする。
 
 const { getConnection } = require('../db/connection');
+const wipLotService = require('./wipLotService');
 const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
@@ -160,15 +161,14 @@ function submitBoxing(input) {
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(input.productId);
     if (!product) throw new NotFoundError(`商品が見つかりません (id=${input.productId})`);
 
-    // 仕掛品が足りているかを事前に確認する（GAS版にはなかったガード）
-    const stock = db
-      .prepare('SELECT * FROM v_product_stock WHERE product_id = ?')
-      .get(input.productId);
-    if (stock && stock.wip_stock < input.quantity) {
-      throw new BusinessRuleError(
-        `仕掛品在庫が不足しています（${product.name}: 在庫${stock.wip_stock} < 箱詰${input.quantity}）`
-      );
-    }
+    // どの瓶詰めロットから引くかを先に決める。
+    // ロットを指定された場合はそれを優先し、足りない分は古いロットから補う
+    // （GAS版と同じ挙動。指定なしなら純粋なFIFO）。
+    const allocations = wipLotService.allocate(db, {
+      productId: input.productId,
+      quantity: input.quantity,
+      preferredLotId: input.lotLedgerId ?? null,
+    });
 
     const historyCode = nextProductHistoryCode(db, txnDate);
     const productLedgerResult = db
@@ -190,6 +190,8 @@ function submitBoxing(input) {
       });
     const productLedgerId = productLedgerResult.lastInsertRowid;
 
+    wipLotService.saveAllocations(db, productLedgerId, allocations);
+
     const consumedMaterials = consumeRecipeMaterials(db, {
       productId: input.productId,
       quantity: input.quantity,
@@ -201,6 +203,7 @@ function submitBoxing(input) {
     return {
       productLedgerId,
       historyCode,
+      allocations,
       consumedMaterials,
       stock: db.prepare('SELECT * FROM v_product_stock WHERE product_id = ?').get(input.productId),
     };

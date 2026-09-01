@@ -61,6 +61,10 @@ function createApp({ requireLogin = true } = {}) {
   app.use('/api/shipments', require('./routes/shipments')); // 返品・サンプル送付・委託販売報告
   app.use('/api/sales-targets', require('./routes/salesTargets'));
   app.use('/api/locks', require('./routes/locks'));
+  app.use('/api/shipping', require('./routes/shipping'));       // 送料計算とそのマスタ
+  app.use('/api/dashboard', require('./routes/dashboard'));      // 未入金・出荷予定・注文予測
+  app.use('/api/ledger-cancel', require('./routes/ledgerCancel')); // 記録の取り消し
+  app.use('/api/master-import', require('./routes/masterImport')); // マスタのCSV一括登録
 
   app.use(errorHandler);
   return app;

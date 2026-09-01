@@ -39,6 +39,48 @@ router.get('/tanks', (req, res) => {
   );
 });
 
+/**
+ * 入荷先タンクの状態（GAS版 README 3章 記録「前ロットが残っている容器は警告表示」）。
+ * 登録は止めない。混ざることを承知で入れる運用があるため、判断材料だけ返す。
+ */
+router.get('/tanks/:id/receipt-check', (req, res) => {
+  const db = getConnection();
+  const tankId = Number(req.params.id);
+  const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(tankId);
+  if (!tank) return res.status(404).json({ error: 'not_found' });
+
+  const volume = db.prepare('SELECT * FROM v_raw_sake_tank_volume WHERE tank_id = ?').get(tankId);
+  const current = volume?.current_volume_l ?? 0;
+
+  const lastReceipt = db
+    .prepare(
+      `SELECT l.txn_date, l.quantity, l.lot_code, l.spec_note, b.name AS brand_name
+       FROM raw_sake_ledger l
+       LEFT JOIN raw_sake_brands b ON b.id = l.raw_sake_brand_id
+       WHERE l.to_tank_id = ?
+       ORDER BY l.txn_date DESC, l.id DESC LIMIT 1`
+    )
+    .get(tankId);
+
+  const warnings = [];
+  if (current > 0) {
+    warnings.push(
+      `${tank.name} には前のロットが ${current}L 残っています` +
+        (lastReceipt?.brand_name ? `（直近の受入: ${lastReceipt.brand_name}）` : '')
+    );
+  }
+  if (tank.max_volume_l != null && current >= tank.max_volume_l) {
+    warnings.push(`${tank.name} は最大容量（${tank.max_volume_l}L）に達しています`);
+  }
+
+  res.json({
+    tank: { id: tank.id, code: tank.code, name: tank.name, maxVolumeL: tank.max_volume_l },
+    currentVolumeL: current,
+    lastReceipt: lastReceipt ?? null,
+    warnings,
+  });
+});
+
 router.get('/', (req, res) => {
   const db = getConnection();
   const limit = Math.min(Number(req.query.limit) || 200, 1000);

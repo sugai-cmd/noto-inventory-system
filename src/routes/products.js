@@ -102,4 +102,22 @@ router.put('/:id/recipe', validateRequest(recipeSchema), (req, res, next) => {
   }
 });
 
+// 既存商品からの複製登録
+const duplicateSchema = z.object({
+  name: z.string().min(1, '複製後の商品名称は必須です'),
+  code: z.string().optional(),
+  volumeMl: z.number().int().positive().optional(),
+  abv: z.number().optional(),
+  listPrice: z.number().nonnegative().optional(),
+  copyRecipe: z.boolean().optional(),
+});
+
+router.post('/:id/duplicate', validateRequest(duplicateSchema), (req, res, next) => {
+  try {
+    res.status(201).json(productService.duplicateProduct(Number(req.params.id), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

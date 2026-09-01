@@ -1,4 +1,5 @@
 const express = require('express');
+const wipLotService = require('../services/wipLotService');
 const { z } = require('zod');
 const bottlingService = require('../services/bottlingService');
 const { getConnection } = require('../db/connection');
@@ -22,6 +23,9 @@ const bottlingSchema = z.object({
 const boxingSchema = z.object({
   productId: z.number().int().positive(),
   quantity: z.number().int().positive('本数は1以上で入力してください'),
+  // 引き当てたいロット（瓶詰めの台帳ID）。足りない分は古いロットから自動で補う。
+  // 未指定なら古い順（FIFO）。
+  lotLedgerId: z.number().int().positive().optional(),
   txnDate: dateOnly.optional(),
   storagePlace: z.string().optional(),
   note: z.string().optional(),
@@ -53,6 +57,17 @@ router.get('/recipe/:productId', (req, res) => {
     瓶詰: bottlingService.getRecipe(db, productId, '瓶詰'),
     箱詰: bottlingService.getRecipe(db, productId, '箱詰'),
   });
+});
+
+/** 箱詰め画面のロット一覧（残量つき、古い順） */
+router.get('/wip-lots', (req, res) => {
+  res.json(wipLotService.listLots(req.query.productId ? Number(req.query.productId) : null));
+});
+
+/** 仕掛品滞留アラート（既定は瓶詰めから7日以上） */
+router.get('/wip-lots/stale', (req, res) => {
+  const thresholdDays = Number(req.query.days) || 7;
+  res.json(wipLotService.listStaleLots({ thresholdDays }));
 });
 
 module.exports = router;

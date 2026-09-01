@@ -8,11 +8,24 @@ const router = express.Router();
 
 const dateOnly = z.string().regex(/^\d{4}-\d{2}-\d{2}$/, '日付はYYYY-MM-DD形式で入力してください');
 
-const createSchema = z.object({
-  orderedOn: dateOnly,
-  customerId: z.number().int().positive(),
+// 1受注で複数商品を頼まれた場合は items に明細を並べる（同じ受注番号で複数行になる）。
+// 単品のときは従来どおり productId / quantity を直接渡せる。
+const itemSchema = z.object({
   productId: z.number().int().positive(),
   quantity: z.number().int().positive('本数は1以上で入力してください'),
+  unitPrice: z.number().nonnegative().optional(),
+  salesAmount: z.number().nonnegative().optional(),
+});
+
+const createSchema = z
+  .object({
+  orderedOn: dateOnly,
+  customerId: z.number().int().positive(),
+  productId: z.number().int().positive().optional(),
+  quantity: z.number().int().positive('本数は1以上で入力してください').optional(),
+  items: z.array(itemSchema).min(1).optional(),
+  shippingZone: z.string().optional(),
+  cartonSize: z.string().optional(),
   unitPrice: z.number().nonnegative().optional(),
   markupRate: z.number().positive().optional(),
   salesAmount: z.number().nonnegative().optional(),
@@ -26,7 +39,10 @@ const createSchema = z.object({
   status: z.string().optional(),
   deliveryAddress: z.string().optional(),
   note: z.string().optional(),
-});
+  })
+  .refine((v) => (v.items && v.items.length) || (v.productId && v.quantity), {
+    message: '商品と本数、または明細（items）を指定してください',
+  });
 
 const shipSchema = z.object({
   deliveredOn: dateOnly.optional(),

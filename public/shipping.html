@@ -1,0 +1,259 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>送料設定 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>送料の決まり方</h2>
+    <p class="muted" style="margin:0;font-size:13px">
+      受注登録画面の送料は <strong>住所の都道府県 → 地帯</strong>、
+      <strong>商品 × 本数 → 段ボール</strong>、<strong>地帯 × 段ボール → 料金</strong> の順に決まります。
+      3つとも登録されている組み合わせだけ自動で入り、足りないものは受注画面で理由が表示されます。
+      運賃表の中身は会社ごとに違うため、こちらでは初期値を持っていません。実際の運賃表を見て登録してください。
+    </p>
+  </section>
+
+  <div class="tabs" id="tabs">
+    <button type="button" data-tab="zones" class="active">地帯（都道府県）</button>
+    <button type="button" data-tab="rates">料金表</button>
+    <button type="button" data-tab="cartons">段ボール対応表</button>
+  </div>
+
+  <!-- 地帯 -->
+  <section class="panel" data-panel="zones">
+    <h2>都道府県ごとの地帯</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      運賃表の区分名（「北陸」「関東」など）をそのまま入れてください。空欄のままの県は未設定として扱われます。
+    </p>
+    <div class="actions" style="margin-top:0">
+      <button type="button" id="zonesSave">地帯を保存</button>
+      <span class="hint" id="zonesCount"></span>
+    </div>
+    <div class="table-scroll" style="margin-top:12px">
+      <table>
+        <thead><tr><th>都道府県</th><th>地帯</th><th>都道府県</th><th>地帯</th></tr></thead>
+        <tbody id="zoneRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 料金表 -->
+  <section class="panel" data-panel="rates" hidden>
+    <h2>料金表（地帯 × 段ボール）</h2>
+    <form id="rateForm">
+      <div class="grid">
+        <div><label for="rZone">地帯</label><input type="text" id="rZone" list="zoneList" required></div>
+        <div><label for="rCarton">段ボール</label><input type="text" id="rCarton" list="cartonList" placeholder="100サイズ" required></div>
+        <div><label for="rFee">送料(円)</label><input type="number" id="rFee" min="0" step="1" required></div>
+      </div>
+      <datalist id="zoneList"></datalist>
+      <datalist id="cartonList"></datalist>
+      <div class="actions"><button type="submit">登録・更新</button></div>
+    </form>
+    <div class="table-scroll" style="margin-top:16px">
+      <table>
+        <thead><tr><th>地帯</th><th>段ボール</th><th class="num">送料</th><th></th></tr></thead>
+        <tbody id="rateRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <!-- 段ボール対応表 -->
+  <section class="panel" data-panel="cartons" hidden>
+    <h2>段ボール対応表（商品 × 本数）</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      受注画面で対応表にない組み合わせが出たときは、その場で段ボールを選んで「対応表に追加」できます。
+      ここでは既存の対応を確認・修正できます。
+    </p>
+    <form id="cartonForm">
+      <div class="grid">
+        <div><label for="cProduct">商品</label><select id="cProduct" required></select></div>
+        <div><label for="cQty">本数</label><input type="number" id="cQty" min="1" step="1" required></div>
+        <div><label for="cSize">段ボール</label><input type="text" id="cSize" list="cartonList2" required></div>
+      </div>
+      <datalist id="cartonList2"></datalist>
+      <div class="actions"><button type="submit">登録・更新</button></div>
+    </form>
+    <div class="table-scroll" style="margin-top:16px">
+      <table>
+        <thead><tr><th>商品</th><th class="num">本数</th><th>段ボール</th><th></th></tr></thead>
+        <tbody id="cartonRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('shipping.html');
+
+let zones = [];
+let rates = [];
+let cartons = [];
+let products = [];
+
+el('tabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-tab]');
+  if (!btn) return;
+  for (const b of el('tabs').querySelectorAll('button')) b.classList.toggle('active', b === btn);
+  for (const p of document.querySelectorAll('[data-panel]')) {
+    p.hidden = p.dataset.panel !== btn.dataset.tab;
+  }
+});
+
+function renderZones() {
+  // 2列組みで47件を並べる
+  const half = Math.ceil(zones.length / 2);
+  const rows = [];
+  for (let i = 0; i < half; i += 1) {
+    const left = zones[i];
+    const right = zones[i + half];
+    rows.push(`<tr>
+      <td>${escapeHtml(left.prefecture)}</td>
+      <td><input type="text" data-zone="${escapeHtml(left.prefecture)}" value="${escapeHtml(left.zone ?? '')}"></td>
+      ${right
+        ? `<td>${escapeHtml(right.prefecture)}</td>
+           <td><input type="text" data-zone="${escapeHtml(right.prefecture)}" value="${escapeHtml(right.zone ?? '')}"></td>`
+        : '<td></td><td></td>'}
+    </tr>`);
+  }
+  el('zoneRows').innerHTML = rows.join('');
+  const filled = zones.filter((z) => z.zone).length;
+  el('zonesCount').textContent = `${filled} / ${zones.length} 件が設定済み`;
+}
+
+el('zonesSave').addEventListener('click', async () => {
+  clearMessage('messages');
+  const entries = [...el('zoneRows').querySelectorAll('[data-zone]')].map((input) => ({
+    prefecture: input.dataset.zone,
+    zone: input.value.trim() || null,
+  }));
+  try {
+    zones = await api('PUT', '/api/shipping/zones', { zones: entries });
+    renderZones();
+    refreshDatalists();
+    showMessage('messages', 'ok', '地帯を保存しました');
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+function renderRates() {
+  el('rateRows').innerHTML = rates.length
+    ? rates.map((r) => `<tr>
+        <td>${escapeHtml(r.zone)}</td>
+        <td>${escapeHtml(r.carton_size)}</td>
+        <td class="num">${yen(r.fee)}</td>
+        <td><button type="button" class="danger small" data-rate-del="${r.id}">削除</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">料金が登録されていません</td></tr>';
+}
+
+function renderCartons() {
+  el('cartonRows').innerHTML = cartons.length
+    ? cartons.map((c) => `<tr>
+        <td>${escapeHtml(c.product_name)}</td>
+        <td class="num">${num(c.quantity)}</td>
+        <td>${escapeHtml(c.carton_size)}</td>
+        <td><button type="button" class="danger small" data-carton-del="${c.id}">削除</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="4" class="empty">対応表が登録されていません</td></tr>';
+}
+
+function refreshDatalists() {
+  const zoneNames = [...new Set(zones.map((z) => z.zone).filter(Boolean))];
+  const cartonNames = [...new Set([...rates.map((r) => r.carton_size), ...cartons.map((c) => c.carton_size)])];
+  el('zoneList').innerHTML = zoneNames.map((z) => `<option value="${escapeHtml(z)}">`).join('');
+  const options = cartonNames.map((c) => `<option value="${escapeHtml(c)}">`).join('');
+  el('cartonList').innerHTML = options;
+  el('cartonList2').innerHTML = options;
+}
+
+el('rateForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  try {
+    await apiPost('/api/shipping/rates', {
+      zone: el('rZone').value.trim(),
+      cartonSize: el('rCarton').value.trim(),
+      fee: Number(el('rFee').value),
+    });
+    rates = await apiGet('/api/shipping/rates');
+    renderRates();
+    refreshDatalists();
+    el('rateForm').reset();
+    showMessage('messages', 'ok', '料金を登録しました');
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+el('cartonForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  try {
+    await apiPost('/api/shipping/carton-rules', {
+      productId: Number(el('cProduct').value),
+      quantity: Number(el('cQty').value),
+      cartonSize: el('cSize').value.trim(),
+    });
+    cartons = await apiGet('/api/shipping/carton-rules');
+    renderCartons();
+    refreshDatalists();
+    showMessage('messages', 'ok', '対応表に登録しました');
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+document.addEventListener('click', async (e) => {
+  const rate = e.target.closest('[data-rate-del]');
+  const carton = e.target.closest('[data-carton-del]');
+  if (!rate && !carton) return;
+  if (!confirm('削除します。よろしいですか？')) return;
+  clearMessage('messages');
+  try {
+    if (rate) {
+      await api('DELETE', `/api/shipping/rates/${rate.dataset.rateDel}`);
+      rates = await apiGet('/api/shipping/rates');
+      renderRates();
+    } else {
+      await api('DELETE', `/api/shipping/carton-rules/${carton.dataset.cartonDel}`);
+      cartons = await apiGet('/api/shipping/carton-rules');
+      renderCartons();
+    }
+    refreshDatalists();
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+});
+
+(async () => {
+  try {
+    [zones, rates, cartons, products] = await Promise.all([
+      apiGet('/api/shipping/zones'),
+      apiGet('/api/shipping/rates'),
+      apiGet('/api/shipping/carton-rules'),
+      apiGet('/api/products'),
+    ]);
+    el('cProduct').innerHTML = '<option value="">選択してください</option>' +
+      products.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+    renderZones();
+    renderRates();
+    renderCartons();
+    refreshDatalists();
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+})();
+</script>
+</body>
+</html>

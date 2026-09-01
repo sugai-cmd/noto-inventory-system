@@ -10,7 +10,7 @@
 
 const { getConnection } = require('../db/connection');
 const { today } = require('../utils/dateUtil');
-const { NotFoundError, BusinessRuleError } = require('../utils/errors');
+const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const { generateUid } = require('../utils/uid');
 const operationLogService = require('./operationLogService');
 
@@ -294,4 +294,112 @@ function updateTank(id, input, actor = null) {
   return db.prepare('SELECT * FROM tanks WHERE id = ?').get(id);
 }
 
-module.exports = { submitTankTransfer, submitTaxFreeTransfer, listLedger, registerTank, updateTank };
+
+// --- 容器IDの自動採番と廃棄 -------------------------------------------------
+
+// 容器種別ごとのプレフィックス（DATA_STRUCTURE.md タンクマスタ、
+// GAS版 README 3章「種別選択でプレフィックス自動切替」）。
+const TANK_PREFIXES = {
+  タンク: 'T',
+  ボンベ: 'B',
+  スペーサー: 'SP',
+  ユニット: 'U',
+  ガロン: 'G',
+  ジャンボペール: 'JP',
+  QBテナー: 'Q',
+  蒸留機: 'DISTL',
+};
+
+function listTankPrefixes() {
+  return Object.entries(TANK_PREFIXES).map(([containerType, prefix]) => ({ containerType, prefix }));
+}
+
+/**
+ * 容器種別から次の容器IDを作る。
+ * 既存のコードの書き方（区切り文字と桁数）に合わせるので、
+ * 移行した過去データが T-01 でも T01 でも、その並びを引き継げる。
+ */
+function nextTankCode(containerType) {
+  const db = getConnection();
+  const prefix = TANK_PREFIXES[containerType];
+  if (!prefix) {
+    throw new BusinessRuleError(
+      `容器種別が未対応です: ${containerType}（${Object.keys(TANK_PREFIXES).join('・')}）`
+    );
+  }
+
+  // 同じプレフィックスで「区切り＋数字」で終わるコードだけを見る。
+  // 例: T-01 / T01。SPとSは別物なので、数字の直前までを厳密に一致させる。
+  const pattern = new RegExp(`^${prefix}([-_]?)(\\d+)$`);
+  let separator = '-';
+  let width = 2;
+  let max = 0;
+
+  for (const row of db.prepare('SELECT code FROM tanks').all()) {
+    const matched = pattern.exec(row.code ?? '');
+    if (!matched) continue;
+    const [, sep, digits] = matched;
+    const value = Number.parseInt(digits, 10);
+    if (value > max) {
+      max = value;
+      separator = sep;
+      width = digits.length;
+    }
+  }
+
+  const next = String(max + 1).padStart(width, '0');
+  return { code: `${prefix}${separator}${next}`, prefix, containerType };
+}
+
+/**
+ * 廃棄。行は消さずに廃棄日を入れる。
+ * 過去の入出庫履歴がこのタンクを参照しているので、削除すると履歴が読めなくなる。
+ */
+function discardTank(id, { discardedOn, reason } = {}, actor = null) {
+  const db = getConnection();
+  const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(id);
+  if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${id})`);
+  if (tank.discarded_on) throw new ConflictError(`${tank.name} は既に廃棄済みです（${tank.discarded_on}）`);
+
+  const volume = getVolume(db, id);
+  if (volume && volume.current_volume_l > 0) {
+    throw new BusinessRuleError(
+      `${tank.name} には残量が ${volume.current_volume_l}L あります。空にしてから廃棄してください`
+    );
+  }
+
+  db.prepare(
+    `UPDATE tanks SET discarded_on = @discardedOn, discard_reason = @reason, status = '廃棄'
+     WHERE id = @id`
+  ).run({ id, discardedOn: discardedOn ?? today(), reason: reason ?? null });
+
+  operationLogService.record({
+    user: actor,
+    action: 'tank.discard',
+    targetType: 'tanks',
+    targetId: id,
+    summary: `タンク ${tank.code} ${tank.name} を廃棄（理由: ${reason ?? '未記入'}）`,
+  });
+
+  return db.prepare('SELECT * FROM tanks WHERE id = ?').get(id);
+}
+
+/** 廃棄していないタンクだけを返す（選択肢に使う） */
+function listTanks({ includeDiscarded = false } = {}) {
+  const db = getConnection();
+  const where = includeDiscarded ? '' : 'WHERE discarded_on IS NULL';
+  return db.prepare(`SELECT * FROM tanks ${where} ORDER BY code`).all();
+}
+
+module.exports = {
+  submitTankTransfer,
+  submitTaxFreeTransfer,
+  listLedger,
+  registerTank,
+  updateTank,
+  listTanks,
+  listTankPrefixes,
+  nextTankCode,
+  discardTank,
+  TANK_PREFIXES,
+};

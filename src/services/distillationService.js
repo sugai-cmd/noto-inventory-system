@@ -13,6 +13,7 @@ const { generateCode } = require('../utils/codeGenerator');
 const { nextRawSakeLotCode } = require('../utils/rawSakeCode');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
+const operationLogService = require('./operationLogService');
 
 // 蒸留IDのプレフィックスは Distill の 'D'（現行シート踏襲）。
 // 受注番号は同じ 'D' だと区別できないため 'O'（Order）に整理した（codeGenerator.js参照）。
@@ -399,6 +400,7 @@ function getStaleDistillationAlerts({ thresholdHours = 24 } = {}) {
                      - julianday(d.started_on || ' ' || d.started_time)) * 24, 1) AS elapsed_hours
        FROM distillations d
        WHERE d.status = @status
+         AND d.alert_acknowledged_on IS NULL   -- 「処理済み」にしたものは出さない
          AND julianday('now', 'localtime') - julianday(d.started_on || ' ' || d.started_time)
              > @thresholdDays
        ORDER BY d.started_on, d.started_time`
@@ -451,7 +453,39 @@ function findById(id) {
   return distillation;
 }
 
+
+/**
+ * 未対応アラートの消込（GAS版 README 3章「未対応アラート：『処理済み』で消込」）。
+ * 蒸留そのものの状態は変えず、アラート一覧から外すだけ。
+ * 実態としてまだ蒸留中なのに一覧が埋まってしまう状況を、記録を残して片付けるための操作。
+ */
+function acknowledgeStaleAlert(distillationId, { note } = {}, actor = null) {
+  const db = getConnection();
+  const row = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+  if (!row) throw new NotFoundError(`蒸留記録が見つかりません (id=${distillationId})`);
+  if (row.alert_acknowledged_on) {
+    throw new ConflictError(`${row.distillation_code} のアラートは既に処理済みです`);
+  }
+
+  db.prepare(
+    `UPDATE distillations
+       SET alert_acknowledged_on = @on, alert_acknowledged_by = @by, alert_acknowledged_note = @note
+     WHERE id = @id`
+  ).run({ id: distillationId, on: today(), by: actor?.id ?? null, note: note ?? null });
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.acknowledgeAlert',
+    targetType: 'distillations',
+    targetId: distillationId,
+    summary: `蒸留 ${row.distillation_code} の未対応アラートを処理済みにした（${note ?? '理由未記入'}）`,
+  });
+
+  return db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+}
+
 module.exports = {
+  acknowledgeStaleAlert,
   submitRawSakeReceipt,
   submitDistillationStart,
   completeDistillation,

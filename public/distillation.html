@@ -187,10 +187,34 @@ async function loadAlerts() {
   el('alerts').innerHTML = stale.length
     ? `<div class="msg error">
          <strong>24時間以上「蒸留中」のままの蒸留が ${stale.length} 件あります</strong>
-         <ul>${stale.map((d) => `<li>${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)} ${escapeHtml(d.started_time)}・経過 ${d.elapsed_hours}時間）</li>`).join('')}</ul>
+         <ul>${stale.map((d) => `<li>
+             ${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)} ${escapeHtml(d.started_time)}・経過 ${d.elapsed_hours}時間）
+             <button type="button" class="secondary small" data-ack="${d.id}">処理済みにする</button>
+           </li>`).join('')}</ul>
+         <p style="margin:6px 0 0;font-size:12px">
+           「処理済みにする」は、この一覧から外すだけの操作です。蒸留の状態は変わりません。
+         </p>
        </div>`
     : '';
 }
+
+el('alerts').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-ack]');
+  if (!btn) return;
+  const note = prompt('処理済みにする理由を入力してください（任意）');
+  if (note == null) return;
+
+  clearMessage('messages');
+  try {
+    const d = await apiPost(`/api/distillations/${btn.dataset.ack}/acknowledge-alert`, {
+      note: note.trim() || null,
+    });
+    showMessage('messages', 'ok', `${d.distillation_code} のアラートを処理済みにしました`);
+    await loadAlerts();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
 
 async function loadDistillations() {
   const params = new URLSearchParams();
