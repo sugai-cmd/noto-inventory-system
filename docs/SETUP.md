@@ -408,6 +408,37 @@ npm test
 launchctl load ~/Library/LaunchAgents/jp.noto-naorai.inventory.plist
 ```
 
+**データベースの中身（受注・在庫・利用者）は `git pull` では変わりません。**
+更新するのはプログラムだけです。表の形が変わる更新のときは、
+起動時にマイグレーションが自動で適用されます。
+
+### 7-1. まだ常時起動を設定していない場合
+
+4章がまだなら、`launchctl` の行は不要です。`npm start` を
+`Control + C` で止めて、更新してから、もう一度 `npm start` してください。
+
+### 7-2. 現在の場所を確認する
+
+```bash
+git branch --show-current
+```
+
+`main` と出れば、そのまま `git pull` で最新になります。
+それ以外（`claude/...` など作業用ブランチ）が出た場合は、`main` に戻してください。
+
+```bash
+git checkout main
+git pull
+```
+
+### 7-3. 各PCでの反映
+
+利用する側のPCでは、**ブラウザを再読み込みするだけ**です。
+インストール作業はありません。
+
+画面が変わらない、新しいメニューが出てこないときは、
+キャッシュを無視して読み込み直してください（Macは `Command + Shift + R`）。
+
 ---
 
 ## 8. 困ったときは
