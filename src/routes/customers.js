@@ -3,6 +3,8 @@ const { z } = require('zod');
 const customerModel = require('../models/customerModel');
 const customerNoteService = require('../services/customerNoteService');
 const { validateRequest } = require('../middlewares/validateRequest');
+const { getConnection } = require('../db/connection');
+const { nextMasterCode } = require('../utils/masterCode');
 
 const router = express.Router();
 
@@ -33,6 +35,15 @@ const updateSchema = createSchema.partial();
 router.get('/search', (req, res) => {
   const limit = Math.min(Number(req.query.limit) || 20, 100);
   res.json(customerModel.search(String(req.query.q ?? ''), limit));
+});
+
+/**
+ * 新規登録の初期値になるコード（GAS版の「IDはすべて自動採番」に相当）。
+ * プレフィックスと桁数は既存データから読み取るので、移行した過去データの
+ * 採番の続きになる（例: C0035 まであれば C0036）。
+ */
+router.get('/next-code', (req, res) => {
+  res.json(nextMasterCode(getConnection(), { table: 'customers', defaultPrefix: 'C' }));
 });
 
 router.get('/', (req, res) => {

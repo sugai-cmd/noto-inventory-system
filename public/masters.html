@@ -134,7 +134,7 @@ const MASTERS = {
     nameKey: 'name',
     hint: '受注登録画面の得意先検索に出てくる一覧です。掛率と支払いサイトは、受注の請求日・入金予定日の初期値に使われます。',
     fields: [
-      { key: 'code', label: '得意先コード', type: 'text', omitIfEmpty: true },
+      { key: 'code', label: '得意先コード', type: 'text', omitIfEmpty: true, autoCode: true },
       { key: 'name', label: '得意先名', type: 'text', required: true },
       { key: 'segment', label: '区分', type: 'text' },
       { key: 'businessType', label: '業態', type: 'text' },
@@ -168,7 +168,7 @@ const MASTERS = {
     hasRecipe: true,
     hint: '受注・瓶詰め画面の商品検索に出てくる一覧です。編集を始めると、下に製品レシピの欄が開きます。',
     fields: [
-      { key: 'code', label: '商品ID', type: 'text', omitIfEmpty: true },
+      { key: 'code', label: '商品ID', type: 'text', omitIfEmpty: true, autoCode: true },
       { key: 'name', label: '商品名称', type: 'text', required: true },
       { key: 'volumeMl', label: '容量(ml)', type: 'int' },
       { key: 'abv', label: '規定度数(%)', type: 'number', step: '0.1' },
@@ -234,6 +234,7 @@ const MASTERS = {
     canDelete: true,
     hint: '原酒の仕入れ先です。スプレッドシートからの移行対象外なので、ここから順次登録してください。',
     fields: [
+      { key: 'code', label: '酒蔵ID', type: 'text', omitIfEmpty: true, autoCode: true },
       { key: 'name', label: '酒蔵名', type: 'text', required: true },
       { key: 'address', label: '住所', type: 'text' },
       { key: 'phone', label: '電話番号', type: 'text' },
@@ -241,6 +242,7 @@ const MASTERS = {
       { key: 'startedOn', label: '取引開始日', type: 'date' },
     ],
     columns: [
+      { key: 'code', label: '酒蔵ID' },
       { key: 'name', label: '酒蔵名' },
       { key: 'address', label: '住所' },
       { key: 'phone', label: '電話番号' },
@@ -400,8 +402,37 @@ function renderForm() {
     });
   }
 
+  if (!editing) fillNextCode();
+
   el('recipePanel').style.display = s.hasRecipe && editing ? '' : 'none';
   el('notesPanel').style.display = currentTab === 'customers' && editing ? '' : 'none';
+}
+
+/**
+ * 新規登録のとき、コード欄に次の番号を入れておく（GAS版の「IDは自動採番」に相当）。
+ * 既存データの採番の続きになる（例: C0035 まであれば C0036）。
+ * 入力欄なので、別の番号を使いたければ手で書き換えられる。
+ */
+async function fillNextCode() {
+  const field = spec().fields.find((f) => f.autoCode);
+  const input = field && el(`f_${field.key}`);
+  if (!input || input.value) return;
+
+  try {
+    const next = await apiGet(`${spec().endpoint}/next-code`);
+    // 描画し直しや編集開始と競合しないよう、まだ空のときだけ入れる
+    if (!input.value && editingId == null) {
+      input.value = next.code;
+      const hint = input.parentElement.querySelector('.hint');
+      const text = next.basedOn
+        ? `${next.basedOn} の次の番号です。変更もできます`
+        : '最初の番号です。変更もできます';
+      if (hint) hint.textContent = text;
+      else input.insertAdjacentHTML('afterend', `<div class="hint">${escapeHtml(text)}</div>`);
+    }
+  } catch {
+    // 採番できなくても手入力で登録できるので、ここでは何も出さない
+  }
 }
 
 /** 一覧の行（スネークケース）を入力欄（キャメルケース）に流し込む */
