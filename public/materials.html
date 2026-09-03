@@ -54,6 +54,11 @@
     <h2>資材マスタ</h2>
     <form id="materialForm">
       <div class="grid">
+        <div>
+          <label for="mCode">資材ID</label>
+          <input type="text" id="mCode">
+          <div class="hint" id="mCodeHint"></div>
+        </div>
         <div><label for="mName">資材名</label><input type="text" id="mName" required></div>
         <div><label for="mUnit">単位</label><input type="text" id="mUnit" placeholder="本・枚・個"></div>
         <div><label for="mUnitPrice">単価(円)</label><input type="number" id="mUnitPrice" min="0" step="1"></div>
@@ -200,6 +205,7 @@ el('materialForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   clearMessage('messages');
   const payload = { name: el('mName').value.trim() };
+  if (el('mCode').value.trim()) payload.code = el('mCode').value.trim();
   const numeric = { mUnitPrice: 'unitPrice', mLotSize: 'lotSize', mProper: 'properStockQty', mInitial: 'initialStock', mLead: 'leadTimeDays' };
   for (const [id, key] of Object.entries(numeric)) {
     if (el(id).value !== '') payload[key] = Number(el(id).value);
@@ -213,7 +219,7 @@ el('materialForm').addEventListener('submit', async (e) => {
     showMessage('messages', 'ok', `資材「${m.name}」を登録しました`);
     el('materialForm').reset();
     el('mInitial').value = 0;
-    await Promise.all([loadMaterials(), loadStock()]);
+    await Promise.all([loadMaterials(), loadStock(), fillNextMaterialCode()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {
@@ -221,8 +227,24 @@ el('materialForm').addEventListener('submit', async (e) => {
   }
 });
 
+/**
+ * 資材IDの自動採番。既存データの採番の続きを初期値として入れる
+ * （GAS版の「IDはすべて自動採番」に相当）。手で書き換えてもよい。
+ */
+async function fillNextMaterialCode() {
+  try {
+    const next = await apiGet('/api/materials/next-code');
+    el('mCode').value = next.code;
+    el('mCodeHint').textContent = next.basedOn
+      ? `${next.basedOn} の次の番号です。変更もできます`
+      : '最初の番号です。変更もできます';
+  } catch {
+    // 採番できなくても手入力で登録できる
+  }
+}
+
 el('rDate').value = todayStr();
-Promise.all([loadMaterials(), loadStock(), loadLedger()])
+Promise.all([loadMaterials(), loadStock(), loadLedger(), fillNextMaterialCode()])
   .catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

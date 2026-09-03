@@ -22,29 +22,30 @@ function findByUid(uid) {
   return db.prepare('SELECT * FROM breweries WHERE uid = ?').get(uid);
 }
 
-function create({ name, address, phone, contact, startedOn }) {
+function create({ code, name, address, phone, contact, startedOn }) {
   const db = getConnection();
   const uid = generateUid(db, 'breweries');
   const result = db
     .prepare(
-      `INSERT INTO breweries (uid, name, address, phone, contact, started_on)
-       VALUES (?, ?, ?, ?, ?, ?)`
+      `INSERT INTO breweries (uid, code, name, address, phone, contact, started_on)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
     )
-    .run(uid, name, address ?? null, phone ?? null, contact ?? null, startedOn ?? null);
+    .run(uid, code || null, name, address ?? null, phone ?? null, contact ?? null, startedOn ?? null);
   return findById(result.lastInsertRowid);
 }
 
-function update(id, { name, address, phone, contact, startedOn }) {
+function update(id, { code, name, address, phone, contact, startedOn }) {
   const db = getConnection();
   db.prepare(
     `UPDATE breweries
-     SET name = COALESCE(?, name),
+     SET code = COALESCE(?, code),
+         name = COALESCE(?, name),
          address = COALESCE(?, address),
          phone = COALESCE(?, phone),
          contact = COALESCE(?, contact),
          started_on = COALESCE(?, started_on)
      WHERE id = ?`
-  ).run(name ?? null, address ?? null, phone ?? null, contact ?? null, startedOn ?? null, id);
+  ).run(code ?? null, name ?? null, address ?? null, phone ?? null, contact ?? null, startedOn ?? null, id);
   return findById(id);
 }
 

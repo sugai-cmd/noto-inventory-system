@@ -3,6 +3,7 @@ const { z } = require('zod');
 const materialService = require('../services/materialService');
 const { getConnection } = require('../db/connection');
 const { validateRequest } = require('../middlewares/validateRequest');
+const { nextMasterCode } = require('../utils/masterCode');
 
 const router = express.Router();
 
@@ -40,6 +41,14 @@ const updateSchema = createSchema.partial();
  * 資材在庫モニター（DB_SCHEMA_DESIGN.md 7-1で新設した v_material_stock）。
  * 現行スプレッドシートには存在しなかった「資材の現在庫数」がここで一覧できる。
  */
+/**
+ * 新規登録の初期値になるコード（既存データの採番の続き）。
+ * '/:id' より前に置く（後ろだと id として拾われてしまう）。
+ */
+router.get('/next-code', (req, res) => {
+  res.json(nextMasterCode(getConnection(), { table: 'materials', defaultPrefix: 'M' }));
+});
+
 router.get('/stock', (req, res) => {
   const db = getConnection();
   const rows = db

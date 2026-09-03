@@ -190,3 +190,65 @@ test('画面ファイルの404は従来どおり（APIの404だけを変えて�
   const { status } = await api('GET', '/no-such-page.html');
   assert.equal(status, 404);
 });
+
+// --- コードの自動採番（GAS版の「IDはすべて自動採番」） ---
+
+test('得意先コードは既存データの採番の続きを返す', async () => {
+  // このテストDBには「能登酒店」など code なしの得意先が既にいる
+  const first = await api('GET', '/api/customers/next-code');
+  assert.equal(first.status, 200);
+
+  await api('POST', '/api/customers', { code: 'C0035', name: '採番テスト商店' });
+  const next = await api('GET', '/api/customers/next-code');
+  assert.equal(next.body.code, 'C0036');
+  assert.equal(next.body.basedOn, 'C0035');
+  assert.equal(next.body.prefix, 'C');
+});
+
+test('コードが1件も無ければ既定のプレフィックスで1番から始まる', async () => {
+  const { body } = await api('GET', '/api/products/next-code');
+  assert.equal(body.code, 'P0001');
+  assert.equal(body.basedOn, null);
+});
+
+test('採番は表示するだけで、別のコードでも登録できる（多数派の書き方が保たれる）', async () => {
+  await api('POST', '/api/products', { code: 'P0001', name: '採番テスト商品1' });
+  await api('POST', '/api/products', { code: 'P0002', name: '採番テスト商品2' });
+
+  // 1件だけ別の書き方で登録しても
+  const created = await api('POST', '/api/products', { code: 'ORIGINAL-1', name: '手入力コードの商品' });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.code, 'ORIGINAL-1');
+
+  // 次の採番は多数派（P）の続きのまま。1件の例外に引きずられない
+  const after = await api('GET', '/api/products/next-code');
+  assert.equal(after.body.code, 'P0003');
+  assert.equal(after.body.prefix, 'P');
+});
+
+test('資材と酒蔵にも採番がある', async () => {
+  const material = await api('GET', '/api/materials/next-code');
+  assert.equal(material.body.code, 'M0001');
+
+  await api('POST', '/api/breweries', { code: 'B0007', name: '採番テスト蔵' });
+  const brewery = await api('GET', '/api/breweries/next-code');
+  assert.equal(brewery.body.code, 'B0008');
+});
+
+test('酒蔵IDを登録・保持できる（シートの酒蔵ID列に対応）', async () => {
+  const created = await api('POST', '/api/breweries', { code: 'B0100', name: 'ID付きの蔵' });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.code, 'B0100');
+
+  const duplicated = await api('POST', '/api/breweries', { code: 'B0100', name: '別の蔵' });
+  assert.equal(duplicated.status, 409);
+});
+
+test('/next-code は :id ルートに食われていない', async () => {
+  for (const path of ['/api/customers/next-code', '/api/products/next-code',
+                      '/api/materials/next-code', '/api/breweries/next-code']) {
+    const { status, body } = await api('GET', path);
+    assert.equal(status, 200, path);
+    assert.ok(body.code, `${path} が採番を返すこと`);
+  }
+});

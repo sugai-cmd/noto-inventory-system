@@ -3,6 +3,8 @@ const { z } = require('zod');
 const productModel = require('../models/productModel');
 const productService = require('../services/productService');
 const { validateRequest } = require('../middlewares/validateRequest');
+const { getConnection } = require('../db/connection');
+const { nextMasterCode } = require('../utils/masterCode');
 
 const router = express.Router();
 
@@ -53,6 +55,15 @@ router.get('/search', (req, res) => {
 // 商品在庫モニター相当（3章 v_product_stock）
 router.get('/stock', (req, res) => {
   res.json(productModel.stockAll());
+});
+
+/**
+ * 新規登録の初期値になるコード（GAS版の「IDはすべて自動採番」に相当）。
+ * プレフィックスと桁数は既存データから読み取るので、移行した過去データの
+ * 採番の続きになる（例: C0035 まであれば C0036）。
+ */
+router.get('/next-code', (req, res) => {
+  res.json(nextMasterCode(getConnection(), { table: 'products', defaultPrefix: 'P' }));
 });
 
 router.get('/', (req, res) => {

@@ -4,6 +4,8 @@ const express = require('express');
 const { z } = require('zod');
 const breweryModel = require('../models/breweryModel');
 const { validateRequest } = require('../middlewares/validateRequest');
+const { getConnection } = require('../db/connection');
+const { nextMasterCode } = require('../utils/masterCode');
 
 const router = express.Router();
 
@@ -12,6 +14,7 @@ const dateOnly = z
   .regex(/^\d{4}-\d{2}-\d{2}$/, '日付はYYYY-MM-DD形式で入力してください');
 
 const createSchema = z.object({
+  code: z.string().optional(),
   name: z.string().min(1, '酒蔵名は必須です'),
   address: z.string().optional(),
   phone: z.string().optional(),
@@ -20,6 +23,11 @@ const createSchema = z.object({
 });
 
 const updateSchema = createSchema.partial();
+
+/** 新規登録の初期値になるコード（既存データの採番の続き） */
+router.get('/next-code', (req, res) => {
+  res.json(nextMasterCode(getConnection(), { table: 'breweries', defaultPrefix: 'B' }));
+});
 
 router.get('/', (req, res) => {
   res.json(breweryModel.list());
