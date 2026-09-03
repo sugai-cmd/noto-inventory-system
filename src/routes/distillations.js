@@ -110,4 +110,22 @@ router.post('/:id/acknowledge-alert', (req, res, next) => {
   }
 });
 
+// 蒸留中の投入明細を後から足す（誤ったタンクを取り消してから入れ直すため）
+const addDetailSchema = z.object({
+  tankId: z.number().int().positive(),
+  volumeL: z.number().positive('投入量は0より大きい値で入力してください'),
+  specNote: z.string().optional(),
+  note: z.string().optional(),
+});
+
+router.post('/:id/details', validateRequest(addDetailSchema), (req, res, next) => {
+  try {
+    res.status(201).json(
+      distillationService.addDistillationDetailItem(Number(req.params.id), req.body, req.user)
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
 module.exports = router;

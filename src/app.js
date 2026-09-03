@@ -65,6 +65,8 @@ function createApp({ requireLogin = true } = {}) {
   app.use('/api/dashboard', require('./routes/dashboard'));      // 未入金・出荷予定・注文予測
   app.use('/api/ledger-cancel', require('./routes/ledgerCancel')); // 記録の取り消し
   app.use('/api/master-import', require('./routes/masterImport')); // マスタのCSV一括登録
+  app.use('/api/corrections', require('./routes/corrections'));    // 修正履歴（取消の一覧）
+  app.use('/api/quotations', require('./routes/quotations'));      // 見積管理
 
   // 存在しない /api/... は、Expressの既定のHTML404ではなくJSONで返す。
   // HTMLが返ると画面側のJSON.parseが落ち、利用者には

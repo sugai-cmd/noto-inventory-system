@@ -484,7 +484,99 @@ function acknowledgeStaleAlert(distillationId, { note } = {}, actor = null) {
   return db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
 }
 
+
+/**
+ * 蒸留中の投入明細を後から足す（旧 addDistillationDetailItem）。
+ * 誤ったタンクで登録したときに、取り消してから正しいタンクで入れ直すための操作。
+ * 原料受払記録に「払出」を1行足し、明細を1行足す。開始時と同じ流れ。
+ */
+function addDistillationDetailItem(distillationId, { tankId, volumeL, note, specNote } = {}, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const distillation = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+    if (!distillation) throw new NotFoundError(`蒸留記録が見つかりません (id=${distillationId})`);
+    if (distillation.status !== STATUS_IN_PROGRESS) {
+      throw new ConflictError(`${distillation.distillation_code} は${distillation.status}なので明細を足せません`);
+    }
+    if (!(volumeL > 0)) throw new BusinessRuleError('投入量は0より大きい値で入力してください');
+
+    const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(tankId);
+    if (!tank) throw new NotFoundError(`投入元タンクが見つかりません (id=${tankId})`);
+
+    const state = getRawSakeTankVolume(db, tankId);
+    if (state && state.current_volume_l < volumeL) {
+      throw new BusinessRuleError(
+        `原酒残量が不足しています（${tank.name}: 残${state.current_volume_l}L < 投入${volumeL}L）`
+      );
+    }
+
+    const txnDate = distillation.started_on;
+    const ledgerResult = db
+      .prepare(
+        `INSERT INTO raw_sake_ledger
+           (lot_code, txn_date, txn_type, from_tank_id, to_ref, to_tank_id, distillation_id,
+            quantity, spec_note, note)
+         VALUES
+           (@lotCode, @txnDate, '払出', @fromTankId, @toRef, NULL, @distillationId,
+            @quantity, @specNote, @note)`
+      )
+      .run({
+        lotCode: nextRawSakeLotCode(db, '払出', txnDate),
+        txnDate,
+        fromTankId: tankId,
+        toRef: distillation.distillation_code,
+        distillationId,
+        quantity: volumeL,
+        specNote: specNote ?? null,
+        note: note ?? null,
+      });
+
+    const detailResult = db
+      .prepare(
+        `INSERT INTO distillation_details
+           (distillation_id, raw_sake_ledger_id, input_l, source_tank_id, note)
+         VALUES (@distillationId, @rawSakeLedgerId, @inputL, @sourceTankId, @note)`
+      )
+      .run({
+        distillationId,
+        rawSakeLedgerId: ledgerResult.lastInsertRowid,
+        inputL: volumeL,
+        sourceTankId: tankId,
+        note: note ?? null,
+      });
+
+    // ヘッダの投入量合計を、取消されていない明細だけで数え直す
+    db.prepare(
+      `UPDATE distillations
+         SET total_input_l = (SELECT COALESCE(SUM(input_l), 0) FROM distillation_details
+                              WHERE distillation_id = ? AND is_cancelled = 0)
+       WHERE id = ?`
+    ).run(distillationId, distillationId);
+
+    operationLogService.record({
+      user: actor,
+      action: 'distillation.addDetail',
+      targetType: 'distillation_details',
+      targetId: detailResult.lastInsertRowid,
+      summary: `蒸留 ${distillation.distillation_code} に投入明細を追加（${tank.name} ${volumeL}L）`,
+    });
+
+    return {
+      detailId: detailResult.lastInsertRowid,
+      rawSakeLedgerId: ledgerResult.lastInsertRowid,
+      tankId,
+      volumeL,
+      totalInputL: db.prepare('SELECT total_input_l FROM distillations WHERE id = ?')
+        .get(distillationId).total_input_l,
+    };
+  });
+
+  return run();
+}
+
 module.exports = {
+  addDistillationDetailItem,
   acknowledgeStaleAlert,
   submitRawSakeReceipt,
   submitDistillationStart,

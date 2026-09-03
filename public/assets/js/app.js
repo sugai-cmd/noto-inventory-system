@@ -211,6 +211,7 @@ function renderNav(current) {
     ['stocktaking.html', '棚卸'],
     ['audit.html', '在庫監査'],
     ['sales-targets.html', '売上目標'],
+    ['quotations.html', '見積'],
     ['masters.html', 'マスタ'],
     ['shipping.html', '送料設定'],
     ['settings.html', '設定'],

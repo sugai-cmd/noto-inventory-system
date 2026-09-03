@@ -46,6 +46,29 @@ router.get('/next-code', (req, res) => {
   res.json(nextMasterCode(getConnection(), { table: 'customers', defaultPrefix: 'C' }));
 });
 
+/**
+ * 担当者の候補（旧 getStaffOptions）。
+ * GAS版は固定リストだったが、実際に得意先マスタで使われている名前も拾って混ぜる。
+ * 固定リストだけだと、人が増えたときにコードを直さないと出てこないため。
+ */
+const KNOWN_STAFF = ['田中', '菅井', '辻屋', '濱村', '阿慈知', '清水', '浜田'];
+
+router.get('/staff', (req, res) => {
+  const db = getConnection();
+  const used = db
+    .prepare(
+      `SELECT DISTINCT name FROM (
+         SELECT sales_rep AS name FROM customers WHERE sales_rep IS NOT NULL AND sales_rep <> ''
+         UNION
+         SELECT sales_sub_rep FROM customers WHERE sales_sub_rep IS NOT NULL AND sales_sub_rep <> ''
+       ) ORDER BY name`
+    )
+    .all()
+    .map((r) => r.name);
+
+  res.json([...new Set([...KNOWN_STAFF, ...used])]);
+});
+
 router.get('/', (req, res) => {
   res.json(customerModel.list());
 });

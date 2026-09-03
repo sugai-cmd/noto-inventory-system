@@ -23,6 +23,7 @@
     "better-sqlite3": "^13.0.3",
     "csv-parse": "^7.0.2",
     "express": "^5.2.1",
+    "iconv-lite": "^0.7.3",
     "zod": "^4.4.3"
   }
 }
