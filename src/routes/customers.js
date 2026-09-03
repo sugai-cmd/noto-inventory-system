@@ -77,6 +77,7 @@ router.put('/:id', validateRequest(updateSchema), (req, res, next) => {
 // 営業メモ（得意先ごとの追記ログ）
 const noteSchema = z.object({
   notedOn: dateOnly.optional(),
+  category: z.string().optional(),
   body: z.string().min(1, 'メモの内容を入力してください'),
 });
 

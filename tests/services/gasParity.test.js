@@ -25,7 +25,7 @@ test.before(async () => {
     db.prepare(`INSERT INTO materials (uid, name, unit, unit_price, initial_stock)
                 VALUES (?, '化粧箱', '枚', 60, 10000)`).run(generateUid(db, 'materials'));
     db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
-                VALUES (?, 'T-01', '貯蔵タンク1号', 'タンク', 1000, 500)`).run(generateUid(db, 'tanks'));
+                VALUES (?, 'T-01', '貯蔵タンク1号', 'ステンレスタンク', 1000, 500)`).run(generateUid(db, 'tanks'));
     db.prepare(`INSERT INTO product_recipes (product_id, material_id, qty_required, process)
                 VALUES (1, 1, 1, '瓶詰'), (1, 2, 1, '箱詰')`).run();
   }));
@@ -362,12 +362,29 @@ test('瓶詰めから7日以上たって残っている仕掛品が拾える', a
 
 // --- タンクの採番と廃棄 ---
 
-test('容器種別からプレフィックス付きの容器IDが採番される', async () => {
+test('容器種別からプレフィックス付きの容器IDが採番される（GAS版と同じ対応表）', async () => {
   const prefixes = await api('GET', '/api/tanks/prefixes');
-  assert.ok(prefixes.body.some((p) => p.containerType === 'QBテナー' && p.prefix === 'Q'));
+  const map = Object.fromEntries(prefixes.body.map((p) => [p.containerType, p.prefix]));
+  assert.deepEqual(map, {
+    ステンレスタンク: 'T',
+    木樽: 'B',
+    原酒ポリタンク: 'SP',
+    残渣タンク: 'U',
+    一斗瓶: 'G',
+    出荷用ポリタンク: 'JP',
+    QBテナー: 'Q',
+    蒸留機: 'DISTL',
+  });
 
-  const next = await api('GET', '/api/tanks/next-code?containerType=' + encodeURIComponent('タンク'));
-  assert.equal(next.body.code, 'T-02'); // 既存が T-01 なので採番の書き方を引き継ぐ
+  // 既存が T-01 なので、その書き方（2桁）を引き継ぐ
+  const next = await api(
+    'GET', '/api/tanks/next-code?containerType=' + encodeURIComponent('ステンレスタンク')
+  );
+  assert.equal(next.body.code, 'T-02');
+
+  // 1件も無い種別は、シートと同じ3桁で始まる
+  const fresh = await api('GET', '/api/tanks/next-code?containerType=' + encodeURIComponent('木樽'));
+  assert.equal(fresh.body.code, 'B-001');
 
   const unknown = await api('GET', '/api/tanks/next-code?containerType=なにか');
   assert.equal(unknown.status, 422);
@@ -379,7 +396,7 @@ test('残量のあるタンクは廃棄できず、空にすれば廃棄でき�
   assert.match(blocked.body.message, /残量/);
 
   const created = await api('POST', '/api/tanks', {
-    code: 'T-99', name: '廃棄テストタンク', containerType: 'タンク', maxVolumeL: 100,
+    code: 'T-99', name: '廃棄テストタンク', containerType: 'ステンレスタンク', maxVolumeL: 100,
   });
   const discarded = await api('POST', `/api/tanks/${created.body.id}/discard`, {
     discardedOn: '2026-09-01', reason: '破損',

@@ -13,7 +13,7 @@
 
   <div class="tabs" id="tabs"></div>
 
-  <section class="panel">
+  <section class="panel" id="formPanel">
     <h2 id="formTitle">新規登録</h2>
     <p class="muted" style="margin-top:0;font-size:13px" id="formHint"></p>
     <form id="masterForm">
@@ -23,6 +23,60 @@
         <button type="button" id="cancelBtn" class="secondary" style="display:none">編集をやめる</button>
       </div>
     </form>
+  </section>
+
+  <section class="panel" id="recipeMasterPanel" style="display:none">
+    <h2>製品レシピを登録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      1本あたりに必要な資材を、商品ごとに登録します。
+      瓶詰め・箱詰めのときに、ここの数量で資材在庫が引き落とされます。
+      同じ「商品×資材×工程」がすでにあれば数量が上書きされます。
+    </p>
+    <form id="recipeMasterForm">
+      <div class="grid">
+        <div>
+          <label for="rmProduct">商品</label>
+          <select id="rmProduct" required></select>
+        </div>
+        <div>
+          <label for="rmMaterial">資材</label>
+          <select id="rmMaterial" required></select>
+        </div>
+        <div>
+          <label for="rmQty">必要数量（1本あたり）</label>
+          <input type="number" id="rmQty" min="0.01" step="0.01" value="1" required>
+        </div>
+        <div>
+          <label for="rmProcess">ステータス（工程）</label>
+          <select id="rmProcess">
+            <option value="瓶詰">瓶詰</option>
+            <option value="箱詰">箱詰</option>
+          </select>
+        </div>
+        <div>
+          <label for="rmCode">レシピID</label>
+          <input type="text" id="rmCode" placeholder="W300-0001">
+          <div class="hint">シートのレシピIDに合わせる場合だけ入力してください</div>
+        </div>
+      </div>
+      <div class="actions"><button type="submit">レシピを登録</button></div>
+    </form>
+
+    <h3 style="margin-top:24px">登録済みのレシピ</h3>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="rmFilter">絞り込み</label>
+        <input type="text" id="rmFilter" placeholder="商品名・資材名で絞り込む">
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>レシピID</th><th>商品</th><th>資材</th><th class="num">必要数量</th><th>工程</th><th></th></tr>
+        </thead>
+        <tbody id="recipeMasterRows"></tbody>
+      </table>
+    </div>
   </section>
 
   <section class="panel" id="notesPanel" style="display:none">
@@ -42,7 +96,7 @@
     </form>
     <div class="table-scroll" style="margin-top:12px">
       <table>
-        <thead><tr><th>日付</th><th>内容</th><th>記録者</th><th></th></tr></thead>
+        <thead><tr><th>日付</th><th>種別</th><th>内容</th><th>記録者</th><th></th></tr></thead>
         <tbody id="noteRows"></tbody>
       </table>
     </div>
@@ -68,7 +122,7 @@
     </div>
   </section>
 
-  <section class="panel">
+  <section class="panel" id="listPanel">
     <h2 id="listTitle">一覧</h2>
     <div class="grid" style="margin-bottom:12px">
       <div>
@@ -87,7 +141,7 @@
   <section class="panel">
     <h2>CSVで一括登録</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      得意先・資材・酒蔵は、表計算ソフトからコピーしたCSVを貼り付けて一括登録できます。
+      得意先・商品・製品レシピ・資材・酒蔵は、表計算ソフトからコピーしたCSVを貼り付けて一括登録できます。
       <strong>スプレッドシートの見出し行ごと、そのまま貼り付けてください</strong>
       （「顧客ID」「支払いサイト日付」などシート側の列名でも読み取れます。列の並び順も問いません。
       タブ区切りでも大丈夫です）。<strong>すでに同じ名前がある行は更新</strong>になります。
@@ -98,6 +152,8 @@
         <label for="importKind">種別</label>
         <select id="importKind">
           <option value="customers">得意先</option>
+          <option value="products">商品</option>
+          <option value="productRecipes">製品レシピ</option>
           <option value="materials">資材</option>
           <option value="breweries">酒蔵</option>
         </select>
@@ -286,7 +342,11 @@ const MASTERS = {
   },
 };
 
-const TAB_ORDER = ['customers', 'products', 'tanks', 'breweries', 'raw-sake-brands'];
+const TAB_ORDER = ['customers', 'products', 'recipes', 'tanks', 'breweries', 'raw-sake-brands'];
+
+// レシピは「商品×資材×工程」で1行なので、他のマスタと同じ作りにできない。
+// タブだけ並べて、専用のパネルに切り替える。
+const RECIPE_TAB = 'recipes';
 
 let currentTab = 'customers';
 let editingId = null;
@@ -299,7 +359,7 @@ let recipeDraft = [];
 // --- タブ -------------------------------------------------------------------
 
 el('tabs').innerHTML = TAB_ORDER
-  .map((k) => `<button type="button" data-tab="${k}">${escapeHtml(MASTERS[k].label)}</button>`)
+  .map((k) => `<button type="button" data-tab="${k}">${escapeHtml(k === RECIPE_TAB ? '製品レシピ' : MASTERS[k].label)}</button>`)
   .join('');
 
 el('tabs').addEventListener('click', (e) => {
@@ -315,6 +375,18 @@ async function switchTab(tab) {
     b.classList.toggle('active', b.dataset.tab === tab);
   }
   clearMessage('messages');
+
+  const isRecipe = tab === RECIPE_TAB;
+  // レシピタブでは汎用のフォーム・一覧を隠して専用パネルに差し替える
+  for (const id of ['formPanel', 'listPanel']) el(id).style.display = isRecipe ? 'none' : '';
+  el('recipeMasterPanel').style.display = isRecipe ? '' : 'none';
+  el('recipePanel').style.display = 'none';
+  el('notesPanel').style.display = 'none';
+
+  if (isRecipe) {
+    await loadRecipeMaster();
+    return;
+  }
   renderForm();
   await loadList();
 }
@@ -324,6 +396,98 @@ async function switchTab(tab) {
 function spec() {
   return MASTERS[currentTab];
 }
+
+// --- 製品レシピ（専用タブ） -------------------------------------------------
+
+let recipeMaster = [];
+
+async function loadRecipeMaster() {
+  const [products, rows] = await Promise.all([
+    apiGet('/api/products'),
+    apiGet('/api/products/recipes'),
+  ]);
+  recipeMaster = rows;
+
+  el('rmProduct').innerHTML = '<option value="">選択してください</option>' +
+    products.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
+  el('rmMaterial').innerHTML = '<option value="">選択してください</option>' +
+    materials.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
+  renderRecipeMaster();
+}
+
+function renderRecipeMaster() {
+  const q = el('rmFilter').value.trim().toLowerCase();
+  const shown = q
+    ? recipeMaster.filter((r) =>
+        `${r.product_name} ${r.material_name} ${r.recipe_code ?? ''}`.toLowerCase().includes(q))
+    : recipeMaster;
+
+  el('recipeMasterRows').innerHTML = shown.length
+    ? shown.map((r) => `<tr>
+        <td>${escapeHtml(r.recipe_code ?? '')}</td>
+        <td>${escapeHtml(r.product_name)}</td>
+        <td>${escapeHtml(r.material_name)}</td>
+        <td class="num">${num(r.qty_required, 2)}${escapeHtml(r.material_unit ?? '')}</td>
+        <td>${escapeHtml(r.process ?? '')}</td>
+        <td><div class="row-actions">
+          <button type="button" class="secondary small" data-recipe-edit="${r.id}">読み込む</button>
+          <button type="button" class="danger small" data-recipe-master-del="${r.id}">削除</button>
+        </div></td>
+      </tr>`).join('')
+    : `<tr><td colspan="6" class="empty">${q ? '該当するレシピがありません' : 'レシピが登録されていません'}</td></tr>`;
+}
+
+el('rmFilter').addEventListener('input', renderRecipeMaster);
+
+el('recipeMasterForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  try {
+    const saved = await apiPost('/api/products/recipes', {
+      productId: Number(el('rmProduct').value),
+      materialId: Number(el('rmMaterial').value),
+      qtyRequired: Number(el('rmQty').value),
+      process: el('rmProcess').value,
+      ...(el('rmCode').value.trim() ? { recipeCode: el('rmCode').value.trim() } : {}),
+    });
+    await loadRecipeMaster();
+    showMessage('messages', 'ok',
+      `${saved.product_name} / ${saved.material_name}（${saved.process}）を登録しました`);
+    el('rmQty').value = 1;
+    el('rmCode').value = '';
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+el('recipeMasterRows').addEventListener('click', async (e) => {
+  const edit = e.target.closest('[data-recipe-edit]');
+  const del = e.target.closest('[data-recipe-master-del]');
+
+  if (edit) {
+    const row = recipeMaster.find((r) => r.id === Number(edit.dataset.recipeEdit));
+    el('rmProduct').value = row.product_id;
+    el('rmMaterial').value = row.material_id;
+    el('rmQty').value = row.qty_required;
+    el('rmProcess').value = row.process ?? '瓶詰';
+    el('rmCode').value = row.recipe_code ?? '';
+    el('recipeMasterPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    return;
+  }
+
+  if (del) {
+    const row = recipeMaster.find((r) => r.id === Number(del.dataset.recipeMasterDel));
+    if (!confirm(`${row.product_name} / ${row.material_name}（${row.process}）を削除します。よろしいですか？`)) return;
+    clearMessage('messages');
+    try {
+      await api('DELETE', `/api/products/recipes/${row.id}`);
+      await loadRecipeMaster();
+      showMessage('messages', 'ok', 'レシピを削除しました');
+    } catch (err) {
+      showMessage('messages', 'error', err.message);
+    }
+  }
+});
 
 function renderForm() {
   const s = spec();
@@ -752,11 +916,12 @@ async function loadNotes(customerId) {
   el('noteRows').innerHTML = notes.length
     ? notes.map((n) => `<tr>
         <td>${escapeHtml(n.noted_on)}</td>
+        <td>${escapeHtml(n.category ?? '')}</td>
         <td>${escapeHtml(n.body)}</td>
         <td>${escapeHtml(n.created_by_name ?? '')}</td>
         <td><button type="button" class="danger small" data-note-del="${n.id}">削除</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="4" class="empty">メモがありません</td></tr>';
+    : '<tr><td colspan="5" class="empty">メモがありません</td></tr>';
 }
 
 el('noteForm').addEventListener('submit', async (e) => {
@@ -765,6 +930,7 @@ el('noteForm').addEventListener('submit', async (e) => {
   try {
     await apiPost(`/api/customers/${editingId}/notes`, {
       notedOn: el('noteDate').value,
+      category: el('noteCategory').value,
       body: el('noteBody').value.trim(),
     });
     el('noteBody').value = '';
@@ -815,19 +981,18 @@ async function runImport(dryRun) {
       dryRun,
     });
 
-    if (r.errors.length) {
-      el('importResult').innerHTML =
-        `<div class="msg error"><strong>取り込めませんでした</strong>
-           <ul>${r.errors.map((e) => `<li>${e.line}行目: ${escapeHtml(e.message)}</li>`).join('')}</ul>
-         </div>`;
-      return;
-    }
+    // 不備のある行は飛ばして残りを取り込むので、両方を出す
+    const skipped = r.errors.length
+      ? `<div class="msg error"><strong>${r.errors.length}行を飛ばしました（内容を直して入れ直してください）</strong>
+           <ul>${r.errors.slice(0, 30).map((e) => `<li>${e.line}行目: ${escapeHtml(e.message)}</li>`).join('')}</ul>
+         </div>`
+      : '';
 
     const ignored = r.ignoredColumns?.length
       ? `<p style="margin:6px 0 0">取り込まなかった列（対応する項目がありません）:
            ${escapeHtml(r.ignoredColumns.join('・'))}</p>`
       : '';
-    el('importResult').innerHTML =
+    el('importResult').innerHTML = skipped +
       `<div class="msg ok">
          ${dryRun ? '確認結果' : '取り込みました'}：新規 ${r.created}件 / 更新 ${r.updated}件
          ${ignored}

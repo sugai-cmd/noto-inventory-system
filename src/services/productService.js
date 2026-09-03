@@ -234,5 +234,103 @@ function duplicateProduct(sourceId, overrides = {}, actor = null) {
   return registerProductWithRecipe(input, actor);
 }
 
+
+// --- 製品レシピ（行単位の操作） -------------------------------------------
+//
+// 商品ごとの一括差し替え（updateProductRecipe）とは別に、
+// レシピ画面から1行ずつ足したり直したりできるようにする。
+
+/** 全商品のレシピを名前つきで返す */
+function listAllRecipes() {
+  const db = getConnection();
+  return db
+    .prepare(
+      `SELECT r.id, r.recipe_code, r.product_id, r.material_id, r.qty_required, r.process,
+              p.name AS product_name, m.name AS material_name, m.unit AS material_unit
+       FROM product_recipes r
+       JOIN products  p ON p.id = r.product_id
+       JOIN materials m ON m.id = r.material_id
+       ORDER BY p.name, r.process DESC, m.name`
+    )
+    .all();
+}
+
+/** 1行の追加・更新。（商品×資材×工程）が既にあれば数量を書き換える */
+function upsertRecipeRow(input, actor = null) {
+  const db = getConnection();
+
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(input.productId);
+  if (!product) throw new NotFoundError(`商品が見つかりません (id=${input.productId})`);
+  const material = db.prepare('SELECT * FROM materials WHERE id = ?').get(input.materialId);
+  if (!material) throw new NotFoundError(`資材が見つかりません (id=${input.materialId})`);
+  if (!(input.qtyRequired > 0)) {
+    throw new BusinessRuleError('必要数量は0より大きい数値で入力してください');
+  }
+
+  const existing = db
+    .prepare(
+      'SELECT id FROM product_recipes WHERE product_id = ? AND material_id = ? AND process = ?'
+    )
+    .get(input.productId, input.materialId, input.process);
+
+  if (existing) {
+    db.prepare(
+      'UPDATE product_recipes SET qty_required = ?, recipe_code = COALESCE(?, recipe_code) WHERE id = ?'
+    ).run(input.qtyRequired, input.recipeCode ?? null, existing.id);
+  } else {
+    db.prepare(
+      `INSERT INTO product_recipes (recipe_code, product_id, material_id, qty_required, process)
+       VALUES (?, ?, ?, ?, ?)`
+    ).run(input.recipeCode ?? null, input.productId, input.materialId, input.qtyRequired, input.process);
+  }
+
+  operationLogService.record({
+    user: actor,
+    action: 'recipe.upsert',
+    targetType: 'product_recipes',
+    targetId: existing?.id ?? null,
+    summary:
+      `レシピ ${product.name} / ${material.name}（${input.process}）を` +
+      `${existing ? '更新' : '登録'}（1本あたり${input.qtyRequired}）`,
+  });
+
+  return db
+    .prepare(
+      `SELECT r.*, p.name AS product_name, m.name AS material_name
+       FROM product_recipes r
+       JOIN products p ON p.id = r.product_id
+       JOIN materials m ON m.id = r.material_id
+       WHERE r.product_id = ? AND r.material_id = ? AND r.process = ?`
+    )
+    .get(input.productId, input.materialId, input.process);
+}
+
+function deleteRecipeRow(id, actor = null) {
+  const db = getConnection();
+  const row = db
+    .prepare(
+      `SELECT r.id, p.name AS product_name, m.name AS material_name, r.process
+       FROM product_recipes r
+       JOIN products p ON p.id = r.product_id
+       JOIN materials m ON m.id = r.material_id
+       WHERE r.id = ?`
+    )
+    .get(id);
+  if (!row) return false;
+
+  db.prepare('DELETE FROM product_recipes WHERE id = ?').run(id);
+  operationLogService.record({
+    user: actor,
+    action: 'recipe.delete',
+    targetType: 'product_recipes',
+    targetId: id,
+    summary: `レシピ ${row.product_name} / ${row.material_name}（${row.process}）を削除`,
+  });
+  return true;
+}
+
 module.exports = {
+  listAllRecipes,
+  upsertRecipeRow,
+  deleteRecipeRow,
   duplicateProduct, registerProductWithRecipe, updateProduct, updateProductRecipe, getRecipe };

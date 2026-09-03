@@ -300,12 +300,12 @@ function updateTank(id, input, actor = null) {
 // 容器種別ごとのプレフィックス（DATA_STRUCTURE.md タンクマスタ、
 // GAS版 README 3章「種別選択でプレフィックス自動切替」）。
 const TANK_PREFIXES = {
-  タンク: 'T',
-  ボンベ: 'B',
-  スペーサー: 'SP',
-  ユニット: 'U',
-  ガロン: 'G',
-  ジャンボペール: 'JP',
+  ステンレスタンク: 'T',
+  木樽: 'B',
+  原酒ポリタンク: 'SP',
+  残渣タンク: 'U',
+  一斗瓶: 'G',
+  出荷用ポリタンク: 'JP',
   QBテナー: 'Q',
   蒸留機: 'DISTL',
 };
@@ -332,7 +332,7 @@ function nextTankCode(containerType) {
   // 例: T-01 / T01。SPとSは別物なので、数字の直前までを厳密に一致させる。
   const pattern = new RegExp(`^${prefix}([-_]?)(\\d+)$`);
   let separator = '-';
-  let width = 2;
+  let width = 3; // 既存データが無いときはGAS版と同じ T-001 形式にする
   let max = 0;
 
   for (const row of db.prepare('SELECT code FROM tanks').all()) {

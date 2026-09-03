@@ -8,7 +8,7 @@ const { validateRequest } = require('../middlewares/validateRequest');
 const router = express.Router();
 
 const importSchema = z.object({
-  kind: z.enum(['customers', 'materials', 'breweries']),
+  kind: z.enum(['customers', 'materials', 'breweries', 'products', 'productRecipes']),
   csv: z.string().min(1, 'CSVを貼り付けてください'),
   dryRun: z.boolean().optional(),
 });
