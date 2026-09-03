@@ -87,6 +87,12 @@
     <form id="noteForm">
       <div class="grid">
         <div><label for="noteDate">日付</label><input type="date" id="noteDate" required></div>
+        <div>
+          <label for="noteCategory">種別</label>
+          <select id="noteCategory">
+            <option>メモ</option><option>訪問</option><option>電話</option><option>課題</option>
+          </select>
+        </div>
         <div style="grid-column:span 2">
           <label for="noteBody">内容</label>
           <input type="text" id="noteBody" placeholder="例: 新商品を提案。次回は9月に再訪" required>
@@ -182,7 +188,10 @@ renderNav('masters.html');
 
 // ---------------------------------------------------------------------------
 // マスタごとの定義。fieldsが入力欄、columnsが一覧の列。
-//   type: text | number | int | date | month | brewery
+//   type: text | number | int | date | month | brewery | tankType
+//         select  … 決まった値だけを選ぶ（現行シートのプルダウンと同じ）
+//         suggest … 候補は出すが、それ以外も入力できる（実データに表記ゆれがある項目）
+//   choices: select / suggest の選択肢
 //   createOnly: 登録時のみ入力できる（APIが更新を受け付けない項目）
 //   omitIfEmpty: 空欄なら送らない（UNIQUE制約のあるコード項目など）
 // ---------------------------------------------------------------------------
@@ -195,13 +204,24 @@ const MASTERS = {
     fields: [
       { key: 'code', label: '得意先コード', type: 'text', omitIfEmpty: true, autoCode: true },
       { key: 'name', label: '得意先名', type: 'text', required: true },
-      { key: 'segment', label: '区分', type: 'text' },
-      { key: 'businessType', label: '業態', type: 'text' },
+      // シートのプルダウンと同じ3つ
+      { key: 'segment', label: '区分', type: 'select',
+        choices: ['卸売業者', '小売業者', '消費者'] },
+      // 業態はシートに20種類以上あり固定できないので、候補を出すだけにする
+      { key: 'businessType', label: '業態', type: 'suggest',
+        choices: ['飲食店', '小売', '小売(業務用)', '酒屋', '業務用酒屋', '旅館・ホテル', '道の駅',
+                  '国内卸', '海外卸', '卸問屋', '個人', '消費者', '出資者', 'グループ会社',
+                  '社割', '銀行', '直接販売', 'その他'] },
       { key: 'markupRate', label: '掛率', type: 'number', step: '0.01', hint: '上代に掛ける率。1で上代どおり' },
       { key: 'address', label: '住所', type: 'text' },
-      { key: 'paymentTermMonths', label: '支払いサイト（月数）', type: 'int',
-        hint: '締めから何ヶ月後の入金か。当月=0／翌月=1／翌々月=2' },
-      { key: 'paymentTermDay', label: '支払いサイト（日）', type: 'text', placeholder: '末日 / 25日' },
+      // シートは「当月／翌月／翌々月」表記。こちらは日付計算のため月数で持つ（18-3）
+      { key: 'paymentTermMonths', label: '支払いサイト（月数）', type: 'select', valueType: 'int',
+        choices: [
+          { value: '0', label: '当月' }, { value: '1', label: '翌月' },
+          { value: '2', label: '翌々月' }, { value: '3', label: '3ヶ月後' },
+        ] },
+      { key: 'paymentTermDay', label: '支払いサイト（日）', type: 'suggest',
+        choices: ['末日', '1日', '5日', '10日', '15日', '20日', '25日'] },
       { key: 'invoiceDueNote', label: '請求書送付期日', type: 'text' },
       { key: 'salesRep', label: '担当者', type: 'text' },
       { key: 'salesSubRep', label: 'サブ担当者', type: 'text' },
@@ -232,8 +252,9 @@ const MASTERS = {
       { key: 'name', label: '商品名称', type: 'text', required: true },
       { key: 'volumeMl', label: '容量(ml)', type: 'int' },
       { key: 'abv', label: '規定度数(%)', type: 'number', step: '0.1' },
-      { key: 'containerType', label: '容器タイプ', type: 'text' },
-      { key: 'unit', label: '単位', type: 'text', placeholder: '本' },
+      { key: 'containerType', label: '容器タイプ', type: 'select',
+        choices: ['ガラス瓶', 'パウチ'] },
+      { key: 'unit', label: '単位', type: 'suggest', choices: ['本', '個', '枚', 'セット'] },
       { key: 'listPrice', label: '上代(円)', type: 'number', step: '1' },
       { key: 'janCode', label: 'JANコード', type: 'text' },
       { key: 'category', label: '商品カテゴリ', type: 'text' },
@@ -266,8 +287,8 @@ const MASTERS = {
       { key: 'code', label: '容器ID', type: 'text', required: true, createOnly: true },
       { key: 'name', label: '容器名称', type: 'text', required: true },
       { key: 'maxVolumeL', label: '最大容量(L)', type: 'number', step: '0.1' },
-      { key: 'location', label: '設置場所', type: 'text' },
-      { key: 'status', label: '状態', type: 'text', placeholder: '使用中 / 空' },
+      { key: 'location', label: '設置場所', type: 'select', choices: ['浄溜所', '熟成室'] },
+      { key: 'status', label: '状態', type: 'select', choices: ['稼働中', '空', '満タン', '廃棄'] },
       { key: 'gaugeConstant', label: '検尺定数', type: 'number', step: '0.001' },
       { key: 'currentAbv', label: '現在のアルコール度数(%)', type: 'number', step: '0.1' },
       { key: 'initialVolumeL', label: '初期在庫量(L)', type: 'number', step: '0.1', createOnly: true,
@@ -322,7 +343,7 @@ const MASTERS = {
       { key: 'brewery', label: '酒蔵', type: 'brewery' },
       { key: 'abv', label: '度数(%)', type: 'number', step: '0.1' },
       { key: 'sakeMeterValue', label: '日本酒度', type: 'number', step: '0.1' },
-      { key: 'status', label: '状態', type: 'text' },
+      { key: 'status', label: 'ステータス', type: 'select', choices: ['未納税', '納税済'] },
       { key: 'producedOn', label: '製造年月', type: 'text', placeholder: '2026-08 / 令和8年8月',
         hint: '和暦などの自由記述も入れられます' },
       { key: 'registeredOn', label: '登録日', type: 'date' },
@@ -512,7 +533,25 @@ function renderForm() {
       const ph = f.placeholder ? ` placeholder="${escapeHtml(f.placeholder)}"` : '';
 
       let control;
-      if (f.type === 'tankType') {
+      if (f.type === 'select') {
+        // 決まった値だけを選ぶ。文字列の配列でも {value,label} でも書ける
+        const opts = f.choices.map((c) => {
+          const value = typeof c === 'string' ? c : c.value;
+          const label = typeof c === 'string' ? c : c.label;
+          return `<option value="${escapeHtml(value)}">${escapeHtml(label)}</option>`;
+        }).join('');
+        control =
+          `<select id="f_${f.key}"${required}${disabled}>
+             <option value="">（未設定）</option>${opts}
+           </select>`;
+      } else if (f.type === 'suggest') {
+        // 候補は出すが、一覧に無い値も入力できる
+        control =
+          `<input type="text" id="f_${f.key}" list="dl_${f.key}"${required}${disabled}${ph}>
+           <datalist id="dl_${f.key}">
+             ${f.choices.map((c) => `<option value="${escapeHtml(c)}">`).join('')}
+           </datalist>`;
+      } else if (f.type === 'tankType') {
         control =
           `<select id="f_${f.key}"${disabled}>
              <option value="">（未設定）</option>
@@ -656,6 +695,13 @@ function buildPayload() {
     }
 
     const raw = input.value.trim();
+
+    // 数値を選ばせるselect（支払いサイト月数など）は数値に戻して送る
+    if (f.type === 'select' && f.valueType === 'int') {
+      if (raw !== '') payload[f.key] = Number(raw);
+      continue;
+    }
+
     if (f.type === 'number' || f.type === 'int' || f.type === 'date' || f.type === 'month') {
       // 数値・日付は空欄なら送らない（送ると形式チェックに引っかかるため）
       if (raw === '') continue;
