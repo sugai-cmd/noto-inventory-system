@@ -335,7 +335,7 @@ launchctl load ~/Library/LaunchAgents/jp.noto-naorai.inventory.plist     # 再�
 
 ### 6-1. サーバー機で確認すること
 
-- [ ] `npm test` が全て通る（182件）
+- [ ] `npm test` が全て通る（183件）
 - [ ] `npm start` でエラーなく起動する
 - [ ] <http://localhost:3000> でログイン画面が出る
 - [ ] 作成したIDでログインできる

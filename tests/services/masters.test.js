@@ -349,8 +349,33 @@ test('住所の改行や引用符を含む行も壊れない', async () => {
   assert.ok(db.prepare('SELECT 1 FROM customers WHERE name = ?').get('引用符テスト10"1'));
 });
 
-test('取り込みテンプレートは、シート側の列名も案内する', async () => {
+test('取り込みテンプレートの見出しは、シートの列名・並び順そのもの', async () => {
   const { body } = await api('GET', '/api/master-import/template/customers');
-  const code = body.aliases.find((a) => a.canonical === '得意先コード');
-  assert.ok(code.aliases.includes('顧客ID'));
+  assert.equal(
+    body.header,
+    '顧客ID,得意先名,区分,業態,掛率,住所,支払いサイト月数,支払いサイト日付,' +
+      '請求日送付期日,備考,担当者,サブ担当者,流通経路,最終訪問日,取引開始月'
+  );
+  // こちらの旧表記も別名として受け付ける
+  const code = body.aliases.find((a) => a.canonical === '顧客ID');
+  assert.ok(code.aliases.includes('得意先コード'));
+});
+
+test('資材・商品・レシピの見出しもシートの列そのもの', async () => {
+  const material = await api('GET', '/api/master-import/template/materials');
+  assert.equal(
+    material.body.header,
+    '資材ID,資材名,資材種別,単位,単価(円),ロット数,適正在庫数,初期在庫数,' +
+      '発注先会社名,発注先住所,発注先担当者名,備考,リードタイム'
+  );
+
+  const product = await api('GET', '/api/master-import/template/products');
+  assert.equal(
+    product.body.header,
+    '商品名称,容量(ml),規定度数,容器タイプ,単位,上代,JAN,目標エキス分基準,備考,' +
+      '商品カテゴリ,商品ID,初期商品在庫数,初期仕掛品在庫数,課税額'
+  );
+
+  const recipe = await api('GET', '/api/master-import/template/productRecipes');
+  assert.equal(recipe.body.header, 'レシピID,商品名称,資材名,必要数量,ステータス');
 });

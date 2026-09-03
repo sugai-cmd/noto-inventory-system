@@ -19,7 +19,7 @@ function list(customerId, { limit = 100 } = {}) {
     .all(customerId, limit);
 }
 
-function add({ customerId, notedOn, body }, actor = null) {
+function add({ customerId, notedOn, category, body }, actor = null) {
   const db = getConnection();
   const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId);
   if (!customer) throw new NotFoundError(`得意先が見つかりません (id=${customerId})`);
@@ -27,12 +27,13 @@ function add({ customerId, notedOn, body }, actor = null) {
 
   const result = db
     .prepare(
-      `INSERT INTO customer_notes (customer_id, noted_on, body, created_by)
-       VALUES (@customerId, @notedOn, @body, @createdBy)`
+      `INSERT INTO customer_notes (customer_id, noted_on, category, body, created_by)
+       VALUES (@customerId, @notedOn, @category, @body, @createdBy)`
     )
     .run({
       customerId,
       notedOn: notedOn ?? today(),
+      category: category?.trim() || 'メモ',
       body: String(body).trim(),
       createdBy: actor?.id ?? null,
     });

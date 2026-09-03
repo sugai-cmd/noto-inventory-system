@@ -9,9 +9,14 @@ const { getConnection } = require('../db/connection');
 const customerModel = require('../models/customerModel');
 const breweryModel = require('../models/breweryModel');
 const materialService = require('./materialService');
+const productService = require('./productService');
 const { normalizeName } = require('../utils/normalizeName');
 const { BusinessRuleError } = require('../utils/errors');
 const { parsePaymentTermMonths, ACCEPTED_WORDS } = require('../utils/paymentTerm');
+const { parseLeadTimeDays } = require('../utils/leadTime');
+
+// 製品レシピマスタ「ステータス」列に入る値（＝工程）
+const RECIPE_PROCESSES = ['瓶詰', '箱詰'];
 
 // CSVの見出し（日本語）→ APIの項目名。
 //
@@ -22,39 +27,48 @@ const { parsePaymentTermMonths, ACCEPTED_WORDS } = require('../utils/paymentTerm
 const TEMPLATES = {
   customers: {
     label: '得意先',
+    // 列と並びは得意先マスタシートのとおり
     columns: {
-      得意先コード: { key: 'code', aliases: ['顧客ID', '得意先ID'] },
+      顧客ID: { key: 'code', aliases: ['得意先コード', '得意先ID'] },
       得意先名: { key: 'name', required: true },
       区分: { key: 'segment' },
       業態: { key: 'businessType' },
       掛率: { key: 'markupRate', type: 'number', aliases: ['掛け率'] },
       住所: { key: 'address' },
-      // シートは「当月」「翌月」「翌々月」で入っているので、月数に読み替える
       支払いサイト月数: { key: 'paymentTermMonths', type: 'paymentTerm' },
-      支払いサイト日: { key: 'paymentTermDay', aliases: ['支払いサイト日付'] },
-      請求書送付期日: { key: 'invoiceDueNote', aliases: ['請求日送付期日'] },
+      支払いサイト日付: { key: 'paymentTermDay', aliases: ['支払いサイト日'] },
+      請求日送付期日: { key: 'invoiceDueNote', aliases: ['請求書送付期日'] },
+      備考: { key: 'note' },
       担当者: { key: 'salesRep' },
       サブ担当者: { key: 'salesSubRep' },
       流通経路: { key: 'salesChannel' },
       最終訪問日: { key: 'lastVisitedOn' },
       取引開始月: { key: 'onboardedMonth' },
-      備考: { key: 'note' },
     },
   },
+
   materials: {
     label: '資材',
+    // 列と並びは資材マスタシートのとおり。
+    // 「単価×ロット数(円)」はシート上の計算列なので取り込まない。
     columns: {
       資材ID: { key: 'code' },
       資材名: { key: 'name', required: true, aliases: ['資材名称'] },
+      資材種別: { key: 'category' },
       単位: { key: 'unit' },
-      単価: { key: 'unitPrice', type: 'number', aliases: ['基準単価'] },
+      '単価(円)': { key: 'unitPrice', type: 'number', aliases: ['単価', '基準単価'] },
       ロット数: { key: 'lotSize', type: 'int' },
       適正在庫数: { key: 'properStockQty', type: 'int', aliases: ['適正在庫'] },
       初期在庫数: { key: 'initialStock', type: 'number', aliases: ['初期在庫'] },
-      発注先: { key: 'supplierName', aliases: ['仕入先'] },
-      リードタイム: { key: 'leadTimeDays', type: 'int', aliases: ['リードタイム(日)', 'リードタイム日数'] },
+      発注先会社名: { key: 'supplierName', aliases: ['発注先', '仕入先'] },
+      発注先住所: { key: 'supplierAddress' },
+      発注先担当者名: { key: 'supplierContact', aliases: ['発注先担当者'] },
+      備考: { key: 'note' },
+      リードタイム: { key: 'leadTimeDays', type: 'leadTime', aliases: ['リードタイム(日)', 'リードタイム日数'] },
+      // 「単価×ロット数(円)」はシート上の計算列。取り込まず、無視した列として報告する
     },
   },
+
   breweries: {
     label: '酒蔵',
     columns: {
@@ -62,8 +76,43 @@ const TEMPLATES = {
       酒蔵名: { key: 'name', required: true },
       住所: { key: 'address' },
       電話番号: { key: 'phone' },
-      担当者: { key: 'contact', aliases: ['担当者名'] },
+      担当者名: { key: 'contact', aliases: ['担当者'] },
       取引開始日: { key: 'startedOn' },
+    },
+  },
+
+  products: {
+    label: '商品',
+    // 列と並びは商品マスタシートのとおり
+    columns: {
+      商品名称: { key: 'name', required: true, aliases: ['商品名'] },
+      '容量(ml)': { key: 'volumeMl', type: 'int', aliases: ['容量'] },
+      規定度数: { key: 'abv', type: 'number', aliases: ['アルコール度数', '度数'] },
+      容器タイプ: { key: 'containerType' },
+      単位: { key: 'unit' },
+      上代: { key: 'listPrice', type: 'number' },
+      JAN: { key: 'janCode', aliases: ['JANコード'] },
+      目標エキス分基準: { key: 'targetExtractSpec' },
+      備考: { key: 'note' },
+      商品カテゴリ: { key: 'category' },
+      商品ID: { key: 'code' },
+      初期商品在庫数: { key: 'initialProductStock', type: 'int' },
+      初期仕掛品在庫数: { key: 'initialWipStock', type: 'int' },
+      課税額: { key: 'taxPerUnit', type: 'number' },
+    },
+  },
+
+  productRecipes: {
+    label: '製品レシピ',
+    // 製品レシピマスタシートのとおり。商品と資材は名前で引く。
+    // 「ステータス」列に瓶詰／箱詰が入っているので、それを工程として扱う。
+    byName: false, // 名前1つでは特定できない（商品×資材×工程の組み合わせ）
+    columns: {
+      レシピID: { key: 'recipeCode' },
+      商品名称: { key: 'productName', required: true, aliases: ['商品名'] },
+      資材名: { key: 'materialName', required: true, aliases: ['資材名称'] },
+      必要数量: { key: 'qtyRequired', type: 'number', required: true, aliases: ['必要数'] },
+      ステータス: { key: 'process', required: true, aliases: ['工程'] },
     },
   },
 };
@@ -98,6 +147,11 @@ const MODELS = {
     update: (id, input) => materialService.updateMaterial(id, input),
   },
   breweries: breweryModel,
+  products: {
+    list: () => getConnection().prepare('SELECT * FROM products ORDER BY name').all(),
+    create: (input) => productService.registerProductWithRecipe(input),
+    update: (id, input) => productService.updateProduct(id, input),
+  },
 };
 
 /** 画面に出す取り込みテンプレート（見出し行） */
@@ -198,6 +252,13 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
   }
 
   const db = getConnection();
+
+  // 製品レシピは「商品×資材×工程」の組み合わせで一意なので、名前1つでは引けない。
+  // 専用の取り込みに分ける。
+  if (kind === 'productRecipes') {
+    return importRecipes(db, records, mapped, ignoredColumns, { dryRun });
+  }
+
   const existing = new Map(model.list().map((r) => [normalizeName(r.name), r]));
 
   const errors = [];
@@ -210,6 +271,18 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
       const raw = record[header];
       if (raw == null || raw === '') {
         if (def.required) errors.push({ line, message: `${def.canonical}は必須です` });
+        continue;
+      }
+      if (def.type === 'leadTime') {
+        const { days, ok } = parseLeadTimeDays(raw);
+        if (!ok) {
+          errors.push({
+            line,
+            message: `${def.canonical}を読み取れませんでした: "${raw}"（1日／3週間／1.5ヶ月 のように入力してください）`,
+          });
+          continue;
+        }
+        if (days != null) input[def.key] = days;
         continue;
       }
       if (def.type === 'paymentTerm') {
@@ -237,17 +310,19 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
         input[def.key] = String(raw).trim();
       }
     }
-    if (input.name) {
+    const failedThisLine = errors.some((e) => e.line === line);
+    if (input.name && !failedThisLine) {
       parsed.push({ line, input, existing: existing.get(normalizeName(input.name)) ?? null });
     }
   });
 
-  if (errors.length) return { created: 0, updated: 0, errors, ignoredColumns, rows: [] };
-
+  // 不備のある行は飛ばして、残りは取り込む。
+  // 実データには必ず例外的な書き方の行が混ざるので、1行のために全部止めない。
   const summarize = (rows) => ({
     created: rows.filter((r) => !r.existing).length,
     updated: rows.filter((r) => r.existing).length,
-    errors: [],
+    skipped: errors.length,
+    errors,
     ignoredColumns,
     rows: rows.map((r) => ({
       line: r.line,
@@ -269,4 +344,108 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
   return run();
 }
 
-module.exports = { TEMPLATES, templateFor, importCsv };
+/**
+ * 製品レシピの取り込み。
+ * 商品名・資材名でマスタを引き、（商品×資材×工程）が既にあれば数量を更新する。
+ * マスタに無い名前はエラーにする。ここで勝手に商品や資材を作ると、
+ * 表記ゆれの分だけマスタが増えて収拾がつかなくなるため。
+ */
+function importRecipes(db, records, mapped, ignoredColumns, { dryRun }) {
+  const products = new Map(
+    db.prepare('SELECT id, name FROM products').all().map((r) => [normalizeName(r.name), r])
+  );
+  const materials = new Map(
+    db.prepare('SELECT id, name FROM materials').all().map((r) => [normalizeName(r.name), r])
+  );
+
+  const errors = [];
+  const parsed = [];
+
+  records.forEach((record, i) => {
+    const line = i + 2;
+    const row = {};
+    for (const [header, def] of mapped) {
+      const raw = record[header];
+      if (raw == null || String(raw).trim() === '') {
+        if (def.required) errors.push({ line, message: `${def.canonical}は必須です` });
+        continue;
+      }
+      row[def.key] = def.type === 'number' ? Number(raw) : String(raw).trim();
+    }
+    if (row.productName == null || row.materialName == null || row.process == null) return;
+
+    const product = products.get(normalizeName(row.productName));
+    const material = materials.get(normalizeName(row.materialName));
+    if (!product) {
+      errors.push({ line, message: `商品マスタに「${row.productName}」がありません。先に商品を登録してください` });
+      return;
+    }
+    if (!material) {
+      errors.push({ line, message: `資材マスタに「${row.materialName}」がありません。先に資材を登録してください` });
+      return;
+    }
+    if (!RECIPE_PROCESSES.includes(row.process)) {
+      errors.push({
+        line,
+        message: `ステータスは ${RECIPE_PROCESSES.join('／')} のどちらかです: "${row.process}"`,
+      });
+      return;
+    }
+    if (!Number.isFinite(row.qtyRequired) || row.qtyRequired <= 0) {
+      errors.push({ line, message: `必要数量は0より大きい数値で入力してください: "${row.qtyRequired}"` });
+      return;
+    }
+
+    const current = db
+      .prepare(
+        'SELECT id FROM product_recipes WHERE product_id = ? AND material_id = ? AND process = ?'
+      )
+      .get(product.id, material.id, row.process);
+
+    parsed.push({
+      line,
+      recipeCode: row.recipeCode ?? null,
+      productId: product.id,
+      materialId: material.id,
+      qtyRequired: row.qtyRequired,
+      process: row.process,
+      existingId: current?.id ?? null,
+      label: `${product.name} / ${material.name}（${row.process}）`,
+    });
+  });
+
+  const summarize = () => ({
+    created: parsed.filter((r) => !r.existingId).length,
+    updated: parsed.filter((r) => r.existingId).length,
+    skipped: errors.length,
+    errors,
+    ignoredColumns,
+    rows: parsed.map((r) => ({
+      line: r.line,
+      name: r.label,
+      action: r.existingId ? '更新' : '新規',
+    })),
+  });
+
+  if (dryRun) return summarize();
+
+  const run = db.transaction(() => {
+    for (const r of parsed) {
+      if (r.existingId) {
+        db.prepare(
+          'UPDATE product_recipes SET qty_required = ?, recipe_code = COALESCE(?, recipe_code) WHERE id = ?'
+        ).run(r.qtyRequired, r.recipeCode, r.existingId);
+      } else {
+        db.prepare(
+          `INSERT INTO product_recipes (recipe_code, product_id, material_id, qty_required, process)
+           VALUES (?, ?, ?, ?, ?)`
+        ).run(r.recipeCode, r.productId, r.materialId, r.qtyRequired, r.process);
+      }
+    }
+    return summarize();
+  });
+
+  return run();
+}
+
+module.exports = { TEMPLATES, templateFor, importCsv, RECIPE_PROCESSES };

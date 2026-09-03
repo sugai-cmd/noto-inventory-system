@@ -52,6 +52,34 @@ router.get('/search', (req, res) => {
   res.json(productModel.search(String(req.query.q ?? ''), limit));
 });
 
+// --- 製品レシピ（レシピ画面用。'/:id' より前に置く） -----------------------
+
+const recipeRowSchema = z.object({
+  productId: z.number().int().positive(),
+  materialId: z.number().int().positive(),
+  qtyRequired: z.number().positive('必要数量は0より大きい数値で入力してください'),
+  process: z.enum(['瓶詰', '箱詰']),
+  recipeCode: z.string().optional(),
+});
+
+router.get('/recipes', (req, res) => {
+  res.json(productService.listAllRecipes());
+});
+
+router.post('/recipes', validateRequest(recipeRowSchema), (req, res, next) => {
+  try {
+    res.status(201).json(productService.upsertRecipeRow(req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+router.delete('/recipes/:recipeId', (req, res) => {
+  const deleted = productService.deleteRecipeRow(Number(req.params.recipeId), req.user);
+  if (!deleted) return res.status(404).json({ error: 'not_found' });
+  res.status(204).end();
+});
+
 // 商品在庫モニター相当（3章 v_product_stock）
 router.get('/stock', (req, res) => {
   res.json(productModel.stockAll());
