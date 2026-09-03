@@ -123,6 +123,32 @@
     <h2>蒸留詳細 <span id="detailCode"></span></h2>
     <div id="detailBody"></div>
   </section>
+
+  <section class="panel">
+    <h2>蒸留中の投入明細を追加</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      誤ったタンクで登録してしまったときに、その明細を取り消してから正しいタンクで入れ直すための操作です。
+      原料受払記録にも払出が1行足され、投入量合計が数え直されます。
+    </p>
+    <form id="addDetailForm">
+      <div class="grid">
+        <div>
+          <label for="adDistillation">蒸留中の記録</label>
+          <select id="adDistillation" required></select>
+        </div>
+        <div>
+          <label for="adTank">投入元タンク（原酒）</label>
+          <select id="adTank" required></select>
+        </div>
+        <div>
+          <label for="adVolume">投入量(L)</label>
+          <input type="number" id="adVolume" min="0.1" step="0.1" required>
+        </div>
+      </div>
+      <div style="margin-top:12px"><label for="adNote">備考</label><input type="text" id="adNote"></div>
+      <div class="actions"><button type="submit" id="adSubmit">明細を追加</button></div>
+    </form>
+  </section>
 </main>
 
 <script src="assets/js/app.js"></script>
@@ -443,6 +469,48 @@ el('sTime').value = nowTimeStr();
     showMessage('messages', 'error', err.message);
   }
 })();
+
+/** 蒸留中の投入明細を後から足す */
+async function loadAddDetailOptions() {
+  const [inProgress, tanks] = await Promise.all([
+    apiGet('/api/distillations?status=' + encodeURIComponent('蒸留中')),
+    apiGet('/api/raw-sake-receipts/tanks'),
+  ]);
+  el('adDistillation').innerHTML = inProgress.length
+    ? inProgress.map((d) =>
+        `<option value="${d.id}">${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)}）</option>`
+      ).join('')
+    : '<option value="">蒸留中の記録がありません</option>';
+  el('adTank').innerHTML = tanks
+    .map((t) => `<option value="${t.tank_id}">${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`)
+    .join('');
+}
+
+el('addDetailForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  if (!el('adDistillation').value) return showMessage('messages', 'error', '蒸留中の記録がありません');
+
+  el('adSubmit').disabled = true;
+  try {
+    const payload = {
+      tankId: Number(el('adTank').value),
+      volumeL: Number(el('adVolume').value),
+    };
+    if (el('adNote').value.trim()) payload.note = el('adNote').value.trim();
+
+    const r = await apiPost(`/api/distillations/${el('adDistillation').value}/details`, payload);
+    showMessage('messages', 'ok', `投入明細を追加しました（投入量合計 ${num(r.totalInputL, 1)}L）`);
+    el('addDetailForm').reset();
+    await Promise.all([loadAddDetailOptions(), loadDistillations()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('adSubmit').disabled = false;
+  }
+});
+
+loadAddDetailOptions().catch(() => {});
 </script>
 </body>
 </html>

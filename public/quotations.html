@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>見積 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <div class="stat-row" style="margin-bottom:20px">
+    <div class="stat"><div class="label">見積中の件数</div><div class="value" id="statCount">-</div></div>
+    <div class="stat"><div class="label">取引金額の合計</div><div class="value" id="statAmount">-</div></div>
+    <div class="stat"><div class="label">取引利益の合計</div><div class="value" id="statProfit">-</div></div>
+    <div class="stat">
+      <div class="label">確度をかけた見込み</div><div class="value" id="statWeighted">-</div>
+    </div>
+  </div>
+
+  <section class="panel">
+    <h2 id="formTitle">見積を登録</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      売価・1本あたり利益額・取引金額・取引利益は、単価×掛け率と原価から自動で計算します。
+      単価と掛け率は、得意先・商品を選んだ時点のマスタの値が初期表示されます。
+    </p>
+    <form id="quoteForm">
+      <div class="grid">
+        <div>
+          <label for="qCustomer">得意先</label>
+          <div class="search-wrap">
+            <input type="text" id="qCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
+            <div class="search-results" id="qCustomerResults"></div>
+          </div>
+          <div class="chosen" id="qCustomerChosen">
+            <span class="name"></span><button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div>
+          <label for="qProduct">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="qProductSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="qProductResults"></div>
+          </div>
+          <div class="chosen" id="qProductChosen">
+            <span class="name"></span><button type="button" class="secondary small">変更</button>
+          </div>
+        </div>
+        <div><label for="qDate">見積日</label><input type="date" id="qDate" required></div>
+        <div><label for="qQty">個数</label><input type="number" id="qQty" min="1" step="1" value="1" required></div>
+        <div><label for="qUnitPrice">単価(円)</label><input type="number" id="qUnitPrice" min="0" step="1"></div>
+        <div><label for="qMarkup">掛け率</label><input type="number" id="qMarkup" min="0" step="0.01"></div>
+        <div><label for="qCost">原価(円)</label><input type="number" id="qCost" min="0" step="1"></div>
+        <div>
+          <label for="qProbability">確度(%)</label>
+          <input type="number" id="qProbability" min="0" max="100" step="5">
+        </div>
+        <div><label for="qDue">納品予定日</label><input type="date" id="qDue"></div>
+        <div>
+          <label for="qStatus">状態</label>
+          <select id="qStatus"><option>見積中</option><option>受注</option><option>失注</option></select>
+        </div>
+      </div>
+
+      <div class="hint" id="qCalc" style="margin-top:10px"></div>
+
+      <div style="margin-top:12px"><label for="qNote">備考</label><input type="text" id="qNote"></div>
+
+      <div class="actions">
+        <button type="submit" id="qSubmit">見積を登録</button>
+        <button type="button" id="qCancel" class="secondary" style="display:none">編集をやめる</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>見積一覧</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="filterStatus">状態</label>
+        <select id="filterStatus">
+          <option value="">すべて</option><option>見積中</option><option>受注</option><option>失注</option>
+        </select>
+      </div>
+      <div><label for="filterFrom">見積日（開始）</label><input type="date" id="filterFrom"></div>
+      <div><label for="filterTo">見積日（終了）</label><input type="date" id="filterTo"></div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>見積日</th><th>得意先</th><th>商品</th><th class="num">個数</th>
+            <th class="num">単価</th><th class="num">原価</th><th class="num">掛率</th>
+            <th class="num">売価</th><th class="num">1本利益</th>
+            <th class="num">取引金額</th><th class="num">取引利益</th>
+            <th class="num">確度</th><th>納品予定</th><th>状態</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="quoteRows"></tbody>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('quotations.html');
+
+let editingId = null;
+let quotes = [];
+
+const customerSelect = createSearchSelect({
+  inputId: 'qCustomerSearch', resultsId: 'qCustomerResults', chosenId: 'qCustomerChosen',
+  endpoint: '/api/customers/search',
+  renderLabel: (c) => c.name,
+  renderSub: (c) => `掛率 ${c.markup_rate}`,
+  onSelect: (c) => {
+    if (c && !el('qMarkup').value) el('qMarkup').value = c.markup_rate ?? '';
+    recalc();
+  },
+});
+
+const productSelect = createSearchSelect({
+  inputId: 'qProductSearch', resultsId: 'qProductResults', chosenId: 'qProductChosen',
+  endpoint: '/api/products/search',
+  renderLabel: (p) => p.name,
+  renderSub: (p) => `上代 ${yen(p.list_price)}`,
+  onSelect: (p) => {
+    if (p && !el('qUnitPrice').value) el('qUnitPrice').value = p.list_price ?? '';
+    recalc();
+  },
+});
+
+/** シートの計算列と同じ式で、入力中の金額を出す */
+function recalc() {
+  const unit = Number(el('qUnitPrice').value || 0);
+  const markup = Number(el('qMarkup').value || 0);
+  const cost = Number(el('qCost').value || 0);
+  const qty = Number(el('qQty').value || 0);
+  if (!unit || !markup || !qty) { el('qCalc').textContent = ''; return; }
+
+  const sales = Math.round(unit * markup);
+  const perUnit = sales - cost;
+  el('qCalc').textContent =
+    `売価 ${yen(sales)} / 1本あたり利益 ${yen(perUnit)} / ` +
+    `取引金額 ${yen(sales * qty)} / 取引利益 ${yen(perUnit * qty)}`;
+}
+for (const id of ['qUnitPrice', 'qMarkup', 'qCost', 'qQty']) {
+  el(id).addEventListener('input', recalc);
+}
+
+async function loadSummary() {
+  const s = await apiGet('/api/quotations/summary');
+  el('statCount').textContent = num(s.count);
+  el('statAmount').textContent = yen(s.total_amount);
+  el('statProfit').textContent = yen(s.total_profit);
+  el('statWeighted').textContent = yen(s.weighted_amount);
+}
+
+async function loadQuotes() {
+  const params = new URLSearchParams();
+  if (el('filterStatus').value) params.set('status', el('filterStatus').value);
+  if (el('filterFrom').value) params.set('from', el('filterFrom').value);
+  if (el('filterTo').value) params.set('to', el('filterTo').value);
+  quotes = await apiGet(`/api/quotations?${params}`);
+
+  const badge = { 見積中: 'warn', 受注: 'ok', 失注: 'muted' };
+  el('quoteRows').innerHTML = quotes.length
+    ? quotes.map((q) => `<tr>
+        <td>${escapeHtml(q.quoted_on)}</td>
+        <td>${escapeHtml(q.customer_name)}</td>
+        <td>${escapeHtml(q.product_name)}</td>
+        <td class="num">${num(q.quantity)}</td>
+        <td class="num">${yen(q.unit_price)}</td>
+        <td class="num">${yen(q.cost_price)}</td>
+        <td class="num">${num(q.markup_rate, 2)}</td>
+        <td class="num">${yen(q.sales_price)}</td>
+        <td class="num">${yen(q.profit_per_unit)}</td>
+        <td class="num">${yen(q.deal_amount)}</td>
+        <td class="num">${yen(q.deal_profit)}</td>
+        <td class="num">${q.probability != null ? `${Math.round(q.probability * 100)}%` : ''}</td>
+        <td>${escapeHtml(q.delivery_due_on ?? '')}</td>
+        <td><span class="badge ${badge[q.status] ?? 'muted'}">${escapeHtml(q.status)}</span></td>
+        <td><div class="row-actions">
+          <button type="button" class="secondary small" data-edit="${q.id}">編集</button>
+          <button type="button" class="danger small" data-del="${q.id}">削除</button>
+        </div></td>
+      </tr>`).join('')
+    : '<tr><td colspan="15" class="empty">見積がありません</td></tr>';
+}
+
+for (const id of ['filterStatus', 'filterFrom', 'filterTo']) {
+  el(id).addEventListener('change', () => loadQuotes().catch((e) => showMessage('messages', 'error', e.message)));
+}
+
+el('quoteForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  if (!customerSelect.value) return showMessage('messages', 'error', '得意先を選択してください');
+  if (!productSelect.value) return showMessage('messages', 'error', '商品を選択してください');
+
+  const payload = {
+    quotedOn: el('qDate').value,
+    customerId: customerSelect.value.id,
+    productId: productSelect.value.id,
+    quantity: Number(el('qQty').value),
+    status: el('qStatus').value,
+  };
+  for (const [id, key] of [['qUnitPrice', 'unitPrice'], ['qMarkup', 'markupRate'], ['qCost', 'costPrice']]) {
+    if (el(id).value !== '') payload[key] = Number(el(id).value);
+  }
+  // 画面は%表記、保存は0〜1
+  if (el('qProbability').value !== '') payload.probability = Number(el('qProbability').value) / 100;
+  if (el('qDue').value) payload.deliveryDueOn = el('qDue').value;
+  if (el('qNote').value.trim()) payload.note = el('qNote').value.trim();
+
+  el('qSubmit').disabled = true;
+  try {
+    const saved = editingId != null
+      ? await api('PUT', `/api/quotations/${editingId}`, payload)
+      : await apiPost('/api/quotations', payload);
+    const wasEditing = editingId != null;
+    resetForm();
+    // 先に一覧と合計を入れ替えてからメッセージを出す（数字が古いまま見えないように）
+    await Promise.all([loadQuotes(), loadSummary()]);
+    showMessage('messages', 'ok',
+      `${saved.customer_name} / ${saved.product_name} の見積を${wasEditing ? '更新' : '登録'}しました（取引金額 ${yen(saved.deal_amount)}）`);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('qSubmit').disabled = false;
+  }
+});
+
+function resetForm() {
+  editingId = null;
+  el('quoteForm').reset();
+  el('qDate').value = todayStr();
+  el('qQty').value = 1;
+  customerSelect.reset();
+  productSelect.reset();
+  el('qCalc').textContent = '';
+  el('formTitle').textContent = '見積を登録';
+  el('qSubmit').textContent = '見積を登録';
+  el('qCancel').style.display = 'none';
+}
+el('qCancel').addEventListener('click', resetForm);
+
+el('quoteRows').addEventListener('click', async (e) => {
+  const edit = e.target.closest('[data-edit]');
+  const del = e.target.closest('[data-del]');
+
+  if (edit) {
+    const q = quotes.find((r) => r.id === Number(edit.dataset.edit));
+    editingId = q.id;
+    el('qDate').value = q.quoted_on;
+    el('qQty').value = q.quantity;
+    el('qUnitPrice').value = q.unit_price ?? '';
+    el('qMarkup').value = q.markup_rate ?? '';
+    el('qCost').value = q.cost_price ?? '';
+    el('qProbability').value = q.probability != null ? Math.round(q.probability * 100) : '';
+    el('qDue').value = q.delivery_due_on ?? '';
+    el('qStatus').value = q.status;
+    el('qNote').value = q.note ?? '';
+    el('formTitle').textContent = `見積を編集（${q.customer_name} / ${q.product_name}）`;
+    el('qSubmit').textContent = '変更を保存';
+    el('qCancel').style.display = '';
+    recalc();
+    el('formTitle').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    showMessage('messages', 'ok', '得意先と商品は選び直してから保存してください');
+    return;
+  }
+
+  if (del) {
+    const q = quotes.find((r) => r.id === Number(del.dataset.del));
+    if (!confirm(`${q.customer_name} / ${q.product_name} の見積を削除します。よろしいですか？`)) return;
+    try {
+      await api('DELETE', `/api/quotations/${q.id}`);
+      await Promise.all([loadQuotes(), loadSummary()]);
+      showMessage('messages', 'ok', '見積を削除しました');
+    } catch (err) {
+      showMessage('messages', 'error', err.message);
+    }
+  }
+});
+
+el('qDate').value = todayStr();
+Promise.all([loadQuotes(), loadSummary()])
+  .catch((err) => showMessage('messages', 'error', err.message));
+</script>
+</body>
+</html>

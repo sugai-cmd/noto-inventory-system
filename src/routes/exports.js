@@ -3,6 +3,7 @@
 
 const express = require('express');
 const csvExportService = require('../services/csvExportService');
+const iconv = require('iconv-lite');
 
 const router = express.Router();
 
@@ -20,15 +21,34 @@ function parseFilter(query) {
   return filter;
 }
 
+/**
+ * CSVを返す。
+ * ゆうパックは Shift_JIS 指定なので、ここでエンコードしてバイト列で返す
+ * （UTF-8のまま渡すとゆうプリ側で文字化けする）。
+ * 判定できなかった住所や、7品目に収まらなかった受注はヘッダで知らせる。
+ */
 function sendCsv(res, filenameBase, result) {
   const stamp = new Date().toISOString().slice(0, 10);
-  const filename = `${filenameBase}_${stamp}.csv`;
-  res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+  const filename = result.filename ?? `${filenameBase}_${stamp}.csv`;
+  const encoding = result.encoding ?? 'UTF-8';
+
+  const body =
+    encoding === 'Shift_JIS' ? iconv.encode(result.csv, 'Shift_JIS') : Buffer.from(result.csv, 'utf8');
+
+  res.setHeader('Content-Type', `text/csv; charset=${encoding === 'Shift_JIS' ? 'Shift_JIS' : 'utf-8'}`);
   res.setHeader(
     'Content-Disposition',
-    `attachment; filename="${filename}"; filename*=UTF-8''${encodeURIComponent(filename)}`
+    `attachment; filename="${filenameBase}.csv"; filename*=UTF-8''${encodeURIComponent(filename)}`
   );
-  res.send(result.csv);
+  res.setHeader('X-Row-Count', String(result.count ?? ''));
+  // 画面側で警告を出せるよう、要確認の件数をヘッダに載せる（本文はCSVなので混ぜられない）
+  if (result.unresolved?.length) {
+    res.setHeader('X-Unresolved', encodeURIComponent(JSON.stringify(result.unresolved)));
+  }
+  if (result.overflow?.length) {
+    res.setHeader('X-Overflow', encodeURIComponent(JSON.stringify(result.overflow)));
+  }
+  res.send(body);
 }
 
 // ゆうパック送り状用

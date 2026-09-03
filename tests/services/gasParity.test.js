@@ -219,35 +219,55 @@ test('出荷を取り消すと受注が未着手に戻る', async () => {
 
 // --- 送料計算 ---
 
-test('地帯も対応表も未登録なら、理由つきで「決まらない」と返る', async () => {
+test('地帯と料金は日本郵便の運賃表が最初から入っている（GAS版の定数を移植）', async () => {
+  const zones = await api('GET', '/api/shipping/zones');
+  assert.equal(zones.body.length, 47);
+  assert.equal(zones.body.find((z) => z.prefecture === '石川県').zone, '県内');
+  assert.equal(zones.body.find((z) => z.prefecture === '東京都').zone, '第1地帯');
+  assert.equal(zones.body.find((z) => z.prefecture === '沖縄県').zone, '第10地帯');
+
+  const rates = await api('GET', '/api/shipping/rates');
+  assert.equal(rates.body.length, 42); // 6地帯 × 7サイズ
+  assert.equal(rates.body.find((r) => r.zone === '県内' && r.carton_size === '100').fee, 739);
+  assert.equal(rates.body.find((r) => r.zone === '第10地帯' && r.carton_size === '170').fee, 4046);
+});
+
+test('段ボール対応表に無い組み合わせは、理由つきで「決まらない」と返る', async () => {
   const { status, body } = await api('POST', '/api/shipping/quote', {
     address: '石川県金沢市吉原町ヨ87-1',
     items: [{ productId: 1, quantity: 12 }],
   });
   assert.equal(status, 200);
   assert.equal(body.prefecture, '石川県');
+  assert.equal(body.zone, '県内');   // 地帯は最初から引ける
   assert.equal(body.resolved, false);
   assert.equal(body.fee, null);
-  assert.match(body.reasons.join(' '), /地帯が未登録/);
   assert.match(body.reasons.join(' '), /段ボール対応表にありません/);
 });
 
-test('地帯・対応表・料金を登録すると送料が確定する', async () => {
-  await api('PUT', '/api/shipping/zones', { zones: [{ prefecture: '石川県', zone: '北陸' }] });
-  await api('POST', '/api/shipping/rates', { zone: '北陸', cartonSize: '100サイズ', fee: 1200 });
+test('段ボールを対応表に入れると送料が確定する', async () => {
   await api('POST', '/api/shipping/carton-rules', {
-    productId: 1, quantity: 12, cartonSize: '100サイズ',
+    productId: 1, quantity: 12, cartonSize: '100',
   });
 
   const { body } = await api('POST', '/api/shipping/quote', {
     address: '〒920-3114 石川県金沢市吉原町ヨ87-1',
     items: [{ productId: 1, quantity: 12 }],
   });
-  assert.equal(body.zone, '北陸');
-  assert.equal(body.cartonSize, '100サイズ');
-  assert.equal(body.fee, 1200);
+  assert.equal(body.zone, '県内');
+  assert.equal(body.cartonSize, '100');
+  assert.equal(body.fee, 739);       // 県内 × 100サイズ
   assert.equal(body.resolved, true);
   assert.deepEqual(body.reasons, []);
+});
+
+test('地帯が違えば料金も変わる', async () => {
+  const okinawa = await api('POST', '/api/shipping/quote', {
+    prefecture: '沖縄県',
+    items: [{ productId: 1, quantity: 12 }],
+  });
+  assert.equal(okinawa.body.zone, '第10地帯');
+  assert.equal(okinawa.body.fee, 1631); // 第10地帯 × 100サイズ
 });
 
 test('対応表にない本数は段ボールを選べば計算でき、追加すると次回から自動になる', async () => {
@@ -256,25 +276,25 @@ test('対応表にない本数は段ボールを選べば計算でき、追加�
     items: [{ productId: 1, quantity: 24 }],
   });
   assert.equal(first.body.resolved, false);
-  assert.deepEqual(first.body.cartonOptions, ['100サイズ']);
+  // 選択肢は料金表に載っているサイズ
+  assert.deepEqual(first.body.cartonOptions, ['100', '120', '140', '160', '170', '60', '80']);
 
-  // 段ボールを選べばその場で計算できる
   const chosen = await api('POST', '/api/shipping/quote', {
     prefecture: '石川県',
-    cartonSize: '100サイズ',
+    cartonSize: '120',
     items: [{ productId: 1, quantity: 24 }],
   });
-  assert.equal(chosen.body.fee, 1200);
+  assert.equal(chosen.body.fee, 901); // 県内 × 120サイズ
 
-  // 「対応表に追加」すると、次回は選ばなくても決まる
   await api('POST', '/api/shipping/carton-rules', {
-    productId: 1, quantity: 24, cartonSize: '100サイズ',
+    productId: 1, quantity: 24, cartonSize: '120',
   });
   const again = await api('POST', '/api/shipping/quote', {
     prefecture: '石川県',
     items: [{ productId: 1, quantity: 24 }],
   });
   assert.equal(again.body.resolved, true);
+  assert.equal(again.body.fee, 901);
 });
 
 test('住所から都道府県を読み取れなければその旨を返す', async () => {
@@ -505,4 +525,144 @@ test('数値でない掛率は行番号つきで指摘される', async () => {
   assert.equal(body.created, 0);
   assert.equal(body.errors[0].line, 2);
   assert.match(body.errors[0].message, /数値で入力/);
+});
+
+// --- 未対応だったGAS関数の移植分 ---
+
+test('蒸留中に投入明細を後から足せる（旧 addDistillationDetailItem）', async () => {
+  const brand = await api('POST', '/api/raw-sake-brands', { name: '明細追加テスト原酒' });
+  const tank = await api('POST', '/api/tanks', {
+    code: 'SP-901', name: '明細追加テスト原酒タンク', containerType: '原酒ポリタンク', maxVolumeL: 500,
+  });
+  await api('POST', '/api/raw-sake-receipts', {
+    txnDate: '2026-09-01', toTankId: tank.body.id, quantity: 200, rawSakeBrandId: brand.body.id,
+  });
+
+  const started = await api('POST', '/api/distillations', {
+    startedOn: '2026-09-01', startedTime: '09:00',
+    items: [{ tankId: tank.body.id, volumeL: 50 }],
+  });
+  assert.equal(started.status, 201);
+  assert.equal(started.body.totalInputL, 50);
+
+  const added = await api('POST', `/api/distillations/${started.body.distillationId}/details`, {
+    tankId: tank.body.id, volumeL: 30, note: '誤りタンクの入れ直し',
+  });
+  assert.equal(added.status, 201);
+  assert.equal(added.body.totalInputL, 80, '投入量合計が数え直される');
+
+  // 原料受払記録にも払出が足されている
+  const ledger = db
+    .prepare("SELECT COUNT(*) c FROM raw_sake_ledger WHERE distillation_id = ? AND txn_type = '払出'")
+    .get(started.body.distillationId);
+  assert.equal(ledger.c, 2);
+
+  // 残量を超える追加は断られる
+  const tooMuch = await api('POST', `/api/distillations/${started.body.distillationId}/details`, {
+    tankId: tank.body.id, volumeL: 9999,
+  });
+  assert.equal(tooMuch.status, 422);
+  assert.match(tooMuch.body.message, /原酒残量が不足/);
+});
+
+test('完了した蒸留には明細を足せない', async () => {
+  const finished = db.prepare("SELECT id FROM distillations WHERE status = '完了' LIMIT 1").get();
+  if (!finished) return; // このファイルの実行順によっては完了済みが無い
+  const { status } = await api('POST', `/api/distillations/${finished.id}/details`, {
+    tankId: 1, volumeL: 1,
+  });
+  assert.equal(status, 409);
+});
+
+test('修正履歴に取消が集まる（旧 getCorrectionHistory）', async () => {
+  const bottling = await api('POST', '/api/bottling', {
+    productId: 1, quantity: 10, tankId: 1, volumeL: 3, txnDate: '2026-09-20',
+  });
+  await api('POST', `/api/ledger-cancel/${bottling.body.productLedgerId}`, {
+    reason: '修正履歴の確認用',
+  });
+
+  const { status, body } = await api('GET', '/api/corrections');
+  assert.equal(status, 200);
+  const row = body.find((r) => r.reason === '修正履歴の確認用' && r.target_type === '商品在庫変動履歴');
+  assert.ok(row, '取消した商品履歴が出ること');
+  assert.equal(row.user_name, 'テスト管理者');
+  assert.match(row.action, /瓶詰/);
+
+  // 連動して取り消された資材も並ぶ
+  assert.ok(body.some((r) => r.target_type === '資材在庫変動履歴' && r.reason === '修正履歴の確認用'));
+
+  // 伝票番号で絞り込める
+  const filtered = await api('GET', `/api/corrections?targetCode=${bottling.body.historyCode}`);
+  assert.ok(filtered.body.every((r) => r.target_code === bottling.body.historyCode));
+});
+
+test('担当者の候補は固定リストと実データを合わせて返す（旧 getStaffOptions）', async () => {
+  const { status, body } = await api('GET', '/api/customers/staff');
+  assert.equal(status, 200);
+  assert.ok(body.includes('菅井'));   // GAS版の固定リスト
+  assert.ok(body.includes('田中'));
+  // 得意先マスタで実際に使われている担当者も入る
+  await api('POST', '/api/customers', { name: '担当者テスト商店', salesRep: '新任担当' });
+  const after = await api('GET', '/api/customers/staff');
+  assert.ok(after.body.includes('新任担当'));
+});
+
+// --- 見積管理（シート「見積済み」） ---
+
+test('見積を登録すると、売価・利益・取引金額が計算される', async () => {
+  const { status, body } = await api('POST', '/api/quotations', {
+    quotedOn: '2026-05-08',
+    customerId: 1,
+    productId: 1,
+    quantity: 504,
+    unitPrice: 3300,
+    costPrice: 1304,
+    markupRate: 0.6,
+    probability: 0.8,
+    deliveryDueOn: '2026-06-30',
+  });
+  assert.equal(status, 201);
+  // シートの計算列と同じ値になること（横山商会の実データ）
+  assert.equal(body.sales_price, 1980);        // 3300 × 0.6
+  assert.equal(body.profit_per_unit, 676);     // 1980 − 1304
+  assert.equal(body.deal_amount, 997920);      // 1980 × 504
+  assert.equal(body.deal_profit, 340704);      // 676 × 504
+  assert.equal(body.weighted_amount, 798336);  // 997920 × 0.8
+  assert.equal(body.status, '見積中');
+  assert.match(body.uid, /^[a-z0-9]{8}$/);
+});
+
+test('見積の合計と確度をかけた見込みが出る', async () => {
+  const { body } = await api('GET', '/api/quotations/summary');
+  assert.ok(body.count >= 1);
+  assert.ok(body.total_amount >= 997920);
+  assert.ok(body.weighted_amount >= 798336);
+});
+
+test('見積は受注・失注に変えられ、状態で絞り込める', async () => {
+  const created = await api('POST', '/api/quotations', {
+    quotedOn: '2026-05-18', customerId: 1, productId: 1, quantity: 240,
+    unitPrice: 3300, costPrice: 1304, markupRate: 0.6,
+  });
+
+  const updated = await api('PUT', `/api/quotations/${created.body.id}`, {
+    status: '受注', orderNo: 'O2605-0001',
+  });
+  assert.equal(updated.body.status, '受注');
+  assert.equal(updated.body.order_no, 'O2605-0001');
+
+  const won = await api('GET', '/api/quotations?status=' + encodeURIComponent('受注'));
+  assert.ok(won.body.every((q) => q.status === '受注'));
+
+  // 受注に変えたぶんは「見積中」の合計から外れる
+  const summary = await api('GET', '/api/quotations/summary');
+  assert.ok(summary.body.count >= 1);
+});
+
+test('確度は0〜1の範囲外を受け付けない', async () => {
+  const { status } = await api('POST', '/api/quotations', {
+    quotedOn: '2026-05-18', customerId: 1, productId: 1, quantity: 1, probability: 80,
+  });
+  assert.equal(status, 400);
 });

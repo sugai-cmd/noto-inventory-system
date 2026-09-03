@@ -25,6 +25,26 @@
   </section>
 
   <div id="report"></div>
+
+  <section class="panel">
+    <h2>修正履歴</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      取り消した記録の一覧です（旧「修正履歴」シート）。
+      商品・資材・タンクの各履歴と、蒸留明細の部分取消をまとめて新しい順に出します。
+    </p>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="corrFilter">伝票番号で絞り込む</label>
+        <input type="text" id="corrFilter" placeholder="L2609-0001 / D2609-0001 など">
+      </div>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr><th>日時</th><th>実施者</th><th>対象種別</th><th>対象</th><th>操作内容</th><th>理由</th></tr></thead>
+        <tbody id="corrRows"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
 <script src="assets/js/app.js"></script>
@@ -183,6 +203,30 @@ async function runAudit() {
 
 el('runBtn').addEventListener('click', runAudit);
 runAudit();
+
+/** 修正履歴（取消の一覧） */
+async function loadCorrections() {
+  const q = el('corrFilter').value.trim();
+  const rows = await apiGet(`/api/corrections${q ? `?targetCode=${encodeURIComponent(q)}` : ''}`);
+  el('corrRows').innerHTML = rows.length
+    ? rows.map((r) => `<tr>
+        <td>${escapeHtml(r.occurred_at ?? '')}</td>
+        <td>${escapeHtml(r.user_name ?? '')}</td>
+        <td>${escapeHtml(r.target_type)}</td>
+        <td>${escapeHtml(r.target_code ?? '')}</td>
+        <td>${escapeHtml(r.action ?? '')}</td>
+        <td>${escapeHtml(r.reason ?? '')}</td>
+      </tr>`).join('')
+    : `<tr><td colspan="6" class="empty">${q ? '該当する修正履歴がありません' : '取り消した記録はありません'}</td></tr>`;
+}
+
+let corrTimer = null;
+el('corrFilter').addEventListener('input', () => {
+  clearTimeout(corrTimer);
+  corrTimer = setTimeout(() => loadCorrections().catch(() => {}), 200);
+});
+
+loadCorrections().catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>
 </html>
