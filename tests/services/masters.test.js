@@ -9,8 +9,10 @@ const { createHarness } = require('../helpers/appHarness');
 const harness = createHarness('test-masters.sqlite');
 const { api, rawFetch } = harness;
 
+let db;
+
 test.before(async () => {
-  await harness.setup();
+  ({ db } = await harness.setup());
 });
 
 test.after(async () => {
@@ -251,4 +253,104 @@ test('/next-code は :id ルートに食われていない', async () => {
     assert.equal(status, 200, path);
     assert.ok(body.code, `${path} が採番を返すこと`);
   }
+});
+
+// --- CSV一括登録：現行スプレッドシートの書き出しをそのまま受け取れるか ---
+
+const SHEET_HEADER =
+  '顧客ID,得意先名,区分,業態,掛率,住所,支払いサイト月数,支払いサイト日付,' +
+  '請求日送付期日,備考,担当者,サブ担当者,流通経路,最終訪問日,取引開始月';
+
+test('シートの見出しのまま・シートの並び順のまま取り込める', async () => {
+  const csv = [
+    SHEET_HEADER,
+    'C0500,シート取込テスト商店,小売業者,小売,0.8,石川県七尾市1-1,当月,末日,,備考です,菅井,,,,',
+  ].join('\n');
+
+  const { status, body } = await api('POST', '/api/master-import', { kind: 'customers', csv });
+  assert.equal(status, 200);
+  assert.equal(body.created, 1);
+  assert.deepEqual(body.ignoredColumns, []);
+
+  const row = db.prepare("SELECT * FROM customers WHERE name = 'シート取込テスト商店'").get();
+  assert.equal(row.code, 'C0500');          // 顧客ID → 得意先コード
+  assert.equal(row.payment_term_day, '末日'); // 支払いサイト日付 → 支払いサイト日
+  assert.equal(row.note, '備考です');
+  assert.equal(row.sales_rep, '菅井');
+});
+
+test('支払いサイト月数の「当月／翌月／翌々月」を月数に読み替える', async () => {
+  const rows = [
+    ['当月テスト店', '当月', 0],
+    ['翌月テスト店', '翌月', 1],
+    ['翌々月テスト店', '翌々月', 2],
+    ['数字テスト店', '2', 2],
+  ];
+  const csv = ['得意先名,支払いサイト月数', ...rows.map(([n, v]) => `${n},${v}`)].join('\n');
+
+  const { body } = await api('POST', '/api/master-import', { kind: 'customers', csv });
+  assert.equal(body.created, 4);
+
+  for (const [name, , expected] of rows) {
+    const row = db.prepare('SELECT payment_term_months FROM customers WHERE name = ?').get(name);
+    assert.equal(row.payment_term_months, expected, name);
+  }
+});
+
+test('支払いサイトが解釈できない言葉は、受け付ける書き方を添えて指摘する', async () => {
+  const { body } = await api('POST', '/api/master-import', {
+    kind: 'customers',
+    csv: '得意先名,支払いサイト月数\n応相談テスト店,応相談',
+  });
+  assert.equal(body.created, 0);
+  assert.match(body.errors[0].message, /支払いサイト月数を読み取れませんでした/);
+  assert.match(body.errors[0].message, /翌々月/);
+});
+
+test('対応する項目がない列は、取り込みを止めずに報告する', async () => {
+  const { body } = await api('POST', '/api/master-import', {
+    kind: 'customers',
+    csv: '得意先名,掛率,社内メモ,担当ランク\n未知列テスト店,0.8,なにか,A',
+  });
+  assert.equal(body.created, 1);
+  assert.deepEqual(body.ignoredColumns, ['社内メモ', '担当ランク']);
+});
+
+test('タブ区切り（スプレッドシートから直接コピー）でも取り込める', async () => {
+  const csv = '得意先名\t掛率\tサブ担当者\nタブ区切りテスト店\t0.75\t山田';
+  const { body } = await api('POST', '/api/master-import', { kind: 'customers', csv });
+  assert.equal(body.created, 1);
+  const row = db.prepare("SELECT * FROM customers WHERE name = 'タブ区切りテスト店'").get();
+  assert.equal(row.markup_rate, 0.75);
+  assert.equal(row.sales_sub_rep, '山田');
+});
+
+test('見出し行とデータ行の列数が違うと、何行目が何列かを日本語で返す', async () => {
+  const { status, body } = await api('POST', '/api/master-import', {
+    kind: 'customers',
+    csv: '得意先コード,得意先名,区分\nC0600,列ずれテスト店,小売,余分,な,列',
+  });
+  assert.equal(status, 422);
+  assert.match(body.message, /見出し行は3列ですが、2行目は6列あります/);
+  assert.match(body.message, /スプレッドシートの見出し行ごと貼り付けれ/);
+});
+
+test('住所の改行や引用符を含む行も壊れない', async () => {
+  const csv = [
+    '得意先名,住所',
+    '"改行住所テスト店","〒150-0031\n東京都渋谷区桜丘町\n3-3"',
+    '"引用符テスト10""1",東京都',
+  ].join('\n');
+
+  const { body } = await api('POST', '/api/master-import', { kind: 'customers', csv });
+  assert.equal(body.created, 2);
+  const row = db.prepare("SELECT address FROM customers WHERE name = '改行住所テスト店'").get();
+  assert.match(row.address, /東京都渋谷区桜丘町/);
+  assert.ok(db.prepare('SELECT 1 FROM customers WHERE name = ?').get('引用符テスト10"1'));
+});
+
+test('取り込みテンプレートは、シート側の列名も案内する', async () => {
+  const { body } = await api('GET', '/api/master-import/template/customers');
+  const code = body.aliases.find((a) => a.canonical === '得意先コード');
+  assert.ok(code.aliases.includes('顧客ID'));
 });

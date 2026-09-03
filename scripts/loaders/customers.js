@@ -1,5 +1,6 @@
 // 得意先マスタ → customers（フェーズ1）
 
+const { parsePaymentTermMonths } = require('../../src/utils/paymentTerm');
 const { loadCsvTable, existingByName } = require('../lib/loadHelper');
 const { parseDateOnly, parseMonthOnly } = require('../lib/parseDate');
 const { generateUid } = require('../../src/utils/uid');
@@ -33,7 +34,9 @@ function load(ctx) {
         businessType: row['業態'] || null,
         markupRate: row['掛率'] ? Number(row['掛率']) : 1,
         address: row['住所'] || null,
-        paymentTermMonths: row['支払いサイト月数'] ? Number(row['支払いサイト月数']) : null,
+        // 「当月」「翌月」「翌々月」で入っているので月数に読み替える。
+        // Number()のままだとNaNになり、支払いサイトが黙って全件失われる。
+        paymentTermMonths: parsePaymentTermMonths(row['支払いサイト月数']).months,
         paymentTermDay: row['支払いサイト日付'] || null,
         invoiceDueNote: row['請求日送付期日'] || null,
         salesRep: row['担当者'] || null,
