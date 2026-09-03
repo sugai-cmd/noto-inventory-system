@@ -379,3 +379,57 @@ test('資材・商品・レシピの見出しもシートの列そのもの', as
   const recipe = await api('GET', '/api/master-import/template/productRecipes');
   assert.equal(recipe.body.header, 'レシピID,商品名称,資材名,必要数量,ステータス');
 });
+
+// --- シートのプルダウン相当の値 ---
+
+test('支払いサイト月数は当月=0／翌月=1／翌々月=2 で保存される', async () => {
+  const created = await api('POST', '/api/customers', {
+    name: 'プルダウン保存テスト商店',
+    segment: '卸売業者',
+    businessType: '国内卸',
+    paymentTermMonths: 2,
+    paymentTermDay: '末日',
+  });
+  assert.equal(created.status, 201);
+  assert.equal(created.body.segment, '卸売業者');
+  assert.equal(created.body.payment_term_months, 2);
+  assert.equal(created.body.payment_term_day, '末日');
+});
+
+test('資材種別・容器タイプ・設置場所・原酒ステータスが保存される', async () => {
+  const material = await api('POST', '/api/materials', { name: '種別テスト資材', category: 'キャップ' });
+  assert.equal(material.body.category, 'キャップ');
+
+  const product = await api('POST', '/api/products', {
+    name: '容器タイプテスト商品', containerType: 'ガラス瓶',
+  });
+  assert.equal(product.body.container_type, 'ガラス瓶');
+
+  const tank = await api('POST', '/api/tanks', {
+    code: 'T-880', name: '設置場所テストタンク',
+    containerType: 'ステンレスタンク', location: '熟成室', status: '稼働中',
+  });
+  assert.equal(tank.body.location, '熟成室');
+  assert.equal(tank.body.status, '稼働中');
+
+  const brand = await api('POST', '/api/raw-sake-brands', {
+    name: 'ステータステスト原酒', status: '未納税',
+  });
+  assert.equal(brand.body.status, '未納税');
+});
+
+test('営業メモの種別が保存される', async () => {
+  const customer = await api('POST', '/api/customers', { name: 'メモ種別テスト商店' });
+  await api('POST', `/api/customers/${customer.body.id}/notes`, {
+    category: '訪問', body: '初回訪問',
+  });
+  const { body } = await api('GET', `/api/customers/${customer.body.id}/notes`);
+  assert.equal(body[0].category, '訪問');
+});
+
+test('種別を指定しない営業メモは「メモ」になる', async () => {
+  const customer = await api('POST', '/api/customers', { name: 'メモ既定テスト商店' });
+  await api('POST', `/api/customers/${customer.body.id}/notes`, { body: '種別なし' });
+  const { body } = await api('GET', `/api/customers/${customer.body.id}/notes`);
+  assert.equal(body[0].category, 'メモ');
+});

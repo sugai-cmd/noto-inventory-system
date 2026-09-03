@@ -60,12 +60,30 @@
           <div class="hint" id="mCodeHint"></div>
         </div>
         <div><label for="mName">資材名</label><input type="text" id="mName" required></div>
-        <div><label for="mUnit">単位</label><input type="text" id="mUnit" placeholder="本・枚・個"></div>
+        <div>
+          <label for="mCategory">資材種別</label>
+          <select id="mCategory">
+            <option value="">（未設定）</option>
+            <option>容器</option><option>キャップ</option><option>紙垂</option><option>ラベル</option>
+            <option>箱</option><option>フィルム</option><option>外箱</option><option>その他</option>
+          </select>
+        </div>
+        <div>
+          <label for="mUnit">単位</label>
+          <input type="text" id="mUnit" list="dlUnit" placeholder="本・枚・個">
+          <datalist id="dlUnit">
+            <option value="本"><option value="個"><option value="枚"><option value="巻"><option value="セット">
+          </datalist>
+        </div>
         <div><label for="mUnitPrice">単価(円)</label><input type="number" id="mUnitPrice" min="0" step="1"></div>
         <div><label for="mLotSize">ロット数</label><input type="number" id="mLotSize" min="1" step="1"></div>
         <div><label for="mProper">適正在庫数</label><input type="number" id="mProper" min="0" step="1"></div>
         <div><label for="mInitial">初期在庫数</label><input type="number" id="mInitial" min="0" step="1" value="0"></div>
-        <div><label for="mSupplier">発注先</label><input type="text" id="mSupplier"></div>
+        <div>
+          <label for="mSupplier">発注先会社名</label>
+          <input type="text" id="mSupplier" list="dlSupplier">
+          <datalist id="dlSupplier"></datalist>
+        </div>
         <div><label for="mLead">リードタイム(日)</label><input type="number" id="mLead" min="0" step="1"></div>
       </div>
       <div class="actions">
@@ -116,6 +134,9 @@ let materials = [];
 
 async function loadMaterials() {
   materials = await apiGet('/api/materials');
+  // すでに登録されている発注先を候補に出す（打ち直しでの表記ゆれを減らす）
+  const suppliers = [...new Set(materials.map((m) => m.supplier_name).filter(Boolean))].sort();
+  el('dlSupplier').innerHTML = suppliers.map((s) => `<option value="${escapeHtml(s)}">`).join('');
   const options = '<option value="">選択してください</option>' +
     materials.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
   const keep = el('rMaterial').value;
@@ -211,6 +232,7 @@ el('materialForm').addEventListener('submit', async (e) => {
     if (el(id).value !== '') payload[key] = Number(el(id).value);
   }
   if (el('mUnit').value.trim()) payload.unit = el('mUnit').value.trim();
+  if (el('mCategory').value) payload.category = el('mCategory').value;
   if (el('mSupplier').value.trim()) payload.supplierName = el('mSupplier').value.trim();
 
   el('mSubmit').disabled = true;

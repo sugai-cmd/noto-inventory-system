@@ -69,7 +69,10 @@
         </div>
         <div>
           <label for="fDestination">搬出先</label>
-          <input type="text" id="fDestination" required placeholder="例: 他社酒造場A">
+          <input type="text" id="fDestination" list="dlDestination" required placeholder="熟成室 / 浄溜所 / その他">
+          <datalist id="dlDestination">
+            <option value="熟成室"><option value="浄溜所"><option value="その他">
+          </datalist>
         </div>
         <div>
           <label for="fAbv">アルコール度数 (%)</label>
