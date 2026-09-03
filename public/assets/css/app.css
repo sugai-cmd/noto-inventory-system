@@ -169,3 +169,109 @@ tbody tr:hover { background: #f9fafc; }
 }
 .tabs button:hover { background: #eef1f5; color: var(--text); }
 .tabs button.active { color: var(--accent); border-bottom-color: var(--accent); font-weight: 600; background: none; }
+
+/* ===========================================================================
+   スマホ・タブレット対応
+   会社ではPC、外出先ではスマホ／iPadから見る想定。
+   画面が狭いときだけ上書きし、PCでの見え方は変えない。
+   =========================================================================== */
+
+html {
+  /* 横向きにしたときにiOSが勝手に文字を拡大するのを止める */
+  -webkit-text-size-adjust: 100%;
+}
+
+/* 横スクロールする表は、指で滑らせられるように。
+   端が切れていることが分かるよう、右端に薄い影を出す */
+.table-scroll {
+  -webkit-overflow-scrolling: touch;
+  background:
+    linear-gradient(to right, var(--panel) 30%, rgba(255,255,255,0)),
+    linear-gradient(to left,  var(--panel) 30%, rgba(255,255,255,0)) 100% 0,
+    linear-gradient(to right, rgba(0,0,0,.10), rgba(0,0,0,0)),
+    linear-gradient(to left,  rgba(0,0,0,.10), rgba(0,0,0,0)) 100% 0;
+  background-repeat: no-repeat;
+  background-size: 40px 100%, 40px 100%, 12px 100%, 12px 100%;
+  background-attachment: local, local, scroll, scroll;
+}
+
+/* --- タブレット（iPad縦など） --- */
+@media (max-width: 1024px) {
+  main { padding: 16px 12px 48px; }
+  .panel { padding: 14px; margin-bottom: 16px; }
+
+  /* iPadでも、入力欄が16px未満だとフォーカス時に画面が拡大されてしまう */
+  input, select, textarea { font-size: 16px; }
+
+  /* 指で押す前提の大きさにする */
+  button { min-height: 40px; }
+  button.small { min-height: 32px; }
+}
+
+/* --- スマホ --- */
+@media (max-width: 640px) {
+  header.site { padding: 0 12px; }
+  header.site h1 { font-size: 15px; padding: 10px 0 6px; }
+
+  /* メニューは折り返さず、横に流して指でスクロールさせる。
+     折り返すと画面の半分がメニューで埋まってしまうため */
+  nav.site {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    scrollbar-width: none;
+    margin: 0 -12px;
+    padding: 0 12px;
+  }
+  nav.site::-webkit-scrollbar { display: none; }
+  nav.site a {
+    flex: 0 0 auto;
+    padding: 10px 12px;
+    font-size: 13px;
+    white-space: nowrap;
+  }
+
+  main { padding: 12px 10px 40px; }
+  .panel { padding: 12px; margin-bottom: 12px; border-radius: 8px; }
+  .panel > h2 { font-size: 15px; }
+
+  /* 入力欄は16px未満だとiOSがフォーカス時に拡大してしまう */
+  input, select, textarea { font-size: 16px; padding: 10px; }
+  label { font-size: 13px; }
+
+  /* 指で押せる大きさを確保する */
+  button { min-height: 44px; padding: 10px 14px; }
+  button.small { min-height: 36px; padding: 6px 10px; }
+  .actions { gap: 10px; }
+  .actions button { flex: 1 1 auto; }
+
+  /* 入力欄は1列に積む */
+  .grid { grid-template-columns: 1fr; gap: 10px; }
+  .grid > div[style*="span"] { grid-column: auto !important; }
+
+  /* 数字カードは2列 */
+  .stat-row { grid-template-columns: 1fr 1fr; gap: 8px; }
+  .stat { padding: 10px; }
+  .stat .value { font-size: 20px; }
+
+  /* 表は横スクロール。見出しは折り返さずに1行で */
+  table { font-size: 13px; }
+  th, td { padding: 6px 8px; }
+  th { white-space: nowrap; }
+
+  /* 一覧の操作ボタンは縦に積んで押しやすく */
+  .row-actions { flex-direction: column; align-items: stretch; }
+
+  /* 検索候補は画面幅いっぱいに */
+  .search-results { max-height: 50vh; }
+
+  .tabs { overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
+  .tabs button { flex: 0 0 auto; white-space: nowrap; padding: 10px 14px; }
+}
+
+/* --- 細いスマホ（iPhone SE など） --- */
+@media (max-width: 380px) {
+  .stat-row { grid-template-columns: 1fr; }
+  header.site h1 { font-size: 14px; }
+}

@@ -61,6 +61,28 @@ test('原酒受払IDは受入が1000番台、払出が0001番台で採番され�
   assert.deepEqual(codes, ['R2607-1000', 'R2607-1001']);
 });
 
+test('受入元は専用の列に入り、備考と同時に書いても消えない', async () => {
+  // 以前は備考へ「受入元: ○○」と文字列で押し込んでいたため、
+  // 受入元と備考を両方書くと備考のほうが失われていた。
+  const { status, body } = await api('POST', '/api/raw-sake-receipts', {
+    txnDate: '2026-07-22',
+    toTankId: 2,
+    quantity: 10,
+    supplier: '鳥屋原酒タンク',
+    note: '容器を入れ替えて受入',
+  });
+  assert.equal(status, 201);
+
+  const row = db
+    .prepare('SELECT source_ref, note FROM raw_sake_ledger ORDER BY id DESC LIMIT 1')
+    .get();
+  assert.equal(row.source_ref, '鳥屋原酒タンク');
+  assert.equal(row.note, '容器を入れ替えて受入');
+
+  // 元の残量に戻しておく（以降のテストが80Lを前提にしている）
+  db.prepare('DELETE FROM raw_sake_ledger WHERE id = (SELECT MAX(id) FROM raw_sake_ledger)').run();
+});
+
 test('蒸留開始で複数タンクから投入でき、原酒が減る', async () => {
   const { status, body } = await api('POST', '/api/distillations', {
     startedOn: '2026-08-01',
@@ -82,6 +104,14 @@ test('蒸留開始で複数タンクから投入でき、原酒が減る', async
   const sp02 = tanks.body.find((t) => t.code === 'SP-02');
   assert.equal(sp01.current_volume_l, 50); // 150 - 100
   assert.equal(sp02.current_volume_l, 30); // 80 - 50
+});
+
+test('投入明細には DTL- の明細IDが振られる', async () => {
+  const codes = db
+    .prepare('SELECT detail_code FROM distillation_details ORDER BY id')
+    .all()
+    .map((r) => r.detail_code);
+  assert.deepEqual(codes, ['DTL-1', 'DTL-2']);
 });
 
 test('蒸留開始で払出側の原酒受払IDは0001番台になる', async () => {

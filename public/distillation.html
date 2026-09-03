@@ -119,6 +119,73 @@
     </div>
   </section>
 
+  <section class="panel" id="completePanel" style="display:none">
+    <h2>完了報告 <span id="completeCode"></span></h2>
+    <form id="completeForm">
+      <div class="grid">
+        <div>
+          <label for="cDate">完了日</label>
+          <input type="date" id="cDate" required>
+        </div>
+        <div>
+          <label for="cTime">完了時刻</label>
+          <input type="time" id="cTime" required>
+        </div>
+        <div>
+          <label for="cVolume">蒸留量 (L)</label>
+          <input type="number" id="cVolume" min="0.1" step="0.1" required>
+        </div>
+        <div>
+          <label for="cAbv">アルコール度数 (%)</label>
+          <input type="number" id="cAbv" step="0.01">
+        </div>
+        <div>
+          <label for="cTank">払出先タンク</label>
+          <select id="cTank" required></select>
+        </div>
+      </div>
+
+      <h3>残渣回収</h3>
+      <p class="muted" style="margin-top:0;font-size:13px">
+        回収量・払出先・食塩のいずれかを入力したときだけ、残渣回収記録に1行残ります。
+      </p>
+      <div class="grid">
+        <div>
+          <label for="cResidueQty">回収量 (L)</label>
+          <input type="number" id="cResidueQty" min="0" step="0.1">
+        </div>
+        <div>
+          <label for="cResidueAbv">アルコール度数 (%)</label>
+          <input type="number" id="cResidueAbv" step="0.01">
+        </div>
+        <div>
+          <label for="cResidueDest">払出先</label>
+          <input type="text" id="cResidueDest" placeholder="例: 黒タンク6">
+        </div>
+        <div>
+          <label for="cSaltStatus">食塩ステータス</label>
+          <select id="cSaltStatus">
+            <option value="無">無</option>
+            <option value="有">有</option>
+          </select>
+        </div>
+        <div id="cSaltQtyBox" style="display:none">
+          <label for="cSaltQty">食塩投入量 (g)</label>
+          <input type="number" id="cSaltQty" min="0" step="1">
+        </div>
+        <div>
+          <label for="cSaltConc">塩分濃度 (%)</label>
+          <input type="number" id="cSaltConc" step="0.01">
+        </div>
+      </div>
+
+      <div class="actions">
+        <button type="submit" id="cSubmit">完了として確定</button>
+        <button type="button" class="secondary" id="cCancel">やめる</button>
+      </div>
+    </form>
+  </section>
+
   <section class="panel" id="detailPanel" style="display:none">
     <h2>蒸留詳細 <span id="detailCode"></span></h2>
     <div id="detailBody"></div>
@@ -258,7 +325,7 @@ async function loadDistillations() {
       const badge = d.status === '完了' ? 'ok' : 'warn';
       const completeBtn = d.status === '完了'
         ? ''
-        : `<button class="small" data-complete="${d.id}">完了報告</button>`;
+        : `<button class="small" data-complete="${d.id}" data-complete-code="${escapeHtml(d.distillation_code)}">完了報告</button>`;
       return `<tr>
         <td>${escapeHtml(d.distillation_code)}</td>
         <td>${escapeHtml(d.started_on)} ${escapeHtml(d.started_time ?? '')}</td>
@@ -353,38 +420,82 @@ el('distillationRows').addEventListener('click', async (e) => {
   const completeBtn = e.target.closest('[data-complete]');
   if (!completeBtn) return;
 
-  const id = completeBtn.dataset.complete;
-  const outputL = prompt('得られた浄酎量 (L) を入力してください');
-  if (outputL === null) return;
-  const outputAbv = prompt('アルコール度数 (%) を入力してください（任意）');
-  const tankList = tanks.map((t) => `${t.id}: ${t.code} ${t.name}`).join('\n');
-  const outputTankId = prompt(`払出先タンクのIDを入力してください\n\n${tankList}`);
-  if (outputTankId === null) return;
+  openCompleteForm(Number(completeBtn.dataset.complete), completeBtn.dataset.completeCode);
+});
+
+// --- 完了報告フォーム -------------------------------------------------------
+// 旧版は prompt() を並べていたが、スマホでは1問ずつのダイアログになり
+// 入力し直しもできない。GAS版の完了タブと同じ項目をそのままフォームにした。
+let completingId = null;
+
+function openCompleteForm(id, code) {
+  completingId = id;
+  el('completeCode').textContent = code ?? '';
+  el('completeForm').reset();
+  el('cDate').value = todayStr();
+  el('cTime').value = nowTimeStr();
+  el('cTank').innerHTML = '<option value="">選択してください</option>' +
+    tanks.map((t) => `<option value="${t.id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}</option>`).join('');
+  el('cSaltStatus').value = '無';
+  el('cSaltQtyBox').style.display = 'none';
+  el('completePanel').style.display = '';
+  el('completePanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+// GAS版と同じく、食塩ステータスが「有」のときだけ投入量を聞く
+el('cSaltStatus').addEventListener('change', (e) => {
+  el('cSaltQtyBox').style.display = e.target.value === '有' ? '' : 'none';
+});
+
+el('cCancel').addEventListener('click', () => {
+  completingId = null;
+  el('completePanel').style.display = 'none';
+});
+
+el('completeForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!completingId) return;
+  clearMessage('messages');
 
   const payload = {
-    completedOn: todayStr(),
-    completedTime: nowTimeStr(),
-    outputTankId: Number(outputTankId),
-    outputL: Number(outputL),
+    completedOn: el('cDate').value,
+    completedTime: el('cTime').value,
+    outputTankId: Number(el('cTank').value),
+    outputL: Number(el('cVolume').value),
   };
-  if (outputAbv) payload.outputAbv = Number(outputAbv);
+  if (el('cAbv').value !== '') payload.outputAbv = Number(el('cAbv').value);
 
-  const residueQty = prompt('残渣回収量を入力してください（不要なら空欄）');
-  if (residueQty) {
+  const saltStatus = el('cSaltStatus').value;
+  const residueQty = el('cResidueQty').value;
+  const destination = el('cResidueDest').value.trim();
+
+  // 残渣について何か入力があったときだけ残渣回収記録を作る
+  if (residueQty !== '' || destination || saltStatus === '有') {
     payload.residue = {
-      collectedOn: todayStr(),
-      collectedTime: nowTimeStr(),
-      quantity: Number(residueQty),
+      collectedOn: el('cDate').value,
+      collectedTime: el('cTime').value,
+      saltStatus,
+      // GAS版と同じく「無」なら投入量は0で確定させる
+      saltInputQty: saltStatus === '有' ? Number(el('cSaltQty').value || 0) : 0,
     };
+    if (residueQty !== '') payload.residue.quantity = Number(residueQty);
+    if (el('cResidueAbv').value !== '') payload.residue.abv = Number(el('cResidueAbv').value);
+    if (el('cSaltConc').value !== '') payload.residue.saltConcentration = Number(el('cSaltConc').value);
+    if (destination) payload.residue.destination = destination;
   }
 
+  el('cSubmit').disabled = true;
   try {
-    const r = await apiPost(`/api/distillations/${id}/complete`, payload);
+    const r = await apiPost(`/api/distillations/${completingId}/complete`, payload);
     showMessage('messages', 'ok',
       `${r.distillation.distillation_code} を完了しました（浄酎タンクへ ${num(r.distillation.output_l, 1)}L を継足）`);
+    completingId = null;
+    el('completePanel').style.display = 'none';
     await Promise.all([loadDistillations(), loadAlerts(), loadTanks()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('cSubmit').disabled = false;
   }
 });
 
