@@ -221,6 +221,32 @@ renderNav('orders.html');
 let customerSelect, productSelect;
 
 /** 得意先・商品・本数が揃ったら、サーバー側で初期値（売価・入金予定日）を計算して反映する */
+/**
+ * 得意先を選んだ時点で分かることを先に反映する（GAS版の
+ * 「得意先選択で掛け率・支払いサイト・住所を自動反映」に相当）。
+ * 売価は商品と本数が決まらないと出せないので、それは refreshDefaults に任せる。
+ */
+function applyCustomer(customer) {
+  if (!customer) {
+    el('markupRate').value = '';
+    el('paymentHint').textContent = '';
+    el('invoiceHint').textContent = '';
+    return;
+  }
+
+  el('markupRate').value = customer.markup_rate ?? '';
+  el('paymentHint').textContent =
+    `支払いサイト: ${customer.payment_term_months ?? '-'}ヶ月後 ${customer.payment_term_day ?? '末日'}`;
+  el('invoiceHint').textContent = customer.invoice_due_note
+    ? `請求日送付期日: ${customer.invoice_due_note}`
+    : '';
+
+  // 配送先は得意先の住所を初期値にする。入力済みなら触らない
+  if (customer.address && !el('deliveryAddress').value.trim()) {
+    el('deliveryAddress').value = customer.address;
+  }
+}
+
 async function refreshDefaults() {
   const customer = customerSelect.value;
   const product = productSelect.value;
@@ -523,7 +549,10 @@ customerSelect = createSearchSelect({
   endpoint: '/api/customers/search',
   renderLabel: (c) => c.name,
   renderSub: (c) => `掛率 ${c.markup_rate} / 支払 ${c.payment_term_months ?? '-'}ヶ月後${c.payment_term_day ?? ''}`,
-  onSelect: () => refreshDefaults(),
+  onSelect: (c) => {
+    applyCustomer(c);
+    refreshDefaults();
+  },
 });
 
 productSelect = createSearchSelect({

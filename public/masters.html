@@ -88,7 +88,9 @@
     <h2>CSVで一括登録</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
       得意先・資材・酒蔵は、表計算ソフトからコピーしたCSVを貼り付けて一括登録できます。
-      1行目は見出しです。<strong>すでに同じ名前がある行は更新</strong>になります。
+      <strong>スプレッドシートの見出し行ごと、そのまま貼り付けてください</strong>
+      （「顧客ID」「支払いサイト日付」などシート側の列名でも読み取れます。列の並び順も問いません。
+      タブ区切りでも大丈夫です）。<strong>すでに同じ名前がある行は更新</strong>になります。
       まず「確認だけする」で内容を見てから取り込んでください。
     </p>
     <div class="grid">
@@ -101,8 +103,9 @@
         </select>
       </div>
       <div style="grid-column:span 2">
-        <label for="importHeader">見出し行（このとおりに並べてください）</label>
+        <label for="importHeader">読み取れる見出し（並び順は自由。一部だけでも可）</label>
         <input type="text" id="importHeader" readonly>
+        <div class="hint" id="importAliases"></div>
       </div>
     </div>
     <div style="margin-top:12px">
@@ -140,7 +143,8 @@ const MASTERS = {
       { key: 'businessType', label: '業態', type: 'text' },
       { key: 'markupRate', label: '掛率', type: 'number', step: '0.01', hint: '上代に掛ける率。1で上代どおり' },
       { key: 'address', label: '住所', type: 'text' },
-      { key: 'paymentTermMonths', label: '支払いサイト（月数）', type: 'int', hint: '締めから何ヶ月後の入金か' },
+      { key: 'paymentTermMonths', label: '支払いサイト（月数）', type: 'int',
+        hint: '締めから何ヶ月後の入金か。当月=0／翌月=1／翌々月=2' },
       { key: 'paymentTermDay', label: '支払いサイト（日）', type: 'text', placeholder: '末日 / 25日' },
       { key: 'invoiceDueNote', label: '請求書送付期日', type: 'text' },
       { key: 'salesRep', label: '担当者', type: 'text' },
@@ -787,6 +791,10 @@ el('noteRows').addEventListener('click', async (e) => {
 async function loadImportTemplate() {
   const template = await apiGet(`/api/master-import/template/${el('importKind').value}`);
   el('importHeader').value = template.header;
+  el('importAliases').textContent = template.aliases.length
+    ? 'シートの列名でも可: ' +
+      template.aliases.map((a) => `${a.aliases.join('／')}＝${a.canonical}`).join('、')
+    : '';
 }
 
 el('importKind').addEventListener('change', () => {
@@ -815,11 +823,17 @@ async function runImport(dryRun) {
       return;
     }
 
+    const ignored = r.ignoredColumns?.length
+      ? `<p style="margin:6px 0 0">取り込まなかった列（対応する項目がありません）:
+           ${escapeHtml(r.ignoredColumns.join('・'))}</p>`
+      : '';
     el('importResult').innerHTML =
       `<div class="msg ok">
          ${dryRun ? '確認結果' : '取り込みました'}：新規 ${r.created}件 / 更新 ${r.updated}件
+         ${ignored}
          <ul>${r.rows.slice(0, 30).map((row) =>
            `<li>${row.line}行目: ${escapeHtml(row.name)}（${escapeHtml(row.action)}）</li>`).join('')}</ul>
+         ${r.rows.length > 30 ? `<p style="margin:6px 0 0">ほか ${r.rows.length - 30}件</p>` : ''}
        </div>`;
 
     if (!dryRun) {

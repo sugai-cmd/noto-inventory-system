@@ -469,13 +469,15 @@ test('得意先をCSVで一括登録でき、同名は更新になる', async ()
   assert.equal(updated.markup_rate, 0.55);
 });
 
-test('見出しが違うCSVは取り込まずに理由を返す', async () => {
+test('必須の列が無いCSVは取り込まずに、読み取れた見出しを添えて返す', async () => {
   const { status, body } = await api('POST', '/api/master-import', {
     kind: 'customers',
     csv: '名前,掛率\nどこかの店,0.7',
   });
   assert.equal(status, 422);
-  assert.match(body.message, /見出しが違います/);
+  assert.match(body.message, /必須の列がありません: 得意先名/);
+  // どう直せばいいか分かるよう、実際に読み取れた見出しを見せる
+  assert.match(body.message, /名前・掛率/);
 });
 
 test('数値でない掛率は行番号つきで指摘される', async () => {
