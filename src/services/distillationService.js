@@ -19,6 +19,19 @@ const operationLogService = require('./operationLogService');
 // 受注番号は同じ 'D' だと区別できないため 'O'（Order）に整理した（codeGenerator.js参照）。
 const DISTILLATION_PREFIX = 'D';
 
+/** 蒸留明細記録の「明細ID」。GAS版と同じ DTL-連番 */
+function nextDetailCode(db) {
+  const row = db
+    .prepare(
+      `SELECT detail_code FROM distillation_details
+       WHERE detail_code GLOB 'DTL-[0-9]*'
+       ORDER BY CAST(SUBSTR(detail_code, 5) AS INTEGER) DESC LIMIT 1`
+    )
+    .get();
+  const max = row ? Number.parseInt(row.detail_code.slice(4), 10) : 0;
+  return `DTL-${max + 1}`;
+}
+
 const STATUS_IN_PROGRESS = '蒸留中';
 const STATUS_COMPLETED = '完了';
 
@@ -59,21 +72,23 @@ function submitRawSakeReceipt(input) {
     const result = db
       .prepare(
         `INSERT INTO raw_sake_ledger
-           (lot_code, txn_date, txn_type, from_tank_id, to_ref, to_tank_id, distillation_id,
-            quantity, raw_sake_brand_id, spec_note, note)
+           (lot_code, txn_date, txn_type, from_tank_id, source_ref, to_ref, to_tank_id,
+            distillation_id, quantity, raw_sake_brand_id, spec_note, note)
          VALUES
-           (@lotCode, @txnDate, '受入', NULL, @toRef, @toTankId, NULL,
+           (@lotCode, @txnDate, '受入', NULL, @sourceRef, @toRef, @toTankId, NULL,
             @quantity, @rawSakeBrandId, @specNote, @note)`
       )
       .run({
         lotCode: nextRawSakeLotCode(db, '受入', txnDate),
         txnDate,
+        // 受入元は列で持つ。備考と同時に書いても、どちらも失われない
+        sourceRef: input.supplier ?? null,
         toRef: tank.name,
         toTankId: input.toTankId,
         quantity: input.quantity,
         rawSakeBrandId: input.rawSakeBrandId ?? null,
         specNote: input.specNote ?? null,
-        note: input.supplier ? `受入元: ${input.supplier}` : (input.note ?? null),
+        note: input.note ?? null,
       });
 
     return {
@@ -161,9 +176,9 @@ function submitDistillationStart(input) {
     );
     const insertDetail = db.prepare(
       `INSERT INTO distillation_details
-         (distillation_id, raw_sake_ledger_id, input_l, source_tank_id, note)
+         (detail_code, distillation_id, raw_sake_ledger_id, input_l, source_tank_id, note)
        VALUES
-         (@distillationId, @rawSakeLedgerId, @inputL, @sourceTankId, @note)`
+         (@detailCode, @distillationId, @rawSakeLedgerId, @inputL, @sourceTankId, @note)`
     );
 
     const details = [];
@@ -180,6 +195,7 @@ function submitDistillationStart(input) {
       });
 
       const detailResult = insertDetail.run({
+        detailCode: nextDetailCode(db),
         distillationId,
         rawSakeLedgerId: ledgerResult.lastInsertRowid,
         inputL: item.volumeL,
@@ -189,6 +205,8 @@ function submitDistillationStart(input) {
 
       details.push({
         detailId: detailResult.lastInsertRowid,
+        detailCode: db.prepare('SELECT detail_code FROM distillation_details WHERE id = ?')
+          .get(detailResult.lastInsertRowid).detail_code,
         rawSakeLedgerId: ledgerResult.lastInsertRowid,
         tankId: item.tankId,
         volumeL: item.volumeL,
@@ -346,11 +364,11 @@ function cancelDistillationDetailItem(detailId, { reason } = {}) {
     const restoreResult = db
       .prepare(
         `INSERT INTO raw_sake_ledger
-           (lot_code, txn_date, txn_type, from_tank_id, to_ref, to_tank_id, distillation_id,
-            quantity, note)
+           (lot_code, txn_date, txn_type, from_tank_id, source_ref, to_ref, to_tank_id,
+            distillation_id, quantity, note)
          VALUES
-           (@lotCode, @txnDate, '受入', NULL, @toRef, @toTankId, @distillationId,
-            @quantity, @note)`
+           (@lotCode, @txnDate, '受入', NULL, @sourceRef, @toRef, @toTankId,
+            @distillationId, @quantity, @note)`
       )
       .run({
         lotCode: nextRawSakeLotCode(db, '受入', txnDate),
@@ -359,6 +377,7 @@ function cancelDistillationDetailItem(detailId, { reason } = {}) {
         toTankId: detail.source_tank_id,
         distillationId: detail.distillation_id,
         quantity: detail.input_l,
+        sourceRef: `取消（${detail.detail_code ?? `明細id=${detailId}`}）`,
         note: `蒸留 ${detail.distillation_code} の投入明細取消による戻し`,
       });
 
@@ -535,10 +554,11 @@ function addDistillationDetailItem(distillationId, { tankId, volumeL, note, spec
     const detailResult = db
       .prepare(
         `INSERT INTO distillation_details
-           (distillation_id, raw_sake_ledger_id, input_l, source_tank_id, note)
-         VALUES (@distillationId, @rawSakeLedgerId, @inputL, @sourceTankId, @note)`
+           (detail_code, distillation_id, raw_sake_ledger_id, input_l, source_tank_id, note)
+         VALUES (@detailCode, @distillationId, @rawSakeLedgerId, @inputL, @sourceTankId, @note)`
       )
       .run({
+        detailCode: nextDetailCode(db),
         distillationId,
         rawSakeLedgerId: ledgerResult.lastInsertRowid,
         inputL: volumeL,
