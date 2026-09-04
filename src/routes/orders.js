@@ -95,6 +95,36 @@ router.post('/', validateRequest(createSchema), (req, res, next) => {
   }
 });
 
+// 受注の訂正（受注一覧の「編集」）。
+// 日付は空文字を「消す」意味として受け取る（間違えて入れた日付を消せないと直せないため）。
+const editableDate = z.union([dateOnly, z.literal('')]);
+
+const updateSchema = z.object({
+  orderedOn: dateOnly.optional(),
+  requestedDeliveryOn: editableDate.optional(),
+  deliveredOn: editableDate.optional(),
+  invoicedOn: editableDate.optional(),
+  paymentDueOn: editableDate.optional(),
+  paidOn: editableDate.optional(),
+  quantity: z.number().int().positive('本数は1以上で入力してください').optional(),
+  unitPrice: z.number().nonnegative().optional(),
+  markupRate: z.number().positive().optional(),
+  shippingFee: z.number().nonnegative().optional(),
+  status: z.string().optional(),
+  salesMethod: z.string().optional(),
+  deliveryMethod: z.string().optional(),
+  deliveryAddress: z.string().optional(),
+  note: z.string().optional(),
+});
+
+router.patch('/:id', validateRequest(updateSchema), (req, res, next) => {
+  try {
+    res.json(orderService.updateOrder(Number(req.params.id), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
 // 「発送済にする」。受注更新＋商品在庫変動履歴への出荷行追加を1トランザクションで行う。
 router.post('/:id/ship', validateRequest(shipSchema), (req, res, next) => {
   try {

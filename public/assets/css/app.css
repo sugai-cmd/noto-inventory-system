@@ -261,6 +261,8 @@ html {
 
   /* 一覧の操作ボタンは縦に積んで押しやすく */
   .row-actions { flex-direction: column; align-items: stretch; }
+  /* 「編集」が1文字ずつ折り返されないようにする */
+  .row-actions button { white-space: nowrap; }
 
   /* 検索候補は画面幅いっぱいに */
   .search-results { max-height: 50vh; }

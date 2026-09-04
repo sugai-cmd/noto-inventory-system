@@ -331,10 +331,156 @@ function listPendingInvoices({ to } = {}) {
     .all(params);
 }
 
+/**
+ * 受注1行の訂正（受注一覧の「編集」）。
+ *
+ * 現行シートでは行を直接書き換えて直していた操作にあたる。
+ * 日付や本数を間違えて登録したときに、受注を作り直さずに直せるようにする。
+ *
+ * 気をつけていること：
+ * - 送料・本数・単価・掛率を直したら、売価と合計も同じ更新の中で計算し直す
+ *   （画面から古い合計が送られてきても、金額が食い違ったまま残らないようにする）
+ * - 発送済の受注で本数や納品日を直したときは、商品在庫変動履歴の出荷行も
+ *   同じトランザクションで直す。ここを直さないと在庫の数が合わなくなる
+ * - 何をどう変えたかは操作ログに残す（誰がいつ直したかを追えるようにする）
+ */
+
+// 編集できる項目と、DBの列名の対応。ここに無い項目は書き換えない。
+const EDITABLE_COLUMNS = {
+  orderedOn: 'ordered_on',
+  requestedDeliveryOn: 'requested_delivery_on',
+  deliveredOn: 'delivered_on',
+  invoicedOn: 'invoiced_on',
+  paymentDueOn: 'payment_due_on',
+  paidOn: 'paid_on',
+  quantity: 'quantity',
+  unitPrice: 'unit_price',
+  markupRate: 'markup_rate',
+  shippingFee: 'shipping_fee',
+  status: 'status',
+  salesMethod: 'sales_method',
+  deliveryMethod: 'delivery_method',
+  deliveryAddress: 'delivery_address',
+  note: 'note',
+};
+
+// 操作ログに出すときの日本語名
+const EDITABLE_LABELS = {
+  ordered_on: '受注日',
+  requested_delivery_on: '納入希望日',
+  delivered_on: '納品日',
+  invoiced_on: '請求日',
+  payment_due_on: '入金予定日',
+  paid_on: '入金日',
+  quantity: '本数',
+  unit_price: '単価',
+  markup_rate: '掛率',
+  shipping_fee: '送料',
+  sales_amount: '売価',
+  total_amount: '合計',
+  status: 'ステータス',
+  sales_method: '販売方法',
+  delivery_method: '配送方法',
+  delivery_address: '配送先',
+  note: '備考',
+};
+
+function updateOrder(orderId, patch = {}, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const before = orderModel.findById(orderId);
+    if (!before) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+
+    const next = {};
+    for (const [key, column] of Object.entries(EDITABLE_COLUMNS)) {
+      if (!Object.hasOwn(patch, key)) continue;
+      // 空文字は「消す」意味として扱う（日付を消せないと直しようがないため）
+      const value = patch[key] === '' ? null : patch[key];
+      next[column] = value;
+    }
+    if (!Object.keys(next).length) return before;
+
+    if (next.quantity != null && next.quantity <= 0) {
+      throw new BusinessRuleError('本数は1以上で入力してください');
+    }
+    if (next.ordered_on === null) {
+      throw new BusinessRuleError('受注日は空にできません');
+    }
+
+    // 金額は「単価×本数×掛率」で計算し直す。画面から送られた売価・合計は使わない。
+    const quantity = next.quantity ?? before.quantity;
+    const unitPrice = next.unit_price ?? before.unit_price;
+    const markupRate = next.markup_rate ?? before.markup_rate;
+    const shippingFee = next.shipping_fee ?? before.shipping_fee ?? 0;
+
+    if (unitPrice != null && markupRate != null) {
+      next.sales_amount = Math.round(unitPrice * quantity * markupRate);
+    }
+    const salesAmount = next.sales_amount ?? before.sales_amount;
+    if (salesAmount != null) {
+      // 送料は受注番号の1行目にだけ載っている（submitOrderと同じ持ち方）
+      next.total_amount = salesAmount + (before.line_no === 1 ? shippingFee : 0);
+    }
+
+    const sets = Object.keys(next).map((c) => `${c} = @${c}`).join(', ');
+    db.prepare(`UPDATE orders SET ${sets}, updated_at = datetime('now') WHERE id = @id`)
+      .run({ ...next, id: orderId });
+
+    // 発送済なら、商品在庫変動履歴の出荷行も合わせて直す。
+    // ここを直さないと、受注の本数と在庫の減り方が食い違ったままになる。
+    const after = orderModel.findById(orderId);
+    if (after.status === '発送済') {
+      const ledger = db
+        .prepare(
+          `SELECT * FROM product_stock_ledger
+           WHERE order_id = ? AND txn_type = '出荷' AND is_cancelled = 0
+           ORDER BY id DESC LIMIT 1`
+        )
+        .get(orderId);
+
+      if (ledger) {
+        const product = db.prepare('SELECT * FROM products WHERE id = ?').get(after.product_id);
+        db.prepare(
+          `UPDATE product_stock_ledger
+           SET txn_date = @txnDate, quantity = @quantity,
+               volume_ml = @volumeMl, tax_amount = @taxAmount
+           WHERE id = @id`
+        ).run({
+          id: ledger.id,
+          txnDate: after.delivered_on ?? ledger.txn_date,
+          quantity: after.quantity,
+          volumeMl: product?.volume_ml != null ? product.volume_ml * after.quantity : null,
+          taxAmount: product?.tax_per_unit != null ? product.tax_per_unit * after.quantity : null,
+        });
+      }
+    }
+
+    const changes = Object.keys(next)
+      .filter((c) => String(before[c] ?? '') !== String(after[c] ?? ''))
+      .map((c) => `${EDITABLE_LABELS[c] ?? c }: ${before[c] ?? '(空)'} → ${after[c] ?? '(空)'}`);
+
+    operationLogService.record({
+      user: actor,
+      action: 'order.update',
+      targetType: 'orders',
+      targetId: orderId,
+      summary: changes.length
+        ? `受注 ${after.order_no} を訂正した（${changes.join('、')}）`
+        : `受注 ${after.order_no} を訂正した（内容に変化なし）`,
+    });
+
+    return after;
+  });
+
+  return run();
+}
+
 module.exports = {
   getOrderDefaults,
   submitOrder,
   markOrderAsShipped,
+  updateOrder,
   markInvoiceSent,
   markInvoicesSent,
   listPendingInvoices,

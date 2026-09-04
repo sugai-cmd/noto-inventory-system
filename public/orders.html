@@ -190,6 +190,99 @@
     </div>
   </section>
 
+  <section class="panel" id="editPanel" style="display:none">
+    <h2>受注の編集 <span id="editCode"></span></h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      日付や本数を間違えて登録したときに直します。得意先と商品は変えられません
+      （変える場合は登録し直してください）。金額は単価×本数×掛率で計算し直します。
+      発送済の受注で本数や納品日を直すと、商品在庫の出荷履歴も同じ内容に直します。
+    </p>
+    <form id="editForm">
+      <div class="grid">
+        <div>
+          <label for="eOrderedOn">受注日</label>
+          <input type="date" id="eOrderedOn" required>
+        </div>
+        <div>
+          <label for="eRequestedDeliveryOn">納入希望日</label>
+          <input type="date" id="eRequestedDeliveryOn">
+        </div>
+        <div>
+          <label for="eDeliveredOn">納品日</label>
+          <input type="date" id="eDeliveredOn">
+        </div>
+        <div>
+          <label for="eInvoicedOn">請求日</label>
+          <input type="date" id="eInvoicedOn">
+        </div>
+        <div>
+          <label for="ePaymentDueOn">入金予定日</label>
+          <input type="date" id="ePaymentDueOn">
+        </div>
+        <div>
+          <label for="ePaidOn">入金日</label>
+          <input type="date" id="ePaidOn">
+        </div>
+        <div>
+          <label for="eQuantity">本数</label>
+          <input type="number" id="eQuantity" min="1" step="1" required>
+        </div>
+        <div>
+          <label for="eUnitPrice">単価(円)</label>
+          <input type="number" id="eUnitPrice" min="0" step="1">
+        </div>
+        <div>
+          <label for="eMarkupRate">掛率</label>
+          <input type="number" id="eMarkupRate" min="0.01" step="0.01">
+        </div>
+        <div>
+          <label for="eShippingFee">送料(円)</label>
+          <input type="number" id="eShippingFee" min="0" step="1">
+          <div class="hint" id="eShippingHint"></div>
+        </div>
+        <div>
+          <label for="eStatus">ステータス</label>
+          <select id="eStatus">
+            <option value="未着手">未着手</option>
+            <option value="発送済">発送済</option>
+          </select>
+        </div>
+        <div>
+          <label for="eSalesMethod">販売方法</label>
+          <select id="eSalesMethod">
+            <option value="">（未設定）</option>
+            <option value="買取">買取</option>
+            <option value="委託">委託</option>
+          </select>
+        </div>
+        <div>
+          <label for="eDeliveryMethod">配送方法</label>
+          <select id="eDeliveryMethod">
+            <option value="">（未設定）</option>
+            <option value="配送">配送</option>
+            <option value="手渡し">手渡し</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label for="eDeliveryAddress">配送先</label>
+        <input type="text" id="eDeliveryAddress">
+      </div>
+      <div style="margin-top:12px">
+        <label for="eNote">備考</label>
+        <textarea id="eNote" rows="2"></textarea>
+      </div>
+
+      <div class="msg" id="ePreview" style="margin-top:12px"></div>
+
+      <div class="actions">
+        <button type="submit" id="eSubmit">この内容で直す</button>
+        <button type="button" class="secondary" id="eCancel">やめる</button>
+      </div>
+    </form>
+  </section>
+
   <section class="panel">
     <h2>請求日の一括記録</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
@@ -311,13 +404,23 @@ async function loadOrders() {
         <td><span class="badge ${badge}">${escapeHtml(o.status)}</span></td>
         <td>${escapeHtml(o.delivered_on ?? '')}</td>
         <td>${escapeHtml(o.payment_due_on ?? '')}</td>
-        <td class="row-actions">${shipBtn}</td>
+        <td class="row-actions">
+          <button class="secondary small" data-edit="${o.id}">編集</button>
+          ${shipBtn}
+        </td>
       </tr>`;
     })
     .join('');
 }
 
 el('orderRows').addEventListener('click', async (e) => {
+  const editBtn = e.target.closest('[data-edit]');
+  if (editBtn) {
+    try { await openEditForm(Number(editBtn.dataset.edit)); }
+    catch (err) { showMessage('messages', 'error', err.message); }
+    return;
+  }
+
   const btn = e.target.closest('[data-ship]');
   if (!btn) return;
   if (!confirm('この受注を発送済にします。商品在庫から出荷分が引かれます。よろしいですか？')) return;
@@ -333,6 +436,118 @@ el('orderRows').addEventListener('click', async (e) => {
   } catch (err) {
     showMessage('messages', 'error', err.message);
     btn.disabled = false;
+  }
+});
+
+// --- 受注の編集 -------------------------------------------------------------
+// 現行シートでは行を直接書き換えて直していた操作。受注を作り直さずに直せるようにする。
+let editing = null;
+
+// 日付欄は空文字を「消す」意味でサーバーへ送る。null相当を送れないと消せない。
+const EDIT_FIELDS = [
+  ['eOrderedOn', 'orderedOn', 'ordered_on', 'date'],
+  ['eRequestedDeliveryOn', 'requestedDeliveryOn', 'requested_delivery_on', 'date'],
+  ['eDeliveredOn', 'deliveredOn', 'delivered_on', 'date'],
+  ['eInvoicedOn', 'invoicedOn', 'invoiced_on', 'date'],
+  ['ePaymentDueOn', 'paymentDueOn', 'payment_due_on', 'date'],
+  ['ePaidOn', 'paidOn', 'paid_on', 'date'],
+  ['eQuantity', 'quantity', 'quantity', 'number'],
+  ['eUnitPrice', 'unitPrice', 'unit_price', 'number'],
+  ['eMarkupRate', 'markupRate', 'markup_rate', 'number'],
+  ['eShippingFee', 'shippingFee', 'shipping_fee', 'number'],
+  ['eStatus', 'status', 'status', 'text'],
+  ['eSalesMethod', 'salesMethod', 'sales_method', 'text'],
+  ['eDeliveryMethod', 'deliveryMethod', 'delivery_method', 'text'],
+  ['eDeliveryAddress', 'deliveryAddress', 'delivery_address', 'text'],
+  ['eNote', 'note', 'note', 'text'],
+];
+
+async function openEditForm(id) {
+  const order = await apiGet(`/api/orders/${id}`);
+  editing = order;
+
+  el('editCode').textContent =
+    `${order.order_no}（${order.customer_name} / ${order.product_name}）`;
+  for (const [inputId, , column] of EDIT_FIELDS) {
+    el(inputId).value = order[column] ?? '';
+  }
+  // 送料は受注番号の1行目にだけ載っている
+  el('eShippingHint').textContent =
+    order.line_no === 1
+      ? '同じ受注番号の中で、送料はこの行にだけ載ります'
+      : 'この行は明細2行目以降のため、送料は1行目で直してください';
+  el('eShippingFee').disabled = order.line_no !== 1;
+
+  updateEditPreview();
+  el('editPanel').style.display = '';
+  el('editPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/** 直したあとの金額をその場で見せる（サーバーと同じ式で計算する） */
+function updateEditPreview() {
+  if (!editing) return;
+  const qty = Number(el('eQuantity').value || 0);
+  const unitPrice = el('eUnitPrice').value === '' ? null : Number(el('eUnitPrice').value);
+  const markupRate = el('eMarkupRate').value === '' ? null : Number(el('eMarkupRate').value);
+  const shippingFee = Number(el('eShippingFee').value || 0);
+
+  if (unitPrice == null || markupRate == null || !qty) {
+    el('ePreview').textContent = '';
+    return;
+  }
+  const salesAmount = Math.round(unitPrice * qty * markupRate);
+  const total = salesAmount + (editing.line_no === 1 ? shippingFee : 0);
+  el('ePreview').textContent =
+    `直したあとの金額：売価 ${yen(salesAmount)}／合計 ${yen(total)}` +
+    `（もとの合計 ${yen(editing.total_amount)}）`;
+}
+
+el('editForm').addEventListener('input', updateEditPreview);
+
+el('eCancel').addEventListener('click', () => {
+  editing = null;
+  el('editPanel').style.display = 'none';
+});
+
+el('editForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!editing) return;
+  clearMessage('messages');
+
+  // 変えた項目だけ送る（触っていない項目をうっかり書き換えないため）
+  const patch = {};
+  for (const [inputId, key, column, kind] of EDIT_FIELDS) {
+    const input = el(inputId);
+    if (input.disabled) continue;
+    const raw = input.value.trim();
+    const before = editing[column] == null ? '' : String(editing[column]);
+    if (raw === before) continue;
+
+    if (kind === 'number') {
+      if (raw === '') continue;   // 数値欄は空にできない（本数・単価は必ず値がある）
+      patch[key] = Number(raw);
+    } else {
+      patch[key] = raw;
+    }
+  }
+
+  if (!Object.keys(patch).length) {
+    return showMessage('messages', 'ok', '変更はありませんでした');
+  }
+
+  el('eSubmit').disabled = true;
+  try {
+    const updated = await apiPatch(`/api/orders/${editing.id}`, patch);
+    showMessage('messages', 'ok',
+      `${updated.order_no} を直しました（合計 ${yen(updated.total_amount)}` +
+      `／入金予定日 ${updated.payment_due_on ?? '-'}）`);
+    editing = null;
+    el('editPanel').style.display = 'none';
+    await Promise.all([loadOrders(), loadPendingInvoices()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('eSubmit').disabled = false;
   }
 });
 
