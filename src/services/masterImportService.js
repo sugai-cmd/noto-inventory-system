@@ -5,11 +5,13 @@
 // 取り込みのたびにエラーで止まるより、差分を反映できたほうが実務に合う）。
 
 const { parse } = require('csv-parse/sync');
+const iconv = require('iconv-lite');
 const { getConnection } = require('../db/connection');
 const customerModel = require('../models/customerModel');
 const breweryModel = require('../models/breweryModel');
 const materialService = require('./materialService');
 const productService = require('./productService');
+const tankService = require('./tankService');
 const { normalizeName } = require('../utils/normalizeName');
 const { BusinessRuleError } = require('../utils/errors');
 const { parsePaymentTermMonths, ACCEPTED_WORDS } = require('../utils/paymentTerm');
@@ -102,6 +104,25 @@ const TEMPLATES = {
     },
   },
 
+  tanks: {
+    label: 'タンク',
+    // 列と並びは容器マスタシートのとおり。
+    // 「現在液量(L)」はシート上の計算列（こちらは入出庫の記録から算出する）なので取り込まない。
+    columns: {
+      容器ID: { key: 'code', required: true, aliases: ['タンクID', '容器コード'] },
+      容器名称: { key: 'name', required: true, aliases: ['タンク名', '容器名'] },
+      容器種別: { key: 'containerType', aliases: ['タンク種別', '種別'] },
+      '最大容量(L)': { key: 'maxVolumeL', type: 'number', aliases: ['最大容量'] },
+      現在設置場所: { key: 'location', aliases: ['設置場所', '保管場所'] },
+      ステータス: { key: 'status', aliases: ['状態'] },
+      検尺定数: { key: 'gaugeConstant', type: 'number' },
+      初期在庫量: { key: 'initialVolumeL', type: 'number', createOnly: true, aliases: ['初期在庫'] },
+      理論アルコール度数: { key: 'currentAbv', type: 'number', aliases: ['アルコール度数', '度数'] },
+      備考: { key: 'note' },
+      // 「現在液量(L)」はシート上の計算列。取り込まず、無視した列として報告する
+    },
+  },
+
   productRecipes: {
     label: '製品レシピ',
     // 製品レシピマスタシートのとおり。商品と資材は名前で引く。
@@ -152,7 +173,48 @@ const MODELS = {
     create: (input) => productService.registerProductWithRecipe(input),
     update: (id, input) => productService.updateProduct(id, input),
   },
+  tanks: {
+    list: () => getConnection().prepare('SELECT * FROM tanks ORDER BY code').all(),
+    create: (input) => tankService.registerTank(input),
+    update: (id, input) => tankService.updateTank(id, input),
+  },
 };
+
+/**
+ * アップロードされたCSVファイルの中身を文字列にする。
+ *
+ * 現行シートからのエクスポートはUTF-8だが、それをExcelで開いて保存し直すと
+ * Shift_JISになる。取り違えると日本語が全部化けたまま取り込まれてしまうので、
+ * ここで見分ける。判定はバイト列だけを見て行い、拡張子や利用者の申告は当てにしない。
+ *
+ * @param {Buffer} buffer
+ * @returns {{ text: string, encoding: string }}
+ */
+function decodeUpload(buffer) {
+  if (!Buffer.isBuffer(buffer) || !buffer.length) {
+    throw new BusinessRuleError('ファイルの中身が空です');
+  }
+
+  // UTF-8のBOMがあれば確定
+  if (buffer.length >= 3 && buffer[0] === 0xef && buffer[1] === 0xbb && buffer[2] === 0xbf) {
+    return { text: buffer.subarray(3).toString('utf8'), encoding: 'UTF-8 (BOM付き)' };
+  }
+  // UTF-16のBOM（Excelの「Unicodeテキスト」保存）
+  if (buffer.length >= 2 && buffer[0] === 0xff && buffer[1] === 0xfe) {
+    return { text: buffer.toString('utf16le').replace(/^\uFEFF/, ''), encoding: 'UTF-16LE' };
+  }
+
+  // BOMが無い場合、UTF-8として厳密に解釈できるかで判定する。
+  // Shift_JISの日本語はUTF-8として不正なバイト列になるので、
+  // 変換して戻したときに元のバイト列と一致するかどうかで見分けられる。
+  const asUtf8 = buffer.toString('utf8');
+  if (Buffer.from(asUtf8, 'utf8').equals(buffer)) {
+    return { text: asUtf8, encoding: 'UTF-8' };
+  }
+
+  const text = iconv.decode(buffer, 'Shift_JIS');
+  return { text, encoding: 'Shift_JIS' };
+}
 
 /** 画面に出す取り込みテンプレート（見出し行） */
 function templateFor(kind) {
@@ -259,7 +321,17 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
     return importRecipes(db, records, mapped, ignoredColumns, { dryRun });
   }
 
-  const existing = new Map(model.list().map((r) => [normalizeName(r.name), r]));
+  // 既存行の引き当て。名前だけで引くと、容器IDはそのままで名称を変えた行が
+  // 「新規」と判定されてしまい、登録時にID重複で落ちる。コードがあればコード優先で引く。
+  const currentRows = model.list();
+  const byName = new Map(currentRows.map((r) => [normalizeName(r.name), r]));
+  const byCode = new Map(
+    currentRows.filter((r) => r.code).map((r) => [normalizeName(r.code), r])
+  );
+  const findExisting = (input) =>
+    (input.code ? byCode.get(normalizeName(input.code)) : null) ??
+    byName.get(normalizeName(input.name)) ??
+    null;
 
   const errors = [];
   const parsed = [];
@@ -312,18 +384,24 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
     }
     const failedThisLine = errors.some((e) => e.line === line);
     if (input.name && !failedThisLine) {
-      parsed.push({ line, input, existing: existing.get(normalizeName(input.name)) ?? null });
+      parsed.push({ line, input, existing: findExisting(input) });
     }
   });
 
   // 不備のある行は飛ばして、残りは取り込む。
   // 実データには必ず例外的な書き方の行が混ざるので、1行のために全部止めない。
+  const createOnlyLabels = Object.entries(template.columns)
+    .filter(([, def]) => def.createOnly)
+    .map(([canonical]) => canonical);
+
   const summarize = (rows) => ({
     created: rows.filter((r) => !r.existing).length,
     updated: rows.filter((r) => r.existing).length,
     skipped: errors.length,
     errors,
     ignoredColumns,
+    // 更新になる行では反映されない列（在庫計算の起点を動かさないため）
+    createOnlyColumns: rows.some((r) => r.existing) ? createOnlyLabels : [],
     rows: rows.map((r) => ({
       line: r.line,
       name: r.input.name,
@@ -333,9 +411,21 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
 
   if (dryRun) return summarize(parsed);
 
+  // 「初期在庫量」のように、登録のときだけ意味を持つ列。
+  // 既存行に上書きすると在庫の計算の起点が動いてしまうので、更新では送らない。
+  const createOnlyKeys = Object.values(template.columns)
+    .filter((def) => def.createOnly)
+    .map((def) => def.key);
+
+  const forUpdate = (input) => {
+    const copy = { ...input };
+    for (const key of createOnlyKeys) delete copy[key];
+    return copy;
+  };
+
   const run = db.transaction(() => {
     for (const p of parsed) {
-      if (p.existing) model.update(p.existing.id, p.input);
+      if (p.existing) model.update(p.existing.id, forUpdate(p.input));
       else model.create(p.input);
     }
     return summarize(parsed);
@@ -448,4 +538,4 @@ function importRecipes(db, records, mapped, ignoredColumns, { dryRun }) {
   return run();
 }
 
-module.exports = { TEMPLATES, templateFor, importCsv, RECIPE_PROCESSES };
+module.exports = { TEMPLATES, templateFor, importCsv, decodeUpload, RECIPE_PROCESSES };

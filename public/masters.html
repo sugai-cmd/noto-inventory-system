@@ -147,7 +147,8 @@
   <section class="panel">
     <h2>CSVで一括登録</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      得意先・商品・製品レシピ・資材・酒蔵は、表計算ソフトからコピーしたCSVを貼り付けて一括登録できます。
+      得意先・商品・製品レシピ・資材・タンク・酒蔵は、CSVファイルを選ぶか、
+      表計算ソフトからコピーして貼り付けると一括登録できます。
       <strong>スプレッドシートの見出し行ごと、そのまま貼り付けてください</strong>
       （「顧客ID」「支払いサイト日付」などシート側の列名でも読み取れます。列の並び順も問いません。
       タブ区切りでも大丈夫です）。<strong>すでに同じ名前がある行は更新</strong>になります。
@@ -161,6 +162,7 @@
           <option value="products">商品</option>
           <option value="productRecipes">製品レシピ</option>
           <option value="materials">資材</option>
+          <option value="tanks">タンク</option>
           <option value="breweries">酒蔵</option>
         </select>
       </div>
@@ -171,7 +173,20 @@
       </div>
     </div>
     <div style="margin-top:12px">
-      <label for="importCsv">CSV</label>
+      <label for="importFile">CSVファイル</label>
+      <div id="importDrop" class="dropzone">
+        <input type="file" id="importFile" accept=".csv,.tsv,.txt,text/csv,text/plain" hidden>
+        <button type="button" class="secondary" id="importPick">ファイルを選ぶ</button>
+        <span class="muted">またはここにファイルをドラッグ＆ドロップ</span>
+        <div class="hint">
+          スプレッドシートの「ファイル → ダウンロード → カンマ区切り形式(.csv)」で保存したものを
+          そのまま選べます。Excelで保存し直したShift_JISのファイルも読めます。
+        </div>
+        <div id="importFileInfo" class="hint"></div>
+      </div>
+    </div>
+    <div style="margin-top:12px">
+      <label for="importCsv">CSVの中身（貼り付けでも可。ファイルを選ぶとここに入ります）</label>
       <textarea id="importCsv" rows="6" placeholder="見出し行を含めて貼り付けてください"></textarea>
     </div>
     <div class="actions">
@@ -283,7 +298,7 @@ const MASTERS = {
     hint: 'タンク操作・蒸留画面で選べる容器の一覧です。残量は入出庫履歴から再計算されるため、ここでは編集できません。',
     fields: [
       { key: 'containerType', label: '容器種別', type: 'tankType',
-        hint: '種別を選ぶと容器IDが自動で決まります' },
+        hint: '採番の対象になっている種別を選ぶと容器IDが自動で決まります。一覧に無い種別も入力できます' },
       { key: 'code', label: '容器ID', type: 'text', required: true, createOnly: true },
       { key: 'name', label: '容器名称', type: 'text', required: true },
       { key: 'maxVolumeL', label: '最大容量(L)', type: 'number', step: '0.1' },
@@ -552,13 +567,17 @@ function renderForm() {
              ${f.choices.map((c) => `<option value="${escapeHtml(c)}">`).join('')}
            </datalist>`;
       } else if (f.type === 'tankType') {
+        // 候補は出すが、一覧に無い値も入力できるようにしている。
+        // 現行シートの容器種別には PE・PP・斗瓶 のような、
+        // 採番の種別名とは別の書き方の値が入っており、
+        // 選択式にすると取り込んだ値を編集画面で開いただけで消えてしまうため。
         control =
-          `<select id="f_${f.key}"${disabled}>
-             <option value="">（未設定）</option>
+          `<input type="text" id="f_${f.key}" list="dl_${f.key}"${disabled}>
+           <datalist id="dl_${f.key}">
              ${tankPrefixes.map((t) =>
-               `<option value="${escapeHtml(t.containerType)}">${escapeHtml(t.containerType)}（${escapeHtml(t.prefix)}）</option>`
+               `<option value="${escapeHtml(t.containerType)}">${escapeHtml(t.prefix)}</option>`
              ).join('')}
-           </select>`;
+           </datalist>`;
       } else if (f.type === 'brewery') {
         control =
           `<select id="f_${f.key}"${disabled}>
@@ -587,13 +606,17 @@ function renderForm() {
     })
     .join('');
 
-  const tankTypeSelect = el('f_containerType');
-  if (tankTypeSelect && currentTab === 'tanks') {
-    tankTypeSelect.addEventListener('change', async () => {
-      if (editingId != null || !tankTypeSelect.value) return;
+  const tankTypeInput = el('f_containerType');
+  if (tankTypeInput && currentTab === 'tanks') {
+    tankTypeInput.addEventListener('change', async () => {
+      if (editingId != null || !tankTypeInput.value) return;
+      // 採番の対象になっている種別のときだけ容器IDを埋める。
+      // シート由来の種別（PEなど）は採番の決まりが無いので、手で入れてもらう。
+      const known = tankPrefixes.some((t) => t.containerType === tankTypeInput.value);
+      if (!known) return;
       try {
         const next = await apiGet(
-          `/api/tanks/next-code?containerType=${encodeURIComponent(tankTypeSelect.value)}`
+          `/api/tanks/next-code?containerType=${encodeURIComponent(tankTypeInput.value)}`
         );
         el('f_code').value = next.code;
       } catch (err) {
@@ -1038,10 +1061,17 @@ async function runImport(dryRun) {
       ? `<p style="margin:6px 0 0">取り込まなかった列（対応する項目がありません）:
            ${escapeHtml(r.ignoredColumns.join('・'))}</p>`
       : '';
+    // 在庫計算の起点になる列は、既にある行に上書きすると数が動いてしまうので当てない
+    const createOnly = r.createOnlyColumns?.length
+      ? `<p style="margin:6px 0 0">更新になる行には反映しない列:
+           ${escapeHtml(r.createOnlyColumns.join('・'))}
+           （在庫の計算の起点なので、登録済みの行では動かしません）</p>`
+      : '';
     el('importResult').innerHTML = skipped +
       `<div class="msg ok">
          ${dryRun ? '確認結果' : '取り込みました'}：新規 ${r.created}件 / 更新 ${r.updated}件
          ${ignored}
+         ${createOnly}
          <ul>${r.rows.slice(0, 30).map((row) =>
            `<li>${row.line}行目: ${escapeHtml(row.name)}（${escapeHtml(row.action)}）</li>`).join('')}</ul>
          ${r.rows.length > 30 ? `<p style="margin:6px 0 0">ほか ${r.rows.length - 30}件</p>` : ''}
@@ -1057,6 +1087,66 @@ async function runImport(dryRun) {
     showMessage('messages', 'error', err.message, err.details);
   }
 }
+
+// --- CSVファイルの読み込み ---------------------------------------------------
+// 表計算ソフトで開いてコピーする手間を無くす。読み込んだ中身は下の欄に入れて、
+// 取り込む前に目で確かめられるようにしている。
+//
+// 文字コードの判定はサーバー側で行う。スプレッドシートからのエクスポートはUTF-8だが、
+// それをExcelで開いて保存し直すとShift_JISになり、取り違えると日本語が全部化ける。
+
+async function loadImportFile(file) {
+  if (!file) return;
+  clearMessage('messages');
+  el('importResult').innerHTML = '';
+  el('importFileInfo').textContent = `${file.name} を読み込んでいます…`;
+
+  try {
+    const res = await fetch('/api/master-import/decode', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: file,
+    });
+    const text = await res.text();
+    let data = null;
+    try { data = JSON.parse(text); } catch {
+      throw new Error(`サーバーから予期しない応答が返りました（HTTP ${res.status}）。`);
+    }
+    if (!res.ok) throw new Error(data?.message || `読み込めませんでした (HTTP ${res.status})`);
+
+    el('importCsv').value = data.text;
+    const lines = data.text.split(/\r?\n/).filter((l) => l.trim()).length;
+    el('importFileInfo').textContent =
+      `${file.name}（文字コード: ${data.encoding} / 見出しを含めて${lines}行）を読み込みました。` +
+      '内容を確かめてから「確認だけする」を押してください。';
+  } catch (err) {
+    el('importFileInfo').textContent = '';
+    showMessage('messages', 'error', err.message);
+  }
+}
+
+el('importPick').addEventListener('click', () => el('importFile').click());
+el('importFile').addEventListener('change', (e) => {
+  loadImportFile(e.target.files[0]);
+  e.target.value = '';   // 同じファイルをもう一度選んでも反応するように
+});
+
+const drop = el('importDrop');
+for (const type of ['dragenter', 'dragover']) {
+  drop.addEventListener(type, (e) => {
+    e.preventDefault();
+    drop.classList.add('over');
+  });
+}
+for (const type of ['dragleave', 'drop']) {
+  drop.addEventListener(type, (e) => {
+    e.preventDefault();
+    drop.classList.remove('over');
+  });
+}
+drop.addEventListener('drop', (e) => {
+  loadImportFile(e.dataTransfer.files[0]);
+});
 
 el('importDryRun').addEventListener('click', () => runImport(true));
 el('importRun').addEventListener('click', () => runImport(false));
