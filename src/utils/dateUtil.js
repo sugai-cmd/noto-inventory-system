@@ -57,8 +57,14 @@ function today() {
 function calcPaymentDueOn(baseDateOnly, termMonths, termDay) {
   if (!isDateOnly(baseDateOnly)) return null;
 
+  // 支払いサイトが未設定の得意先で「当月末日」を勝手に当てにいかない。
+  // 以前は Number(null) が 0 になるため、月数が空でも当月末日を計算して
+  // 入金予定日として保存していた。空欄なら空欄のまま返し、画面で気づけるようにする。
+  if (termMonths == null || String(termMonths).trim() === '') return null;
+  const months = Number(termMonths);
+  if (!Number.isFinite(months)) return null;
+
   const { year, month } = toParts(baseDateOnly);
-  const months = Number.isFinite(Number(termMonths)) ? Number(termMonths) : 0;
 
   // 月を進める（monthは1始まりなので0始まりに直して計算し戻す）
   const shifted = new Date(Date.UTC(year, month - 1 + months, 1));

@@ -35,7 +35,7 @@ node scripts/create-user.js --list  # ユーザー一覧
 | URL | 内容 |
 |---|---|
 | `/` | ダッシュボード（未着手受注・蒸留中・要発注資材・24時間超過アラート） |
-| `/orders.html` | 受注登録・一覧・発送済処理・CSV出力 |
+| `/orders.html` | 受注登録・一覧・編集（訂正）・発送済処理・CSV出力 |
 | `/bottling.html` | 瓶詰め・箱詰め |
 | `/distillation.html` | 原酒入荷・蒸留開始・完了報告 |
 | `/tanks.html` | 容器移動・未納税移出・タンク入出庫履歴 |
