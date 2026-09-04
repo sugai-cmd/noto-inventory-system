@@ -46,7 +46,7 @@ node scripts/create-user.js --list  # ユーザー一覧
 | `/audit.html` | 在庫監査レポート・修正履歴 |
 | `/sales-targets.html` | 売上目標と進捗 |
 | `/quotations.html` | 見積管理（売価・利益・確度をかけた見込み） |
-| `/masters.html` | マスタ登録（得意先・商品／製品レシピ・タンク・酒蔵・原酒）・CSV一括登録 |
+| `/masters.html` | マスタ登録（得意先・商品／製品レシピ・タンク・酒蔵・原酒）・CSV一括登録（ファイル選択／ドラッグ＆ドロップ対応） |
 | `/shipping.html` | 送料設定（都道府県の地帯・料金表・段ボール対応表） |
 | `/settings.html` | 2要素認証・パスワード変更・利用者管理・操作ログ |
 

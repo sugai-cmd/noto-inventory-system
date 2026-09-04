@@ -160,6 +160,20 @@ tbody tr:hover { background: #f9fafc; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .row-actions { display: flex; gap: 6px; }
 
+/* CSVファイルの受け口（選択とドラッグ＆ドロップ） */
+.dropzone {
+  border: 1px dashed var(--border);
+  border-radius: var(--radius);
+  padding: 14px;
+  background: #fbfcfd;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+}
+.dropzone.over { border-color: var(--accent); background: #e8f0fe; }
+.dropzone .hint { flex-basis: 100%; margin-top: 0; }
+
 /* マスタ画面のタブ */
 .tabs { display: flex; flex-wrap: wrap; gap: 2px; margin-bottom: 16px; border-bottom: 2px solid var(--border); }
 .tabs button {
