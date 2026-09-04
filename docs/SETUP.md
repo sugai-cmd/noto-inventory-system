@@ -479,6 +479,41 @@ npm start
 > 以前は同じ状況で「Unexpected token '<'」とだけ表示され、原因が分かりませんでした。
 > 現在は足りない機能の名前と対処が出ます。
 
+### `git pull` が「local changes would be overwritten」で止まる
+
+```
+error: Your local changes to the following files would be overwritten by merge:
+	package-lock.json
+Please commit your changes or stash them before you merge.
+Aborting
+```
+
+`npm install` を実行すると、`package-lock.json`（どのライブラリのどの版を
+入れたかの記録ファイル）がMac側で少し書き換わることがあります。
+そのままだと `git pull` が「上書きしていいのか分からない」と言って止まります。
+
+このファイルは**自動で作られるファイルで、受注や在庫のデータではありません**。
+Mac側の変更は捨ててかまいません。
+
+```bash
+cd ~/noto-inventory-system
+git checkout -- package-lock.json
+git pull origin main
+npm install
+npm run migrate
+```
+
+`package-lock.json` 以外のファイル名が出た場合は、心当たりがなければ
+中身を確認してから消してください。
+
+```bash
+git diff        # 何が変わっているかを見る（q で閉じる）
+git checkout -- .   # 見たうえで、全部捨ててよければ
+```
+
+**`git checkout -- .` はMac側の変更を元に戻す操作です。
+`db/database.sqlite`（受注・在庫・利用者のデータ）はGitの管理外なので消えません。**
+
 ### エラーが出る・動きが変
 
 ```bash
