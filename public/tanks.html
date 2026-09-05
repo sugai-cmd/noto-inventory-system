@@ -120,9 +120,17 @@
 renderNav('tanks.html');
 
 let tanks = [];
+let tankLots = [];
 
 async function loadTanks() {
-  tanks = await apiGet('/api/tanks/monitor');
+  // 中身の内訳（どの蒸留ロットの液体か）も一緒に取る。
+  // 移動元・移動先を選んだときに、何を動かそうとしているかが分かるようにする。
+  const [monitor, lots] = await Promise.allSettled([
+    apiGet('/api/tanks/monitor'),
+    apiGet('/api/lots/tanks?includeEmpty=1'),
+  ]);
+  tanks = monitor.status === 'fulfilled' ? monitor.value : [];
+  tankLots = lots.status === 'fulfilled' ? lots.value : [];
   const options = '<option value="">選択してください</option>' +
     tanks.map((t) =>
       `<option value="${t.tank_id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`
@@ -139,9 +147,19 @@ async function loadTanks() {
 
 function showTankHint(selectId, hintId) {
   const tank = tanks.find((t) => String(t.tank_id) === el(selectId).value);
-  el(hintId).textContent = tank
-    ? `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・度数 ${tank.current_abv ?? '-'}%`
+  if (!tank) {
+    el(hintId).innerHTML = '';
+    return;
+  }
+  const lots = tankLots.find((t) => t.tankId === tank.tank_id)?.lots ?? [];
+  const breakdown = lots.length
+    ? '<br>中身: ' + lots
+        .map((l) => `${escapeHtml(l.label)} ${num(l.volumeL, 1)}L（${num(l.share, 1)}%）`)
+        .join(' ／ ')
     : '';
+  el(hintId).innerHTML =
+    `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・` +
+    `度数 ${tank.current_abv ?? '-'}%${breakdown}`;
 }
 
 el('tFrom').addEventListener('change', () => showTankHint('tFrom', 'tFromHint'));
@@ -189,8 +207,8 @@ el('transferForm').addEventListener('submit', async (e) => {
       `容器移動を登録しました（${r.from.name} ${num(r.from.after.current_volume_l, 1)}L → ${r.to.name} ${num(r.to.after.current_volume_l, 1)}L）`);
     el('transferForm').reset();
     el('tDate').value = todayStr();
-    el('tFromHint').textContent = '';
-    el('tToHint').textContent = '';
+    el('tFromHint').innerHTML = '';
+    el('tToHint').innerHTML = '';
     await Promise.all([loadTanks(), loadLedger()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
@@ -219,7 +237,7 @@ el('taxFreeForm').addEventListener('submit', async (e) => {
       `未納税移出を登録しました（${r.from.name} 残 ${num(r.from.after.current_volume_l, 1)}L / 搬出先: ${r.destination}）`);
     el('taxFreeForm').reset();
     el('fDate').value = todayStr();
-    el('fFromHint').textContent = '';
+    el('fFromHint').innerHTML = '';
     await Promise.all([loadTanks(), loadLedger()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);

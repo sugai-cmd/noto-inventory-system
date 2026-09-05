@@ -160,6 +160,27 @@ tbody tr:hover { background: #f9fafc; }
 .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
 .row-actions { display: flex; gap: 6px; }
 
+/* ロット追跡：中身の内訳（積み上げバーと明細） */
+.lot-bar {
+  display: flex; height: 8px; border-radius: 4px; overflow: hidden;
+  background: #eef1f5; margin-bottom: 6px; min-width: 120px;
+}
+.lot-seg { display: block; height: 100%; }
+.lot-list, .lot-used { display: flex; flex-direction: column; gap: 2px; }
+.lot-used { margin-top: 4px; padding-top: 4px; border-top: 1px dashed var(--border); }
+.lot-item { display: flex; align-items: baseline; gap: 6px; font-size: 12px; }
+.lot-item .lot-name { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.lot-item .lot-qty { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+.lot-dot { width: 8px; height: 8px; border-radius: 2px; flex: 0 0 auto; }
+
+/* ロットの色。順番に振るだけなので、意味は持たせていない */
+.lot-c0 { background: #1f6feb; }
+.lot-c1 { background: #1e7a46; }
+.lot-c2 { background: #8a6100; }
+.lot-c3 { background: #7b4fc0; }
+.lot-c4 { background: #0f7b8a; }
+.lot-c5 { background: #b0483a; }
+
 /* CSVファイルの受け口（選択とドラッグ＆ドロップ） */
 .dropzone {
   border: 1px dashed var(--border);

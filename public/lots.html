@@ -1,0 +1,208 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ロット追跡 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <div class="tabs" id="lotTabs">
+    <button type="button" class="active" data-tab="tanks">浄酎タンクの中身</button>
+    <button type="button" data-tab="distillations">蒸留ロットの行方</button>
+    <button type="button" data-tab="rawSake">原酒タンクの中身</button>
+    <button type="button" data-tab="wip">仕掛品ロット</button>
+  </div>
+
+  <section class="panel">
+    <h2 id="panelTitle">浄酎タンクの中身</h2>
+    <p class="muted" style="margin-top:0;font-size:13px" id="panelHint"></p>
+    <div class="actions" style="margin-top:0">
+      <label style="display:flex;align-items:center;gap:6px;margin:0">
+        <input type="checkbox" id="includeEmpty" style="width:auto;margin:0">
+        <span style="font-size:13px">空のタンクも出す</span>
+      </label>
+    </div>
+    <div id="panelBody"></div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('lots.html');
+
+const TABS = {
+  tanks: {
+    title: '浄酎タンクの中身',
+    hint: 'タンクの中の液体を、どの蒸留ロットから来たかで分けたものです。' +
+          '液体は混ざるので割合で持っています（100Lのタンクから50L移せば、中身の割合そのままで50L出ていきます）。' +
+          '内訳の合計は在庫画面の現在液量と一致します。',
+    endpoint: '/api/lots/tanks',
+    render: renderTankLots,
+  },
+  distillations: {
+    title: '蒸留ロットの行方',
+    hint: '蒸留1回＝1ロットとして、その液体がいまどのタンクに残っていて、どれだけ瓶詰めされたかを出します。',
+    endpoint: '/api/lots/distillations',
+    render: renderDistillationLots,
+    noEmptyToggle: true,
+  },
+  rawSake: {
+    title: '原酒タンクの中身',
+    hint: '蒸留の前の原酒です。どの銘柄・どの酒蔵の原酒が、どのタンクに入っているかを出します。',
+    endpoint: '/api/lots/raw-sake',
+    render: renderTankLots,
+  },
+  wip: {
+    title: '仕掛品ロット',
+    hint: '瓶詰め1件が1ロットです。残っている本数と、どの箱詰めに何本使ったか、' +
+          'その瓶詰めがどの蒸留ロットの液体から来たかまで出します。',
+    endpoint: '/api/lots/wip',
+    render: renderWipLots,
+  },
+};
+
+let currentTab = 'tanks';
+
+/** 内訳を、割合つきの積み上げバーと明細で出す */
+function breakdownHtml(lots) {
+  if (!lots.length) return '<span class="muted">内訳の記録がありません</span>';
+  const bar = lots
+    .map((l, i) => `<span class="lot-seg lot-c${i % 6}" style="width:${l.share}%"
+                          title="${escapeHtml(l.label)} ${num(l.volumeL, 1)}L"></span>`)
+    .join('');
+  const list = lots
+    .map((l, i) => `<div class="lot-item">
+        <span class="lot-dot lot-c${i % 6}"></span>
+        <span class="lot-name">${escapeHtml(l.label)}</span>
+        <span class="lot-qty">${num(l.volumeL, 1)}L（${num(l.share, 1)}%）</span>
+      </div>`)
+    .join('');
+  return `<div class="lot-bar">${bar}</div><div class="lot-list">${list}</div>`;
+}
+
+function renderTankLots(rows) {
+  if (!rows.length) return '<p class="empty">中身のあるタンクがありません</p>';
+  return `<div class="table-scroll">
+    <table>
+      <thead><tr>
+        <th>容器ID</th><th>容器名称</th><th>種別</th>
+        <th class="num">現在液量</th><th style="min-width:260px">中身の内訳</th>
+      </tr></thead>
+      <tbody>${rows.map((t) => `<tr>
+        <td>${escapeHtml(t.code ?? '')}</td>
+        <td>${escapeHtml(t.name)}</td>
+        <td>${escapeHtml(t.containerType ?? '')}</td>
+        <td class="num">${num(t.currentVolumeL, 1)}L</td>
+        <td>${breakdownHtml(t.lots)}</td>
+      </tr>`).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderDistillationLots(rows) {
+  if (!rows.length) return '<p class="empty">蒸留記録がありません</p>';
+  return `<div class="table-scroll">
+    <table>
+      <thead><tr>
+        <th>蒸留ID</th><th>完了日</th><th>使用原酒</th>
+        <th class="num">蒸留量</th><th class="num">タンク残</th><th class="num">瓶詰め済</th>
+        <th style="min-width:220px">いまどこにあるか</th>
+      </tr></thead>
+      <tbody>${rows.map((d) => {
+        const badge = d.status === '完了' ? 'ok' : 'warn';
+        const where = d.inTanks.length
+          ? d.inTanks.map((t) =>
+              `<div class="lot-item"><span class="lot-name">${escapeHtml(t.code)} ${escapeHtml(t.name)}</span>
+                 <span class="lot-qty">${num(t.volumeL, 1)}L</span></div>`).join('')
+          : '<span class="muted">タンクには残っていません</span>';
+        const used = d.bottled.length
+          ? `<div class="lot-used">${d.bottled.map((b) =>
+              `<div class="lot-item"><span class="lot-name">${escapeHtml(b.txnDate)} ${escapeHtml(b.productName)}</span>
+                 <span class="lot-qty">約${num(b.quantity)}本 / ${num(b.volumeL, 1)}L</span></div>`).join('')}</div>`
+          : '';
+        return `<tr>
+          <td>${escapeHtml(d.distillationCode)}<br><span class="badge ${badge}">${escapeHtml(d.status)}</span></td>
+          <td>${escapeHtml(d.completedOn ?? '')}</td>
+          <td>${escapeHtml(d.inputSummary ?? '')}</td>
+          <td class="num">${d.outputL != null ? num(d.outputL, 1) + 'L' : ''}</td>
+          <td class="num">${num(d.remainingL, 1)}L</td>
+          <td class="num">${num(d.bottledL, 1)}L</td>
+          <td>${where}${used}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+function renderWipLots(rows) {
+  if (!rows.length) return '<p class="empty">残っている仕掛品ロットがありません</p>';
+  return `<div class="table-scroll">
+    <table>
+      <thead><tr>
+        <th>ロット（商品履歴ID）</th><th>瓶詰め日</th><th>商品</th><th>払出元タンク</th>
+        <th class="num">瓶詰め</th><th class="num">箱詰め済</th><th class="num">残り</th>
+        <th style="min-width:220px">元の蒸留ロット／箱詰めの内訳</th>
+      </tr></thead>
+      <tbody>${rows.map((l) => {
+        const source = l.sourceLots.length
+          ? `<div class="lot-list">${l.sourceLots.map((s) =>
+              `<div class="lot-item"><span class="lot-name">元: ${escapeHtml(s.label)}</span>
+                 <span class="lot-qty">${num(s.volumeL, 1)}L（${num(s.share, 1)}%）</span></div>`).join('')}</div>`
+          : '';
+        const boxed = l.boxings.length
+          ? `<div class="lot-used">${l.boxings.map((b) =>
+              `<div class="lot-item"><span class="lot-name">箱詰: ${escapeHtml(b.txnDate)} ${escapeHtml(b.historyCode)}</span>
+                 <span class="lot-qty">${num(b.quantity)}本</span></div>`).join('')}</div>`
+          : '';
+        return `<tr>
+          <td>${escapeHtml(l.historyCode ?? '')}</td>
+          <td>${escapeHtml(l.txnDate)}</td>
+          <td>${escapeHtml(l.productName)}</td>
+          <td>${escapeHtml(l.tank ?? '')}</td>
+          <td class="num">${num(l.quantity)}</td>
+          <td class="num">${num(l.allocated)}</td>
+          <td class="num">${num(l.remaining)}</td>
+          <td>${source}${boxed || (source ? '' : '<span class="muted">記録がありません</span>')}</td>
+        </tr>`;
+      }).join('')}</tbody>
+    </table>
+  </div>`;
+}
+
+async function loadTab() {
+  const tab = TABS[currentTab];
+  el('panelTitle').textContent = tab.title;
+  el('panelHint').textContent = tab.hint;
+  el('includeEmpty').parentElement.parentElement.style.display =
+    tab.noEmptyToggle ? 'none' : '';
+  el('panelBody').innerHTML = '<p class="empty">読み込んでいます…</p>';
+
+  const params = el('includeEmpty').checked && !tab.noEmptyToggle ? '?includeEmpty=1' : '';
+  try {
+    el('panelBody').innerHTML = tab.render(await apiGet(tab.endpoint + params));
+  } catch (err) {
+    el('panelBody').innerHTML = '';
+    showMessage('messages', 'error', err.message);
+  }
+}
+
+el('lotTabs').addEventListener('click', (e) => {
+  const btn = e.target.closest('[data-tab]');
+  if (!btn) return;
+  currentTab = btn.dataset.tab;
+  [...el('lotTabs').children].forEach((b) => b.classList.toggle('active', b === btn));
+  clearMessage('messages');
+  loadTab();
+});
+
+el('includeEmpty').addEventListener('change', loadTab);
+
+loadTab();
+</script>
+</body>
+</html>

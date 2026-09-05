@@ -136,9 +136,18 @@
 renderNav('bottling.html');
 
 let tanks = [];
+let tankLots = [];
 
 async function loadTanks() {
-  tanks = await apiGet('/api/tanks/monitor');
+  // 中身の内訳（どの蒸留ロットの液体か）も一緒に取る。
+  // 瓶詰めするときに「いま入れようとしているのはどのロットか」が見えないと、
+  // 後からロットを追えなくなる。
+  const [monitor, lots] = await Promise.allSettled([
+    apiGet('/api/tanks/monitor'),
+    apiGet('/api/lots/tanks?includeEmpty=1'),
+  ]);
+  tanks = monitor.status === 'fulfilled' ? monitor.value : [];
+  tankLots = lots.status === 'fulfilled' ? lots.value : [];
   el('bTank').innerHTML =
     '<option value="">選択してください</option>' +
     tanks
@@ -148,10 +157,20 @@ async function loadTanks() {
 
 el('bTank').addEventListener('change', () => {
   const tank = tanks.find((t) => String(t.tank_id) === el('bTank').value);
-  el('bTankHint').textContent = tank
-    ? `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・度数 ${tank.current_abv ?? '-'}%`
+  if (!tank) {
+    el('bTankHint').innerHTML = '';
+    return;
+  }
+  const lots = tankLots.find((t) => t.tankId === tank.tank_id)?.lots ?? [];
+  const breakdown = lots.length
+    ? '<br>中身: ' + lots
+        .map((l) => `${escapeHtml(l.label)} ${num(l.volumeL, 1)}L（${num(l.share, 1)}%）`)
+        .join(' ／ ')
     : '';
-  if (tank && tank.current_abv != null && !el('bAbv').value) el('bAbv').value = tank.current_abv;
+  el('bTankHint').innerHTML =
+    `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・` +
+    `度数 ${tank.current_abv ?? '-'}%${breakdown}`;
+  if (tank.current_abv != null && !el('bAbv').value) el('bAbv').value = tank.current_abv;
 });
 
 /** 選択した商品のレシピ（消費される資材）を事前に見せる */
@@ -243,7 +262,7 @@ el('bottlingForm').addEventListener('submit', async (e) => {
     el('bDate').value = todayStr();
     bProduct.reset();
     el('bRecipe').innerHTML = '';
-    el('bTankHint').textContent = '';
+    el('bTankHint').innerHTML = '';
     await loadTanks();
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
