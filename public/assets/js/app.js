@@ -209,6 +209,7 @@ function renderNav(current) {
     ['tanks.html', 'タンク操作'],
     ['materials.html', '資材'],
     ['stock.html', '在庫'],
+    ['lots.html', 'ロット追跡'],
     ['stocktaking.html', '棚卸'],
     ['audit.html', '在庫監査'],
     ['sales-targets.html', '売上目標'],
