@@ -1,6 +1,7 @@
 // 製品レシピマスタ → product_recipes（フェーズ1、products・materialsのnameから解決）
 
 const { loadCsvTable, resolveId } = require('../lib/loadHelper');
+const { parseNumber } = require('../lib/parseNumber');
 
 const INSERT_SQL = `
   INSERT INTO product_recipes (product_id, material_id, qty_required, process)
@@ -43,7 +44,7 @@ function load(ctx) {
       return {
         productId,
         materialId,
-        qtyRequired: Number(row['必要数量']),
+        qtyRequired: parseNumber(row['必要数量'], '必要数量', { required: true }),
         process: row['ステータス'] || null,
       };
     },

@@ -2,6 +2,7 @@
 
 const { loadCsvTable, resolveId, resolveTankId } = require('../lib/loadHelper');
 const { parseDateOnly } = require('../lib/parseDate');
+const { parseAbsNumber, parseNumber } = require('../lib/parseNumber');
 
 const VALID_TXN_TYPES = new Set(['継足', '瓶詰', '容器移動', '未納税移出', '欠減', '棚卸調整', '取消戻し']);
 
@@ -25,12 +26,20 @@ function load(ctx) {
         throw new Error(`受払の値を解釈できません: "${row['受払']}"`);
       }
 
-      const fromTankId = resolveTankId(context, {
-        sheet: '浄酎容器変動履歴',
-        column: '受入元',
-        rawValue: row['受入元'],
-        required: false,
-      });
+      // 継足（蒸留の完了でタンクへ入る行）の受入元は「蒸留機」。
+      // 蒸留機は液体を溜めておく容器ではなく通過点なので、ここをタンクとして扱うと
+      // 蒸留機の残量が継足のたびにマイナスへ振れていく。
+      // いまのアプリも完了時は from_tank_id を空で書いているので、それに合わせる。
+      const fromRaw = (row['受入元'] || '').trim();
+      const fromIsStill = txnType === '継足';
+      const fromTankId = fromIsStill
+        ? null
+        : resolveTankId(context, {
+            sheet: '浄酎容器変動履歴',
+            column: '受入元',
+            rawValue: row['受入元'],
+            required: false,
+          });
       const toTankId = resolveTankId(context, {
         sheet: '浄酎容器変動履歴',
         column: '払出先',
@@ -71,6 +80,9 @@ function load(ctx) {
       if (row['払出先'] && toTankId == null) {
         note = [note, `払出先(原文): ${row['払出先']}`].filter(Boolean).join(' / ');
       }
+      if (fromIsStill && fromRaw) {
+        note = [note, `受入元(原文): ${fromRaw}`].filter(Boolean).join(' / ');
+      }
 
       return {
         txnDate: parseDateOnly(row['日付']),
@@ -78,8 +90,11 @@ function load(ctx) {
         txnType,
         productId,
         toTankId,
-        quantityL: Number(row['数量(L)']),
-        abv: row['アルコール度数'] ? Number(String(row['アルコール度数']).replace('%', '')) : null,
+        // シートは向きを符号で表す（瓶詰め・容器移動は負）。
+        // こちらは受入元/払出先の列で向きを表すので、大きさだけを取る。
+        // 符号をそのまま入れると v_tank_monitor が逆算して、瓶詰めでタンクが増えてしまう。
+        quantityL: parseAbsNumber(row['数量(L)'], '数量(L)', { required: true }),
+        abv: parseNumber(row['アルコール度数'], 'アルコール度数'),
         productLedgerId,
         distillationId,
         dataKind: row['データ区分'] || null,

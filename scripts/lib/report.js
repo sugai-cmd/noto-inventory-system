@@ -68,8 +68,10 @@ class MigrationReport {
     console.log('\n=== 移行サマリー ===');
     for (const [sheet, counts] of Object.entries(this.summary)) {
       const existing = counts.existing ? ` / 既存${counts.existing}` : '';
+      // 意図して飛ばした行（aliases.json の __ignore__）は、直すべきスキップと分けて出す
+      const ignored = counts.ignored ? ` / 対象外${counts.ignored}` : '';
       console.log(
-        `  ${sheet}: 読込${counts.read} / 投入${counts.inserted}${existing} / スキップ${counts.skipped}`
+        `  ${sheet}: 読込${counts.read} / 投入${counts.inserted}${existing}${ignored} / スキップ${counts.skipped}`
       );
     }
     if (this.errors.length) {

@@ -23,8 +23,17 @@ test('parseDateOnly は空値をnullとして扱う', () => {
 });
 
 test('parseDateOnly は解釈できない値で例外を投げる（握りつぶさない）', () => {
+  // 日付として書かれているのにこちらが読めない形は、黙って捨てずに止める
   assert.throws(() => parseDateOnly('令和8年8月5日'), /日付\/日時を解釈できません/);
-  assert.throws(() => parseDateOnly('不明'), /日付\/日時を解釈できません/);
+  assert.throws(() => parseDateOnly('2026年13月45日'), /日付\/日時を解釈できません/);
+});
+
+test('日付欄に人が書く「無い」の記号は空欄として扱う', () => {
+  // 実データの顧客リストには、日付の列に「-」と書かれた行があった。
+  // ここで例外にすると、日付が無いというだけで行ごと取り込めなくなる。
+  for (const v of ['-', '―', 'なし', '未定', '不明']) {
+    assert.equal(parseDateOnly(v), null, `${v} は空欄として扱う`);
+  }
 });
 
 test('parseDateTimeParts は日時混在の値を日付と時刻に分離する', () => {

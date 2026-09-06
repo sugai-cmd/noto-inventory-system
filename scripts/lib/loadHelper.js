@@ -1,5 +1,13 @@
 const path = require('node:path');
+
+/**
+ * 「この行は飛ばしてよい」を表す例外。
+ * 読み取りの失敗（＝直すべきエラー）と、意図した除外を区別するために分けている。
+ */
+class SkipRow extends Error {}
+
 const { readCsv } = require('./csvReader');
+const { aliasesForSheet, aliasRow } = require('./columnAliases');
 
 /**
  * CSV1ファイル分を読み込み、行ごとに mapRow で変換してINSERTする共通処理。
@@ -31,7 +39,12 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
 
   const stmt = ctx.db.prepare(insertSql);
 
-  rows.forEach((row, i) => {
+  // 見出しの表記ゆれを吸収する。ローダーは row['資材名'] のまま書けばよく、
+  // シート側が「資材名称」でも読める（columnAliases.js）。
+  const aliases = aliasesForSheet(sheetName);
+
+  rows.forEach((rawRow, i) => {
+    const row = aliasRow(rawRow, aliases);
     summary.read++;
     const rowNumber = i + 2; // ヘッダ行を1行目とした実際のCSV上の行番号
 
@@ -56,6 +69,11 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
     try {
       mapped = mapRow(row, rowNumber, ctx);
     } catch (e) {
+      // 意図した除外はエラーとして数えない（レポートは汚さず、件数だけ残す）
+      if (e instanceof SkipRow) {
+        summary.ignored = (summary.ignored ?? 0) + 1;
+        return;
+      }
       ctx.report.recordError(sheetName, rowNumber, e.message);
       summary.skipped++;
       return;
@@ -104,10 +122,31 @@ function existingByName(table, csvColumn) {
  * @param {boolean} [opts.required] - trueなら未解決時に例外を投げて行全体をスキップさせる
  * @returns {number|null}
  */
+/**
+ * 「マスタに無いのが分かっていて、飛ばしてよい値」かどうか。
+ *
+ * 実データには廃番になった商品を指すレシピ行のように、
+ * マスタに無いのが正しい行が混ざる。これを名寄せ不一致として数えると
+ * 毎回 --strict で止まってしまい、本当の不一致が埋もれる。
+ * aliases.json に __ignore__ で宣言しておくと、静かに飛ばす。
+ *
+ *   { "__ignore__": { "商品名称": ["白30ml サンプル用(旧)"] } }
+ */
+function isKnownIgnored(ctx, column, rawValue) {
+  const list = ctx.aliases?.__ignore__?.[column];
+  if (!Array.isArray(list)) return false;
+  const target = ctx.normalize(rawValue);
+  return list.some((v) => ctx.normalize(v) === target);
+}
+
 function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
   if (rawValue == null || String(rawValue).trim() === '') {
     if (required) throw new Error(`${column}が空です`);
     return null;
+  }
+
+  if (isKnownIgnored(ctx, column, rawValue)) {
+    throw new SkipRow(`${column}「${rawValue}」は移行対象外として宣言されています`);
   }
 
   const aliasTable = ctx.aliases?.[column];
@@ -128,7 +167,11 @@ function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
 // タンク欄に入りうるが、そもそもタンクを指していない既知の値。
 // これらは「名寄せ不一致」ではなく仕様上のNULLなので、レポートに載せない
 // （DDLでも 払出先「直接充填」等は to_tank_id=NULL ＋ note と設計済み）。
-const NON_TANK_LITERALS = new Set(['直接充填', '廃棄', '出荷', '-', '―', 'なし']);
+const NON_TANK_LITERALS = new Set([
+  '直接充填', '廃棄', '出荷', '-', '―', 'なし',
+  // 場所であってタンクではない（タンクマスタの「現在設置場所」に出てくる値）
+  '熟成室', '浄溜所', '浄留所',
+]);
 
 /**
  * タンク参照専用の解決ヘルパー。DATA_STRUCTURE.mdでは「タンクID」「タンク名」の
@@ -163,4 +206,4 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
   return null;
 }
 
-module.exports = { loadCsvTable, resolveId, resolveTankId, existingByName };
+module.exports = { loadCsvTable, resolveId, resolveTankId, existingByName, SkipRow };

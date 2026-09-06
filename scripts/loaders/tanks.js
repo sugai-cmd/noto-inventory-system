@@ -5,6 +5,7 @@
 // 以降はビュー側の再計算値と一致するはずなので、ズレはそのまま検算材料にもなる）。
 
 const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { parseNumber } = require('../lib/parseNumber');
 const { generateUid } = require('../../src/utils/uid');
 
 const INSERT_SQL = `
@@ -28,20 +29,20 @@ function load(ctx) {
       if (!code) throw new Error('容器IDが空です');
       if (!name) throw new Error('容器名称が空です');
 
-      const initialVolumeL = row['初期在庫量'] ? Number(row['初期在庫量']) : 0;
+      const initialVolumeL = (parseNumber(row['初期在庫量'], '初期在庫量') ?? 0);
 
       return {
         uid: generateUid(ctx.db, 'tanks'),
         code,
         name,
         containerType: row['容器種別'] || null,
-        maxVolumeL: row['最大容量(L)'] ? Number(row['最大容量(L)']) : null,
+        maxVolumeL: parseNumber(row['最大容量(L)'], '最大容量(L)'),
         location: row['現在設置場所'] || null,
         status: row['ステータス'] || null,
-        gaugeConstant: row['検尺定数'] ? Number(row['検尺定数']) : null,
+        gaugeConstant: parseNumber(row['検尺定数'], '検尺定数'),
         initialVolumeL,
-        currentVolumeL: row['現在液量(L)'] ? Number(row['現在液量(L)']) : initialVolumeL,
-        currentAbv: row['理論アルコール度数'] ? Number(row['理論アルコール度数']) : null,
+        currentVolumeL: (parseNumber(row['現在液量(L)'], '現在液量(L)') ?? initialVolumeL),
+        currentAbv: parseNumber(row['理論アルコール度数'], '理論アルコール度数'),
         note: row['備考'] || null,
       };
     },

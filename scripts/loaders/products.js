@@ -1,6 +1,7 @@
 // 商品マスタ → products（フェーズ1）
 
 const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { parseInteger, parseNumber } = require('../lib/parseNumber');
 const { generateUid } = require('../../src/utils/uid');
 
 const INSERT_SQL = `
@@ -26,17 +27,17 @@ function load(ctx) {
         uid: generateUid(ctx.db, 'products'),
         code: row['商品ID'] || null,
         name,
-        volumeMl: row['容量(ml)'] ? Number(row['容量(ml)']) : null,
-        abv: row['規定度数'] ? Number(row['規定度数']) : null,
+        volumeMl: parseInteger(row['容量(ml)'], '容量(ml)'),
+        abv: parseNumber(row['規定度数'], '規定度数'),
         containerType: row['容器タイプ'] || null,
         unit: row['単位'] || '本',
-        listPrice: row['上代'] ? Number(row['上代']) : null,
+        listPrice: parseNumber(row['上代'], '上代'),
         janCode: row['JAN'] || null,
         targetExtractSpec: row['目標エキス分基準'] || null,
         category: row['商品カテゴリ'] || null,
-        taxPerUnit: row['課税額'] ? Number(row['課税額']) : null,
-        initialProductStock: row['初期商品在庫数'] ? Number(row['初期商品在庫数']) : 0,
-        initialWipStock: row['初期仕掛品在庫数'] ? Number(row['初期仕掛品在庫数']) : 0,
+        taxPerUnit: parseNumber(row['課税額'], '課税額'),
+        initialProductStock: (parseInteger(row['初期商品在庫数'], '初期商品在庫数') ?? 0),
+        initialWipStock: (parseInteger(row['初期仕掛品在庫数'], '初期仕掛品在庫数') ?? 0),
         note: row['備考'] || null,
       };
     },

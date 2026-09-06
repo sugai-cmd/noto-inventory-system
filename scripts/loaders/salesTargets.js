@@ -1,6 +1,7 @@
 // 売上目標 → sales_targets（フェーズ3-11、依存なし）
 
 const { loadCsvTable } = require('../lib/loadHelper');
+const { parseInteger } = require('../lib/parseNumber');
 const { parseMonthOnly } = require('../lib/parseDate');
 
 const INSERT_SQL = `
@@ -19,7 +20,7 @@ function load(ctx) {
 
       return {
         targetMonth,
-        targetAmount: Number(row['目標売上高']),
+        targetAmount: parseInteger(row['目標売上高'], '目標売上高', { required: true }),
         note: row['備考'] || null,
       };
     },

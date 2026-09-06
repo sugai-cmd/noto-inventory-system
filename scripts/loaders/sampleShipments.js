@@ -6,6 +6,7 @@
 // sample_shipment_id を事後的にセットする（product_stock_ledger.order_idと対になるFK）。
 
 const { loadCsvTable, resolveId } = require('../lib/loadHelper');
+const { parseInteger } = require('../lib/parseNumber');
 const { parseDateOnly } = require('../lib/parseDate');
 
 const INSERT_SQL = `
@@ -23,6 +24,16 @@ function nextSampleNo(ctx, shippedOn) {
 
   if (!ctx.counters) ctx.counters = {};
   if (!ctx.counters.sampleNoByMonth) ctx.counters.sampleNoByMonth = new Map();
+
+  // 最初の1件だけDBの最大値を見る。数えはじめが常に1だと、--reset を付けずに
+  // 流し直したときに同じ番号を作ってUNIQUE制約で落ちる。
+  if (!ctx.counters.sampleNoByMonth.has(yymm)) {
+    const row = ctx.db
+      .prepare("SELECT sample_no FROM sample_shipments WHERE sample_no LIKE ? ORDER BY sample_no DESC LIMIT 1")
+      .get(`S${yymm}-%`);
+    const seq = row ? Number.parseInt(row.sample_no.slice(row.sample_no.indexOf('-') + 1), 10) : 0;
+    ctx.counters.sampleNoByMonth.set(yymm, Number.isFinite(seq) ? seq : 0);
+  }
 
   const next = (ctx.counters.sampleNoByMonth.get(yymm) ?? 0) + 1;
   ctx.counters.sampleNoByMonth.set(yymm, next);
@@ -46,13 +57,21 @@ function load(ctx) {
         idMap: context.lookups.customerIdByName,
         required: false,
       });
+      // このシートは「サンプル、販促資料送付」。パンフレットだけを送った行は商品が空。
+      // 商品が無いという理由で送付の記録そのものを落とさない。
       const productId = resolveId(context, {
         sheet: 'サンプル、販促資料送付',
         column: '商品名',
         rawValue: row['商品名'],
         idMap: context.lookups.productIdByName,
-        required: true,
+        required: false,
       });
+
+      // 得意先マスタに無い送付先（一度きりのサンプル送付）は、名前を備考に残す。
+      // customer_id をNULLにするだけだと、誰に送ったのかが分からなくなる。
+      const customerRaw = (row['得意先名'] || '').trim();
+      const notes = [row['備考'] || null];
+      if (customerRaw && customerId == null) notes.push(`送付先: ${customerRaw}`);
 
       return {
         sampleNo: nextSampleNo(context, shippedOn),
@@ -60,11 +79,11 @@ function load(ctx) {
         customerId,
         contactName: row['得意先名前'] || null,
         productId,
-        quantity: Number(row['本数']),
+        quantity: parseInteger(row['本数'], '本数'),
         followupOn: parseDateOnly(row['後追い連絡日']),
         phone: row['電話番号'] || null,
         dataKind: row['データ区分'] || null,
-        note: row['備考'] || null,
+        note: notes.filter(Boolean).join(' / ') || null,
       };
     },
   });

@@ -538,4 +538,14 @@ function importRecipes(db, records, mapped, ignoredColumns, { dryRun }) {
   return run();
 }
 
-module.exports = { TEMPLATES, templateFor, importCsv, decodeUpload, RECIPE_PROCESSES };
+// normalizeHeader / detectDelimiter は移行スクリプト（scripts/lib/）からも使う。
+// シートのエクスポートを受け取る条件を、画面と移行で同じにしておくため。
+module.exports = {
+  TEMPLATES,
+  templateFor,
+  importCsv,
+  decodeUpload,
+  normalizeHeader,
+  detectDelimiter,
+  RECIPE_PROCESSES,
+};

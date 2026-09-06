@@ -2,6 +2,7 @@
 
 const { parsePaymentTermMonths } = require('../../src/utils/paymentTerm');
 const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly, parseMonthOnly } = require('../lib/parseDate');
 const { generateUid } = require('../../src/utils/uid');
 
@@ -32,7 +33,7 @@ function load(ctx) {
         name,
         segment: row['区分'] || null,
         businessType: row['業態'] || null,
-        markupRate: row['掛率'] ? Number(row['掛率']) : 1,
+        markupRate: (parseNumber(row['掛率'], '掛率') ?? 1),
         address: row['住所'] || null,
         // 「当月」「翌月」「翌々月」で入っているので月数に読み替える。
         // Number()のままだとNaNになり、支払いサイトが黙って全件失われる。

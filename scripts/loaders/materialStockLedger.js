@@ -1,7 +1,9 @@
 // 資材在庫変動履歴 → material_stock_ledger（フェーズ3-7、product_stock_ledgerの後に実行）
 
 const { loadCsvTable, resolveId } = require('../lib/loadHelper');
+const { parseInteger, parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly } = require('../lib/parseDate');
+const { dedupeCode } = require('../lib/legacyCode');
 
 const INSERT_SQL = `
   INSERT INTO material_stock_ledger
@@ -18,6 +20,18 @@ function load(ctx) {
     csvFile: 'material_stock_ledger.csv',
     insertSql: INSERT_SQL,
     mapRow(row, rowNumber, context) {
+      // 同じ資材履歴IDを持つ行が実データにある（採番の競合と、まったく同じ行の二重記録）。
+      // 番号はUNIQUEなので2件目が落ちるが、落とすと在庫の動きが1件消える。
+      // 番号に枝番を付けて行は残し、何が起きたかをレポートに出す。
+      const { code: dedupedCode, duplicated } = dedupeCode(
+        context.counters, 'material', (row['資材履歴ID'] || '').trim() || null
+      );
+      if (duplicated) {
+        context.report.recordError(
+          '資材在庫変動履歴', rowNumber,
+          `資材履歴ID「${row['資材履歴ID']}」が重複していたため ${dedupedCode} として取り込みました`
+        );
+      }
       const txnType = (row['受払'] || '').trim();
       if (txnType !== '入荷' && txnType !== '消費') {
         throw new Error(`受払は「入荷」「消費」のいずれかである必要があります: "${row['受払']}"`);
@@ -44,15 +58,15 @@ function load(ctx) {
       const note = isCancelled ? noteRaw.replace(/^取消済み/, '').trim() || null : noteRaw || null;
 
       return {
-        historyCode: row['資材履歴ID'] || null,
+        historyCode: dedupedCode,
         txnDate: parseDateOnly(row['日付']),
         materialId,
         txnType,
-        quantity: Number(row['数量']),
+        quantity: parseInteger(row['数量'], '数量', { required: true }),
         counterparty: row['受入元/払出先'] || null,
         productLedgerId,
-        unitPrice: row['単価'] ? Number(row['単価']) : null,
-        totalPrice: row['合計金額'] ? Number(row['合計金額']) : null,
+        unitPrice: parseNumber(row['単価'], '単価'),
+        totalPrice: parseNumber(row['合計金額'], '合計金額'),
         dataKind: row['データ区分'] || null,
         isCancelled,
         note,

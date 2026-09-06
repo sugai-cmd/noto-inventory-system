@@ -84,25 +84,22 @@ Tailscale等のVPN経由でアクセスしてください（[docs/SETUP.md](docs
 
 ## 現行スプレッドシートからの移行
 
+**手順は [docs/MIGRATION.md](docs/MIGRATION.md) にまとめてあります。**
+バックアップの取り方、シートとファイル名の対応、表記ゆれの直し方、
+移行で何が起きるかまで書いてあるので、そちらから始めてください。
+
 ```bash
-# 1. 各シートをCSVでエクスポートし、scripts/data/csv/ に配置する
-#    （customers.csv, products.csv, orders.csv ... テーブル名に対応するファイル名）
-
-# 2. まず投入せずにレポートだけ出す
-node scripts/migrate-from-sheets.js --dry-run
-
-# 3. scripts/migration-report/unmatched-names.csv を確認し、
-#    表記ゆれがあれば scripts/data/aliases.json で補正する
-#    （scripts/data/aliases.example.json がひな形）
-
-# 4. 本番投入
-node scripts/migrate-from-sheets.js
+sqlite3 db/database.sqlite ".backup backups/before-migration-$(date +%Y%m%d).sqlite"  # 必ず先に
+node scripts/migrate-from-sheets.js --dry-run   # 確認だけ
+node scripts/migrate-from-sheets.js             # 本番投入（流し直すときは --reset）
+node scripts/verify-migration.js                # 答え合わせ
 ```
 
 - ファイルがないシートはスキップされるので、用意できたものから段階的に流し込めます
-- `--allow-partial` で名寄せ不一致の行だけスキップして続行できます
-- `--reset` はマスタを残したまま台帳・トランザクションだけ入れ直します
-- 酒蔵マスタ・原酒マスタは移行対象外です。移行後に画面／APIから順次登録してください
+- 文字コード（UTF-8／Shift_JIS）と区切り文字（カンマ／タブ）は自動で判定します
+- 過去の受注番号は `D…` から `O…` へ、原酒受払IDは `M…` から `R…` へ振り直します
+  （シートでは蒸留IDや資材履歴IDと同じ形で衝突していたため。元の番号は残ります）
+- **流し直すときは必ず `--reset`** を付けてください。付けないと台帳が二重に入ります
 
 移行後は `/audit.html`（在庫監査レポート）を実行して、
 取り込んだデータに不整合がないか確認することをおすすめします。
@@ -113,6 +110,7 @@ node scripts/migrate-from-sheets.js
 |---|---|
 | `docs/SETUP-MAC.md` | まっさらなMacの下準備（ターミナル・Git・GitHub・Node.js） |
 | `docs/SETUP.md` | 導入手順・複数PC設定・常時起動・バックアップ・動作確認チェックリスト |
+| `docs/MIGRATION.md` | 現行スプレッドシートからの過去データ移行手順 |
 | `DB_SCHEMA_DESIGN.md` | テーブル設計・プロジェクト構造・移行手順・実装済み機能の詳細 |
 | `DATA_STRUCTURE.md` | 現行スプレッドシート（21シート）の仕様。移行元の記録として保持 |
 | `ER_DIAGRAM_TEXT.md` | 現行システムの関係性図 |
