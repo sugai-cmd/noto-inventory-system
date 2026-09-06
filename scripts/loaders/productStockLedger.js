@@ -4,13 +4,18 @@
 // material_stock_ledger・tank_ledgerからの参照解決に使う。
 
 const { loadCsvTable, resolveId } = require('../lib/loadHelper');
+const { parseInteger, parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly } = require('../lib/parseDate');
+const { dedupeCode } = require('../lib/legacyCode');
 
 const TXN_TYPE_MAP = {
   瓶詰: '瓶詰',
   箱詰: '箱詰',
   出荷: '出荷',
   返品: '返品',
+  // 瓶詰め済みの浄酎を課税前のまま熟成室などへ移す記録（実データ3件）。
+  // 受入元/払出先が瓶詰めの商品履歴IDを指しているので、仕掛品から出ていく動き。
+  未納税移出: '未納税移出',
   '棚卸調整（商品）': '棚卸調整_商品',
   '棚卸調整（仕掛品）': '棚卸調整_仕掛品',
   '欠損（商品）': '欠損_商品',
@@ -32,6 +37,18 @@ function load(ctx) {
     csvFile: 'product_stock_ledger.csv',
     insertSql: INSERT_SQL,
     mapRow(row, rowNumber, context) {
+      // 同じ商品履歴IDを持つ行が実データにある（採番の競合と、まったく同じ行の二重記録）。
+      // 番号はUNIQUEなので2件目が落ちるが、落とすと在庫の動きが1件消える。
+      // 番号に枝番を付けて行は残し、何が起きたかをレポートに出す。
+      const { code: dedupedCode, duplicated } = dedupeCode(
+        context.counters, 'product', (row['商品履歴ID'] || '').trim() || null
+      );
+      if (duplicated) {
+        context.report.recordError(
+          '商品在庫変動履歴', rowNumber,
+          `商品履歴ID「${row['商品履歴ID']}」が重複していたため ${dedupedCode} として取り込みました`
+        );
+      }
       const txnType = TXN_TYPE_MAP[(row['受払'] || '').trim()];
       if (!txnType) throw new Error(`受払の値を解釈できません: "${row['受払']}"`);
 
@@ -56,15 +73,15 @@ function load(ctx) {
       const note = isCancelled ? noteRaw.replace(/^取消済み/, '').trim() || null : noteRaw || null;
 
       return {
-        historyCode: row['商品履歴ID'] || null,
+        historyCode: dedupedCode,
         txnDate: parseDateOnly(row['日付']),
         productId,
         txnType,
-        quantity: Number(row['数量']),
+        quantity: parseInteger(row['数量'], '数量', { required: true }),
         counterparty: row['受入元/払出先'] || null,
         orderId,
-        volumeMl: row['容量(ml)'] ? Number(row['容量(ml)']) : null,
-        taxAmount: row['課税額'] ? Number(row['課税額']) : null,
+        volumeMl: parseInteger(row['容量(ml)'], '容量(ml)'),
+        taxAmount: parseNumber(row['課税額'], '課税額'),
         storagePlace: row['保管場所'] || null,
         dataKind: row['データ区分'] || null,
         isCancelled,

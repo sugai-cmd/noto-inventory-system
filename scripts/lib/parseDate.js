@@ -33,6 +33,10 @@ function parseDateTimeParts(raw) {
   if (raw == null) return { date: null, time: null };
   const s = String(raw).trim();
   if (s === '') return { date: null, time: null };
+  // 「未定」「該当なし」を人が手で書いた記号。空欄と同じ扱いにする
+  if (['-', '―', '−', 'ー', '−', 'なし', '未定', '不明'].includes(s)) {
+    return { date: null, time: null };
+  }
 
   // 'YYYY-MM-DD[ T]HH:MM[:SS]' / 'YYYY/M/D HH:MM[:SS]'
   let m = s.match(/^(\d{4})[-/](\d{1,2})[-/](\d{1,2})[T\s]+(\d{1,2}):(\d{2})(?::(\d{2}))?\s*$/);
@@ -70,6 +74,15 @@ function parseMonthOnly(raw) {
   if (m) {
     const [, y, mo] = m;
     return `${y}-${pad2(mo)}`;
+  }
+
+  // 「2026年7月」「26年7月」のような書き方（委託販売実績報告の対象月がこの形）。
+  // 2桁の年は2000年代として読む。
+  const jp = s.match(/^(\d{2}|\d{4})\s*年\s*(\d{1,2})\s*月/);
+  if (jp) {
+    const [, y, mo] = jp;
+    const year = y.length === 2 ? `20${y}` : y;
+    return `${year}-${pad2(mo)}`;
   }
 
   // 日付そのものが入っている/Excelシリアル値の場合は日付側から流用する

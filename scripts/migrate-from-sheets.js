@@ -27,10 +27,14 @@ const ALIASES_PATH = path.resolve(__dirname, 'data', 'aliases.json');
 // 8.0のフェーズ順序。依存関係があるため、この配列の順序を変えてはいけない。
 const PHASE1_MASTERS = [
   require('./loaders/customers'),
+  require('./loaders/customerContacts'), // 顧客リストの連絡先を得意先へ足す（customersの後）
   require('./loaders/products'),
   require('./loaders/materials'),
   require('./loaders/tanks'),
   require('./loaders/productRecipes'),
+  require('./loaders/breweries'),
+  require('./loaders/rawSakeBrands'),    // 酒蔵の後（酒蔵名で紐付けるため）
+  require('./loaders/cartonRules'),      // 商品の後（商品名で紐付けるため）
 ];
 
 const PHASE3_TRANSACTIONS = [
@@ -60,6 +64,8 @@ const RESETTABLE_TABLES = [
   'raw_sake_ledger',
   'distillations',
   'orders',
+  // 台帳の行を指しているので、台帳を消すときに一緒に消さないと参照が宙に浮く
+  'wip_lot_allocations',
 ];
 
 function parseArgs(argv) {
@@ -107,7 +113,11 @@ function buildContext(db, options) {
       distillationIdByCode: new Map(),
       rawSakeLedgerIdByLotCode: new Map(),
       productLedgerIdByHistoryCode: new Map(),
+      breweryIdByName: new Map(),
+      rawSakeBrandIdByName: new Map(),
     },
+    // ローダーが1回の実行の中で持ち回る数え上げ（受注の明細行番号、伝票番号の採番など）
+    counters: {},
   };
 }
 
@@ -177,6 +187,10 @@ function main() {
 
     console.log('\n--- フェーズ3: トランザクション・台帳系 ---');
     for (const loader of PHASE3_TRANSACTIONS) loader.load(ctx);
+
+    // 蒸留記録の「使用原酒明細」はシートでは明細IDの羅列（DTL-0001 DTL-0002）。
+    // 明細を入れ終わったので、一覧に出す文字列をタンク名＋投入量へ組み直す。
+    require('./loaders/distillations').rebuildInputSummaries(ctx);
 
     if (ctx.report.hasUnmatched() && options.strict) {
       throw new Error(
