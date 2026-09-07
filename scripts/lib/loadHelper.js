@@ -37,10 +37,11 @@ function loadCsvTable(ctx, {
   mapRow,
   afterInsert,
   findExistingId,
+  rows: providedRows, // 事前に読み終えた行（原酒マスタのように下読みが要るとき）
 }) {
   const summary = ctx.report.touchSummary(sheetName);
   const filePath = path.join(ctx.dataDir, csvFile);
-  const rows = readCsv(filePath);
+  const rows = providedRows ?? readCsv(filePath);
 
   if (rows === null) {
     console.warn(`[skip] ${csvFile} が見つからないため「${sheetName}」の投入をスキップします`);
@@ -51,10 +52,11 @@ function loadCsvTable(ctx, {
 
   // 見出しの表記ゆれを吸収する。ローダーは row['資材名'] のまま書けばよく、
   // シート側が「資材名称」でも読める（columnAliases.js）。
-  const aliases = aliasesForSheet(sheetName);
+  // 事前に読んだ行は呼び出し側で吸収済みなので、二度掛けしない。
+  const aliases = providedRows ? null : aliasesForSheet(sheetName);
 
   rows.forEach((rawRow, i) => {
-    const row = aliasRow(rawRow, aliases);
+    const row = aliases ? aliasRow(rawRow, aliases) : rawRow;
     summary.read++;
     const rowNumber = i + 2; // ヘッダ行を1行目とした実際のCSV上の行番号
 
@@ -62,7 +64,7 @@ function loadCsvTable(ctx, {
     if (findExistingId) {
       let existingId;
       try {
-        existingId = findExistingId(row, ctx);
+        existingId = findExistingId(row, ctx, rowNumber);
       } catch (e) {
         ctx.report.recordError(sheetName, rowNumber, e.message);
         summary.skipped++;
@@ -87,7 +89,7 @@ function loadCsvTable(ctx, {
         } else {
           summary.existing++;
         }
-        if (afterInsert) afterInsert(row, existingId, ctx);
+        if (afterInsert) afterInsert(row, existingId, ctx, rowNumber);
         return;
       }
     }
@@ -114,7 +116,7 @@ function loadCsvTable(ctx, {
     try {
       const result = stmt.run(mapped);
       summary.inserted++;
-      if (afterInsert) afterInsert(row, result.lastInsertRowid, ctx);
+      if (afterInsert) afterInsert(row, result.lastInsertRowid, ctx, rowNumber);
     } catch (e) {
       ctx.report.recordError(sheetName, rowNumber, e.message);
       summary.skipped++;
@@ -187,6 +189,41 @@ function existingByName(table, csvColumn) {
     if (!name) return null;
     const found = ctx.db.prepare(`SELECT id FROM ${table} WHERE name = ?`).get(name);
     return found ? found.id : null;
+  };
+}
+
+/**
+ * 既存行を「ID列 → 名前」の順で探す。
+ *
+ * 名前だけで探していると、シート側で名前を直したときに同じ行だと分からず、
+ * 更新ではなく**新しい行**として入ってしまう。旧名の行は受注を抱えたまま残るので、
+ * 同じ取引先が2行になる。マスタのシートには変わらないID列があるので、
+ * そちらを先に使えば改名がそのまま反映される。
+ *
+ * ID列が空の行（まだ採番していない）や、DB側のcodeがまだ空のとき
+ * （このID列を使い始める前に入れた行）のために、名前での照合も残す。
+ */
+function existingByCodeOrName(table, codeColumn, nameColumn) {
+  return (row, ctx) => {
+    const code = (row[codeColumn] || '').trim();
+    if (code) {
+      const found = ctx.db.prepare(`SELECT id FROM ${table} WHERE code = ?`).get(code);
+      if (found) return found.id;
+    }
+
+    const name = (row[nameColumn] || '').trim();
+    if (!name) return null;
+    const byName = ctx.db.prepare(`SELECT id, code FROM ${table} WHERE name = ?`).get(name);
+    if (!byName) return null;
+
+    // 名前が同じでも、**相手が別のIDを持っているなら別の行**。
+    // 原酒マスタには同じ銘柄の別ロット（浄酎用池月 18.3 と 18.8）が並ぶので、
+    // ここで拾ってしまうと後の行が前の行を上書きして、片方の度数が消える。
+    if (byName.code != null && byName.code !== code) return null;
+
+    // 相手にIDが無いときだけ、名前で同じ行とみなす。
+    // このID列を使い始める前に入れた行や、画面から手で登録した行を拾うため。
+    return byName.id;
   };
 }
 
@@ -307,4 +344,7 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
   return null;
 }
 
-module.exports = { loadCsvTable, resolveId, resolveTankId, existingByName, SkipRow };
+module.exports = {
+  loadCsvTable, resolveId, resolveTankId,
+  existingByName, existingByCodeOrName, SkipRow,
+};

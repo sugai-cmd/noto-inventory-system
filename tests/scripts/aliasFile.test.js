@@ -51,7 +51,7 @@ test('ファイルが無ければ空として扱う', () => {
   assert.deepEqual(readAliasFile('/tmp/存在しないファイル.json'), { aliases: {}, warnings: [] });
 });
 
-test('直せない壊れ方では、何行目かを示して止まる', (t) => {
+test('直せない壊れ方では、何行目の何文字目かとキャレットを示して止まる', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
@@ -60,7 +60,8 @@ test('直せない壊れ方では、何行目かを示して止まる', (t) => {
   assert.throws(
     () => readAliasFile(p),
     (e) => {
-      assert.match(e.message, /行目でつまずきました/);
+      assert.match(e.message, /3行目・\d+文字目でつまずきました/);
+      assert.match(e.message, /\^/); // 該当箇所を指すキャレット
       assert.match(e.message, /引用符の閉じ忘れ/);
       return true;
     }
@@ -86,4 +87,76 @@ test('__ignore__ と _ で始まるキーは警告の対象にしない', () => 
 test('対応表になっていない書き方を警告する', () => {
   const warnings = collectWarnings({ 得意先: 'カナカン' });
   assert.match(warnings[0], /対応表になっていません/);
+});
+
+test('貼られたそのままのファイル（先頭の全角スペース＋全角の引用符）が読める', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 実際に届いたファイルの形。
+  //   1行目が「{」＋全角スペース → position 1 で落ちる
+  //   値の側が全角の開き引用符「“」
+  //   得意先名には全角スペースが入っている（これは残さないといけない）
+  const p = write(
+    dir,
+    '{　\n' +
+      '  "得意先名": {\n' +
+      '    "強羅花壇　富士": "強羅花壇富士",\n' +
+      '    "近江町松本": “株式会社松本"\n' +
+      '  }\n' +
+      '}\n'
+  );
+
+  const { aliases, warnings } = readAliasFile(p);
+  assert.equal(aliases['得意先名']['近江町松本'], '株式会社松本');
+  // 値の中の全角スペースは残す
+  assert.equal(aliases['得意先名']['強羅花壇　富士'], '強羅花壇富士');
+
+  // 直したことは黙っていない。何行目の何を直したかを言う
+  const fixed = warnings.find((w) => w.includes('全角の引用符'));
+  assert.ok(fixed, `全角の引用符を直した警告が出ていない: ${JSON.stringify(warnings)}`);
+  assert.match(fixed, /4行目/);
+});
+
+test('全角の引用符があっても、それ以降の末尾カンマ除去が止まらない', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 「“」は開き引用符として認識されないため、文字列の内外の判定が反転する。
+  // 判定より先に引用符を直しておかないと、これ以降の末尾カンマが落とせない。
+  const p = write(
+    dir,
+    '{\n  "得意先": { "a": “b" },\n  "商品": { "c": "d", },\n}\n'
+  );
+
+  const { aliases } = readAliasFile(p);
+  assert.equal(aliases['得意先']['a'], 'b');
+  assert.equal(aliases['商品']['c'], 'd');
+});
+
+test('文字列の外の全角記号（｛：，）も直す', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = write(dir, '{\n  "得意先"： ｛ "a": "b"， "c": "d" ｝\n}\n');
+  const { aliases, warnings } = readAliasFile(p);
+  assert.equal(aliases['得意先']['a'], 'b');
+  assert.equal(aliases['得意先']['c'], 'd');
+  assert.ok(warnings.some((w) => w.includes('全角')));
+});
+
+test('全角の引用符そのものが直せない場所にあるときは、その文字を名指しで止まる', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 引用符を直しても括弧が閉じていないので読めない
+  const p = write(dir, '{\n  "得意先": {\n    "a": “b"\n\n');
+  assert.throws(
+    () => readAliasFile(p),
+    (e) => {
+      assert.match(e.message, /行目・\d+文字目でつまずきました/);
+      assert.match(e.message, /全角の引用符/);
+      return true;
+    }
+  );
 });

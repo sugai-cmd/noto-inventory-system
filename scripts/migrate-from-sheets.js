@@ -20,10 +20,19 @@ const { migrate } = require('../src/db/migrate');
 const { normalizeName } = require('../src/utils/normalizeName');
 const { MigrationReport } = require('./lib/report');
 const { readAliasFile } = require('./lib/aliasFile');
+const { suggest } = require('./lib/similarName');
 
-const DATA_DIR = path.resolve(__dirname, 'data', 'csv');
-const REPORT_DIR = path.resolve(__dirname, 'migration-report');
-const ALIASES_PATH = path.resolve(__dirname, 'data', 'aliases.json');
+// 置き場所は環境変数で差し替えられる。試験どうしが同じフォルダを取り合わないため
+// （既定は本番と同じ scripts/data/csv・scripts/migration-report）。
+const DATA_DIR = process.env.MIGRATION_CSV_DIR
+  ? path.resolve(process.env.MIGRATION_CSV_DIR)
+  : path.resolve(__dirname, 'data', 'csv');
+const REPORT_DIR = process.env.MIGRATION_REPORT_DIR
+  ? path.resolve(process.env.MIGRATION_REPORT_DIR)
+  : path.resolve(__dirname, 'migration-report');
+const ALIASES_PATH = process.env.MIGRATION_ALIASES
+  ? path.resolve(process.env.MIGRATION_ALIASES)
+  : path.resolve(__dirname, 'data', 'aliases.json');
 
 // 8.0のフェーズ順序。依存関係があるため、この配列の順序を変えてはいけない。
 const PHASE1_MASTERS = [
@@ -143,6 +152,67 @@ function captureNamePools(ctx, db) {
   });
 }
 
+/**
+ * aliases.json に書いた内容が実際に効くかを、マスタを読み込んだあとで確かめる。
+ *
+ * 「書いたのに効かない」が繰り返し起きている。
+ *   ・右辺にマスタへ登録されていない名前を書いてしまう
+ *   ・外側のキーを取り違える（得意先マスタは「得意先名」、顧客リストは「得意先」）
+ * どちらも黙って不一致として残るだけなので、原因が分からない。
+ * ここで名指しして、候補も添える。
+ */
+function checkAliases(ctx) {
+  const pools = ctx.report.namePools;
+  const known = Object.keys(pools);
+  const warn = (msg) => console.warn(`[aliases.json] ${msg}`);
+
+  for (const [column, table] of Object.entries(ctx.aliases ?? {})) {
+    if (column.startsWith('_') && column !== '__ignore__') continue;
+
+    if (column === '__ignore__') {
+      for (const [ignoreColumn, values] of Object.entries(table ?? {})) {
+        const pool = pools[ignoreColumn];
+        if (!pool) {
+          warn(`__ignore__ の「${ignoreColumn}」はどの列にも当たりません。${nearestColumns(known)}`);
+          continue;
+        }
+        const registered = new Set(pool.map((n) => ctx.normalize(n)));
+        for (const value of Array.isArray(values) ? values : []) {
+          if (registered.has(ctx.normalize(value))) {
+            warn(
+              `__ignore__ の「${ignoreColumn}」の「${value}」はマスタに登録されているので、` +
+                '飛ばす必要がありません（この行は消せます）'
+            );
+          }
+        }
+      }
+      continue;
+    }
+
+    const pool = pools[column];
+    if (!pool) {
+      warn(`「${column}」はどの列にも当たらないので、中身は使われません。${nearestColumns(known)}`);
+      continue;
+    }
+
+    const registered = new Set(pool.map((n) => ctx.normalize(n)));
+    for (const [from, to] of Object.entries(table ?? {})) {
+      if (typeof to !== 'string' || from === to) continue; // 別途 collectWarnings が拾う
+      if (registered.has(ctx.normalize(to))) continue;
+
+      const candidates = suggest(to, pool, { limit: 3 }).map((c) => c.name);
+      warn(
+        `「${column}」の「${from}」→「${to}」は、右辺がマスタに登録されていないので効きません。` +
+          (candidates.length ? `似ている名前: ${candidates.join(' / ')}` : '似ている名前は見つかりませんでした')
+      );
+    }
+  }
+}
+
+function nearestColumns(known) {
+  return known.length ? `使える列: ${known.join(' / ')}` : '';
+}
+
 function buildContext(db, options) {
   return {
     db,
@@ -163,6 +233,10 @@ function buildContext(db, options) {
       productLedgerIdByHistoryCode: new Map(),
       breweryIdByName: new Map(),
       rawSakeBrandIdByName: new Map(),
+      rawSakeBrandIdByCode: new Map(),
+      // 同じ銘柄名の行が2つ以上あって、名前では決められないもの。
+      // 黙ってどちらかを選ぶと度数の違うロットを取り違えるので、引かせない
+      rawSakeBrandAmbiguousNames: new Set(),
     },
     // ローダーが1回の実行の中で持ち回る数え上げ（受注の明細行番号、伝票番号の採番など）
     counters: {},
@@ -224,6 +298,8 @@ function main() {
     for (const loader of PHASE1_MASTERS) loader.load(ctx);
     // 中止してロールバックしても候補を出せるよう、この時点で控える
     captureNamePools(ctx, db);
+    // マスタが揃ったので、aliases.json が実際に効くかをここで確かめる
+    checkAliases(ctx);
 
     // フェーズ2: 名寄せ事前チェック。
     // 実際の不一致検出は各ローダーがresolveId経由でreportに記録するため、

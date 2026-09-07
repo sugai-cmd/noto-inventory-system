@@ -4,7 +4,7 @@
 // current_abv の「初期値」としてそのまま投入する（tank_ledgerの移行が完了すれば
 // 以降はビュー側の再計算値と一致するはずなので、ズレはそのまま検算材料にもなる）。
 
-const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { loadCsvTable, existingByCodeOrName } = require('../lib/loadHelper');
 const { parseNumber } = require('../lib/parseNumber');
 const { generateUid } = require('../../src/utils/uid');
 
@@ -21,6 +21,7 @@ const INSERT_SQL = `
 // 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
 const UPDATE_SQL = `
   UPDATE tanks SET
+       name = @name,
        code = COALESCE(@code, code), container_type = @containerType,
        max_volume_l = @maxVolumeL, location = @location, status = @status,
        gauge_constant = @gaugeConstant, current_abv = @currentAbv, note = @note
@@ -35,7 +36,7 @@ function load(ctx) {
     updateSql: UPDATE_SQL,
     updateTable: 'tanks',
     createOnlyKeys: ['uid', 'initialVolumeL', 'currentVolumeL'],
-    findExistingId: existingByName('tanks', '容器名称'),
+    findExistingId: existingByCodeOrName('tanks', '容器ID', '容器名称'),
     mapRow(row) {
       const code = (row['容器ID'] || '').trim();
       const name = (row['容器名称'] || '').trim();

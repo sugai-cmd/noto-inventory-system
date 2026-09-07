@@ -3,7 +3,7 @@
 // 8-2では移行対象外としていたが、原酒マスタと原料受払記録を銘柄で紐付けるには
 // 酒蔵が要る（ロット追跡の「原酒タンクの中身」に酒蔵名を出すため）。
 
-const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { loadCsvTable, existingByCodeOrName } = require('../lib/loadHelper');
 const { parseDateOnly } = require('../lib/parseDate');
 const { generateUid } = require('../../src/utils/uid');
 
@@ -16,6 +16,7 @@ const INSERT_SQL = `
 // 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
 const UPDATE_SQL = `
   UPDATE breweries SET
+       name = @name,
        code = COALESCE(@code, code), address = @address, phone = @phone,
        contact = @contact, started_on = @startedOn
   WHERE id = @id
@@ -29,7 +30,7 @@ function load(ctx) {
     updateSql: UPDATE_SQL,
     updateTable: 'breweries',
     createOnlyKeys: ['uid'],
-    findExistingId: existingByName('breweries', '酒蔵名'),
+    findExistingId: existingByCodeOrName('breweries', '酒蔵ID', '酒蔵名'),
     mapRow(row) {
       const name = (row['酒蔵名'] || '').trim();
       if (!name) throw new Error('酒蔵名が空です');

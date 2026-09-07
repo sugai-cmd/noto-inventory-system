@@ -1,7 +1,7 @@
 // 得意先マスタ → customers（フェーズ1）
 
 const { parsePaymentTermMonths } = require('../../src/utils/paymentTerm');
-const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { loadCsvTable, existingByCodeOrName } = require('../lib/loadHelper');
 const { parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly, parseMonthOnly } = require('../lib/parseDate');
 const { generateUid } = require('../../src/utils/uid');
@@ -21,6 +21,7 @@ const INSERT_SQL = `
 // 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
 const UPDATE_SQL = `
   UPDATE customers SET
+       name = @name,
        code = COALESCE(@code, code), segment = @segment, business_type = @businessType,
        markup_rate = @markupRate, address = @address,
        payment_term_months = @paymentTermMonths, payment_term_day = @paymentTermDay,
@@ -66,7 +67,7 @@ function load(ctx) {
     updateSql: UPDATE_SQL,
     updateTable: 'customers',
     createOnlyKeys: ['uid'],
-    findExistingId: existingByName('customers', '得意先名'),
+    findExistingId: existingByCodeOrName('customers', '顧客ID', '得意先名'),
     mapRow(row) {
       const name = (row['得意先名'] || '').trim();
       if (!name) throw new Error('得意先名が空です');

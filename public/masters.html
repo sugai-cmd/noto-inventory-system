@@ -334,7 +334,7 @@ const MASTERS = {
     endpoint: '/api/breweries',
     nameKey: 'name',
     canDelete: true,
-    hint: '原酒の仕入れ先です。スプレッドシートからの移行対象外なので、ここから順次登録してください。',
+    hint: '原酒の仕入れ先です。酒蔵マスタから取り込まれます。新しい取引先はここから登録してください。',
     fields: [
       { key: 'code', label: '酒蔵ID', type: 'text', omitIfEmpty: true, autoCode: true },
       { key: 'name', label: '酒蔵名', type: 'text', required: true },
@@ -358,8 +358,10 @@ const MASTERS = {
     endpoint: '/api/raw-sake-brands',
     nameKey: 'name',
     canDelete: true,
-    hint: '原酒の銘柄です。こちらも移行対象外なので、ここから順次登録してください。酒蔵は先に「酒蔵」タブで登録しておくと選べます。',
+    hint: '原酒の銘柄です。同じ銘柄でもロットが違えば度数が変わるので、原酒ID（例: toriya-BYR6-L1）で1行ずつ分けて登録します。酒蔵は先に「酒蔵」タブで登録しておくと選べます。',
     fields: [
+      { key: 'code', label: '原酒ID', type: 'text', placeholder: 'toriya-BYR6-L1',
+        hint: '銘柄＋ロットで付けます。同じ銘柄名の別ロットはこれで見分けます' },
       { key: 'name', label: '銘柄名', type: 'text', required: true },
       { key: 'brewery', label: '酒蔵', type: 'brewery' },
       { key: 'abv', label: '度数(%)', type: 'number', step: '0.1' },
@@ -372,6 +374,8 @@ const MASTERS = {
       { key: 'note', label: '備考', type: 'text' },
     ],
     columns: [
+      // 銘柄名は重複しうる（同じ銘柄の別ロット）ので、IDが見えないと見分けられない
+      { key: 'code', label: '原酒ID' },
       { key: 'name', label: '銘柄名' },
       // 原酒マスタは酒蔵をIDで持つ（未登録の酒蔵名はbrewery_name_rawに退避される）
       { key: 'brewery_id', label: '酒蔵', format: (r) =>
