@@ -209,6 +209,49 @@ function checkAliases(ctx) {
   }
 }
 
+/**
+ * シートのどの行にも対応しなくなったマスタ行を報告する。
+ *
+ * マスタは消さない作りなので、シートから外した商品が受注の選択肢に残り続ける。
+ * 実データでも商品がDB21件・シート19件で2件取り残されていた。
+ * 「投入／更新／スキップ」はシート側から見た数字なので、これは出てこない。
+ *
+ * 消すかどうかは人が決める（受注が紐付いている商品は消せない）ので、止めない。
+ */
+const ORPHAN_TABLES = {
+  customers: '得意先',
+  products: '商品',
+  materials: '資材',
+  tanks: '容器',
+  breweries: '酒蔵',
+  raw_sake_brands: '原酒',
+};
+
+function reportOrphanMasters(ctx, db) {
+  for (const [table, label] of Object.entries(ORPHAN_TABLES)) {
+    // 触れた記録が無い＝そのCSVを置いていない。置き忘れで全行を取り残しにしない
+    const touched = ctx.touched?.[table];
+    if (!touched) continue;
+
+    let rows;
+    try {
+      rows = db.prepare(`SELECT id, code, name FROM ${table}`).all();
+    } catch {
+      continue;
+    }
+
+    for (const row of rows) {
+      if (touched.has(row.id)) continue;
+      ctx.report.recordOrphan(
+        label,
+        row.code,
+        row.name,
+        'シートに同じIDも同じ名前もありません（シートから消したか、IDと名前の両方を変えた行）'
+      );
+    }
+  }
+}
+
 function nearestColumns(known) {
   return known.length ? `使える列: ${known.join(' / ')}` : '';
 }
@@ -300,6 +343,8 @@ function main() {
     captureNamePools(ctx, db);
     // マスタが揃ったので、aliases.json が実際に効くかをここで確かめる
     checkAliases(ctx);
+    // シートのどの行にも対応しなくなったマスタ行を拾う（止めない、報告だけ）
+    reportOrphanMasters(ctx, db);
 
     // フェーズ2: 名寄せ事前チェック。
     // 実際の不一致検出は各ローダーがresolveId経由でreportに記録するため、

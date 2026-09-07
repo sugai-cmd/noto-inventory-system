@@ -50,6 +50,10 @@ function loadCsvTable(ctx, {
 
   const stmt = ctx.db.prepare(insertSql);
 
+  // このテーブルは「シートを実際に読んだ」と記録する。
+  // CSVを置き忘れただけのときに、全行を取り残し扱いにしないため。
+  const touched = updateTable ? touchedIds(ctx, updateTable) : null;
+
   // 見出しの表記ゆれを吸収する。ローダーは row['資材名'] のまま書けばよく、
   // シート側が「資材名称」でも読める（columnAliases.js）。
   // 事前に読んだ行は呼び出し側で吸収済みなので、二度掛けしない。
@@ -71,6 +75,7 @@ function loadCsvTable(ctx, {
         return;
       }
       if (existingId != null) {
+        touched?.add(Number(existingId));
         // 既に同じ名前の行があるときは、シートの内容で**更新する**。
         // 飛ばしてしまうと、シート側で支払いサイトなどを直しても
         // 流し直しでデータベースに反映されない。
@@ -109,12 +114,16 @@ function loadCsvTable(ctx, {
     }
 
     if (mapped === null) {
+      // mapRow が null を返す＝そのローダーが「取り込む対象ではない」と判断した行。
+      // 数だけ数えて中身を残さないと、あとから何を飛ばしたのか調べようがない。
+      ctx.report.recordSkip(sheetName, rowNumber, '取り込む対象ではない行と判断しました', hintOf(row));
       summary.skipped++;
       return;
     }
 
     try {
       const result = stmt.run(mapped);
+      touched?.add(Number(result.lastInsertRowid));
       summary.inserted++;
       if (afterInsert) afterInsert(row, result.lastInsertRowid, ctx, rowNumber);
     } catch (e) {
@@ -148,6 +157,7 @@ function applyMasterUpdate(ctx, opts) {
     return;
   }
   if (mapped === null) {
+    ctx.report.recordSkip(sheetName, rowNumber, '取り込む対象ではない行と判断しました', hintOf(row));
     summary.skipped++;
     return;
   }
@@ -183,6 +193,40 @@ function applyMasterUpdate(ctx, opts) {
  * 正規化はせず、CSV上の値をトリムして厳密一致で探す（マスタ自身の投入なので
  * 名寄せの対象ではなく、UNIQUE制約と同じ基準で判定する）。
  */
+/**
+ * このテーブルで「今回の実行が触れた行」のidを控える入れ物。
+ *
+ * シートのどの行にも対応しなくなったマスタ行（取り残し）を出すのに使う。
+ * マスタは消さない作りなので、シートから外した商品が受注の選択肢に残り続ける。
+ * 実データでも商品がDB21件・シート19件で2件残っていた。
+ *
+ * ここに現れないテーブル＝CSVを置いていないテーブルなので、
+ * 取り残しの判定そのものを飛ばせる（置き忘れで全行が取り残しになるのを防ぐ）。
+ */
+function touchedIds(ctx, table) {
+  ctx.touched ??= {};
+  ctx.touched[table] ??= new Set();
+  return ctx.touched[table];
+}
+
+/**
+ * 飛ばした行をシートから探せるようにするための手がかり。
+ * 行番号だけでは、並べ替えたシートでは見つけられない。
+ * 名前らしい列を先頭から探して、最初に見つかった中身を返す。
+ */
+const HINT_COLUMNS = [
+  '得意先名', '得意先', '商品名称', '商品名', '商品', '資材名', '資材名称',
+  '容器名称', '酒蔵名', '銘柄', '受注番号', '蒸留ID', '原酒受払ID', '商品履歴ID', '資材履歴ID',
+];
+
+function hintOf(row) {
+  for (const column of HINT_COLUMNS) {
+    const value = row?.[column];
+    if (value != null && String(value).trim() !== '') return String(value).trim();
+  }
+  return '';
+}
+
 function existingByName(table, csvColumn) {
   return (row, ctx) => {
     const name = (row[csvColumn] || '').trim();
@@ -346,5 +390,5 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
 
 module.exports = {
   loadCsvTable, resolveId, resolveTankId,
-  existingByName, existingByCodeOrName, SkipRow,
+  existingByName, existingByCodeOrName, SkipRow, hintOf,
 };
