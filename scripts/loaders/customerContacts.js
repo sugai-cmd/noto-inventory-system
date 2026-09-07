@@ -67,6 +67,9 @@ function load(ctx) {
 
     const name = blank(row['得意先']);
     if (!name) {
+      // 得意先名が空の行（シートの余白や小計行）。数だけ数えて中身を残さないと、
+      // 「スキップ47」と出ているのにどの47行か調べようがなくなる。
+      ctx.report.recordSkip(SHEET, rowNumber, '得意先名が空欄です', blank(row['No.']) ?? '');
       summary.skipped++;
       return;
     }
@@ -89,6 +92,9 @@ function load(ctx) {
       throw e;
     }
     if (id == null) {
+      // 名寄せできなかった分は resolveId が unmatched-names.csv に記録済み。
+      // どの行だったかはこちらで残す（得意先マスタに無い先は勝手に増やさない方針）。
+      ctx.report.recordSkip(SHEET, rowNumber, '得意先マスタに無い名前です', name);
       summary.skipped++;
       return;
     }

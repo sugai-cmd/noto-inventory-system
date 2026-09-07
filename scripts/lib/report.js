@@ -26,12 +26,30 @@ class MigrationReport {
     this.errors = []; // 行単位のエラー・警告（8-5）
     this.summary = {}; // シートごとの読込/投入/スキップ件数
     this.masterUpdates = []; // 既存のマスタ行を書き換えた内容（黙って上書きしないため）
+    // 取り込まずに飛ばした行。件数だけ数えて中身を残さないと、
+    // 「スキップ47」と出ているのにどの47行か調べようがなくなる
+    this.skipped = [];
+    // シートのどの行にも対応しなくなったマスタ行（DB側から見た取り残し）
+    this.orphans = [];
     // 列名 → その列が引きにいく先の名前の一覧。候補を出すのに使う
     this.namePools = {};
   }
 
   recordMasterUpdate(sheet, name, column, before, after) {
     this.masterUpdates.push({ sheet, name, column, before, after });
+  }
+
+  /**
+   * 取り込まずに飛ばした行を残す。
+   * @param {string} hint その行を見分けられる値（得意先名など）。行番号だけでは
+   *                      シートから探せないので、必ず何か入れる
+   */
+  recordSkip(sheet, rowNumber, reason, hint) {
+    this.skipped.push({ sheet, rowNumber, reason, hint: hint ?? '' });
+  }
+
+  recordOrphan(table, code, name, reason) {
+    this.orphans.push({ table, code: code ?? '', name, reason });
   }
 
   recordUnmatched(sheet, column, rawValue, normalizedValue) {
@@ -107,6 +125,16 @@ class MigrationReport {
       ['sheet', 'name', 'column', 'before', 'after'],
       this.masterUpdates
     );
+    writeCsv(
+      path.join(this.outDir, 'skipped-rows.csv'),
+      ['sheet', 'rowNumber', 'reason', 'hint'],
+      this.skipped
+    );
+    writeCsv(
+      path.join(this.outDir, 'orphan-masters.csv'),
+      ['table', 'code', 'name', 'reason'],
+      this.orphans
+    );
     fs.writeFileSync(
       path.join(this.outDir, 'summary.json'),
       JSON.stringify(this.summary, null, 2),
@@ -152,6 +180,19 @@ class MigrationReport {
       console.log(
         `マスタの更新: ${this.masterUpdates.length}件 → ${path.join(this.outDir, 'master-updates.csv')}`
       );
+    }
+    if (this.skipped.length) {
+      console.log(
+        `取り込まなかった行: ${this.skipped.length}件 → ${path.join(this.outDir, 'skipped-rows.csv')}`
+      );
+      console.log('  飛ばした理由を1行ずつ書いています（エラーとは分けています）。');
+    }
+    if (this.orphans.length) {
+      console.log(
+        `シートに対応が無いマスタ行: ${this.orphans.length}件 → ${path.join(this.outDir, 'orphan-masters.csv')}`
+      );
+      console.log('  シートから消した行か、IDと名前の両方を変えた行です。');
+      console.log('  そのままでも移行はできますが、選択肢に残り続けるので確かめてください。');
     }
     if (this.unmatchedNames.length) {
       console.log(
