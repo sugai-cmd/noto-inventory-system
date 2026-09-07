@@ -18,11 +18,24 @@ const INSERT_SQL = `
      @producedOn, @registeredOn, @initialStock, @currentStock, @note)
 `;
 
+// 既に同じ名前の行があるときは、シートの内容で更新する。
+// 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
+const UPDATE_SQL = `
+  UPDATE raw_sake_brands SET
+       abv = @abv, sake_meter_value = @sakeMeterValue, brewery_id = @breweryId,
+       brewery_name_raw = @breweryNameRaw, status = @status, produced_on = @producedOn,
+       registered_on = @registeredOn, note = @note
+  WHERE id = @id
+`;
+
 function load(ctx) {
   loadCsvTable(ctx, {
     sheetName: '原酒マスタ',
     csvFile: 'raw_sake_brands.csv',
     insertSql: INSERT_SQL,
+    updateSql: UPDATE_SQL,
+    updateTable: 'raw_sake_brands',
+    createOnlyKeys: ['uid', 'initialStock', 'currentStock'],
     findExistingId: existingByName('raw_sake_brands', '銘柄'),
     mapRow(row, rowNumber, context) {
       const name = (row['銘柄'] || '').trim();

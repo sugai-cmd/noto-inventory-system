@@ -12,11 +12,23 @@ const INSERT_SQL = `
   VALUES (@uid, @code, @name, @address, @phone, @contact, @startedOn)
 `;
 
+// 既に同じ名前の行があるときは、シートの内容で更新する。
+// 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
+const UPDATE_SQL = `
+  UPDATE breweries SET
+       code = COALESCE(@code, code), address = @address, phone = @phone,
+       contact = @contact, started_on = @startedOn
+  WHERE id = @id
+`;
+
 function load(ctx) {
   loadCsvTable(ctx, {
     sheetName: '酒蔵マスタ',
     csvFile: 'breweries.csv',
     insertSql: INSERT_SQL,
+    updateSql: UPDATE_SQL,
+    updateTable: 'breweries',
+    createOnlyKeys: ['uid'],
     findExistingId: existingByName('breweries', '酒蔵名'),
     mapRow(row) {
       const name = (row['酒蔵名'] || '').trim();

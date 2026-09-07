@@ -17,11 +17,24 @@ const INSERT_SQL = `
      @gaugeConstant, @initialVolumeL, @currentVolumeL, @currentAbv, @note)
 `;
 
+// 既に同じ名前の行があるときは、シートの内容で更新する。
+// 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
+const UPDATE_SQL = `
+  UPDATE tanks SET
+       code = COALESCE(@code, code), container_type = @containerType,
+       max_volume_l = @maxVolumeL, location = @location, status = @status,
+       gauge_constant = @gaugeConstant, current_abv = @currentAbv, note = @note
+  WHERE id = @id
+`;
+
 function load(ctx) {
   loadCsvTable(ctx, {
     sheetName: 'タンクマスタ',
     csvFile: 'tanks.csv',
     insertSql: INSERT_SQL,
+    updateSql: UPDATE_SQL,
+    updateTable: 'tanks',
+    createOnlyKeys: ['uid', 'initialVolumeL', 'currentVolumeL'],
     findExistingId: existingByName('tanks', '容器名称'),
     mapRow(row) {
       const code = (row['容器ID'] || '').trim();

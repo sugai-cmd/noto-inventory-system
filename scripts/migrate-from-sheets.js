@@ -19,6 +19,7 @@ const { getConnection } = require('../src/db/connection');
 const { migrate } = require('../src/db/migrate');
 const { normalizeName } = require('../src/utils/normalizeName');
 const { MigrationReport } = require('./lib/report');
+const { readAliasFile } = require('./lib/aliasFile');
 
 const DATA_DIR = path.resolve(__dirname, 'data', 'csv');
 const REPORT_DIR = path.resolve(__dirname, 'migration-report');
@@ -86,13 +87,60 @@ function parseArgs(argv) {
 }
 
 function loadAliases() {
-  if (!fs.existsSync(ALIASES_PATH)) return {};
   try {
-    return JSON.parse(fs.readFileSync(ALIASES_PATH, 'utf8'));
+    const { aliases, warnings } = readAliasFile(ALIASES_PATH);
+    for (const w of warnings) console.warn(`[aliases.json] ${w}`);
+    return aliases;
   } catch (e) {
-    console.error(`aliases.json の読み込みに失敗しました: ${e.message}`);
+    console.error(`aliases.json を読み込めませんでした。\n${e.message}`);
     process.exit(1);
   }
+}
+
+/**
+ * 名寄せで引けなかった名前に、似ている候補を出すための「引き先の一覧」。
+ * ロールバックしても残るよう、投入直後に配列として控えておく。
+ */
+function captureNamePools(ctx, db) {
+  const names = (sql) => {
+    try {
+      return db.prepare(sql).all().map((r) => r.name).filter(Boolean);
+    } catch {
+      return [];
+    }
+  };
+
+  const customers = names('SELECT name FROM customers');
+  const products = names('SELECT name FROM products');
+  const materials = names('SELECT name FROM materials');
+  const tanks = [
+    ...names('SELECT name FROM tanks'),
+    ...names('SELECT code AS name FROM tanks'),
+  ];
+  const distillations = names('SELECT distillation_code AS name FROM distillations');
+  const orders = names('SELECT legacy_order_no AS name FROM orders');
+  const productLedger = names('SELECT history_code AS name FROM product_stock_ledger');
+
+  // ローダーが resolveId に渡している column の名前で引けるようにする
+  Object.assign(ctx.report.namePools, {
+    得意先名: customers,
+    得意先: customers,
+    商品名: products,
+    商品: products,
+    商品名称: products,
+    資材名: materials,
+    資材名称: materials,
+    本店: customers,
+    受入元: tanks,
+    払出先: tanks,
+    元容器ID: tanks,
+    '受入元(投入元タンク)': tanks,
+    '払出先(受入先タンク)': tanks,
+    '払出先(蒸留ID)': distillations,
+    蒸留ID: distillations,
+    受注番号: orders,
+    商品履歴ID: productLedger,
+  });
 }
 
 function buildContext(db, options) {
@@ -174,6 +222,8 @@ function main() {
 
     console.log('\n--- フェーズ1: マスタ系 ---');
     for (const loader of PHASE1_MASTERS) loader.load(ctx);
+    // 中止してロールバックしても候補を出せるよう、この時点で控える
+    captureNamePools(ctx, db);
 
     // フェーズ2: 名寄せ事前チェック。
     // 実際の不一致検出は各ローダーがresolveId経由でreportに記録するため、
@@ -191,6 +241,7 @@ function main() {
     // 蒸留記録の「使用原酒明細」はシートでは明細IDの羅列（DTL-0001 DTL-0002）。
     // 明細を入れ終わったので、一覧に出す文字列をタンク名＋投入量へ組み直す。
     require('./loaders/distillations').rebuildInputSummaries(ctx);
+    captureNamePools(ctx, db);   // 台帳の伝票番号も候補に使えるようにする
 
     if (ctx.report.hasUnmatched() && options.strict) {
       throw new Error(

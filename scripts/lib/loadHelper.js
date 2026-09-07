@@ -27,7 +27,17 @@ const { aliasesForSheet, aliasRow } = require('./columnAliases');
  *        「既存」としてafterInsertだけ呼ぶ（マスタ投入を冪等にし、--reset時に
  *        マスタを保持したまま台帳だけ再投入できるようにするため。8-5）
  */
-function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert, findExistingId }) {
+function loadCsvTable(ctx, {
+  sheetName,
+  csvFile,
+  insertSql,
+  updateSql,        // 既に同じ名前の行があるときに当てるUPDATE文（マスタ系だけ渡す）
+  updateTable,      // 変更前の値を読むテーブル名（レポートに出すため）
+  createOnlyKeys = [], // 既存行には当てない項目（初期在庫など、在庫計算の起点）
+  mapRow,
+  afterInsert,
+  findExistingId,
+}) {
   const summary = ctx.report.touchSummary(sheetName);
   const filePath = path.join(ctx.dataDir, csvFile);
   const rows = readCsv(filePath);
@@ -59,7 +69,24 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
         return;
       }
       if (existingId != null) {
-        summary.existing++;
+        // 既に同じ名前の行があるときは、シートの内容で**更新する**。
+        // 飛ばしてしまうと、シート側で支払いサイトなどを直しても
+        // 流し直しでデータベースに反映されない。
+        if (updateSql) {
+          applyMasterUpdate(ctx, {
+            sheetName,
+            existingId,
+            row,
+            rowNumber,
+            mapRow,
+            updateSql,
+            updateTable,
+            createOnlyKeys,
+            summary,
+          });
+        } else {
+          summary.existing++;
+        }
         if (afterInsert) afterInsert(row, existingId, ctx);
         return;
       }
@@ -93,6 +120,60 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
       summary.skipped++;
     }
   });
+}
+
+/**
+ * 既存のマスタ行を、シートの内容で更新する。
+ *
+ * 在庫計算の起点になる列（初期在庫数・初期在庫量など）は当てない。
+ * 上書きすると現在の在庫が動いてしまうため。
+ * 何がどう変わったかは必ずレポートに出す（黙って上書きしない）。
+ */
+function applyMasterUpdate(ctx, opts) {
+  const { sheetName, existingId, row, rowNumber, mapRow, updateSql, updateTable,
+          createOnlyKeys, summary } = opts;
+
+  let mapped;
+  try {
+    mapped = mapRow(row, rowNumber, ctx);
+  } catch (e) {
+    if (e instanceof SkipRow) {
+      summary.ignored = (summary.ignored ?? 0) + 1;
+      return;
+    }
+    ctx.report.recordError(sheetName, rowNumber, e.message);
+    summary.skipped++;
+    return;
+  }
+  if (mapped === null) {
+    summary.skipped++;
+    return;
+  }
+
+  const params = { ...mapped, id: existingId };
+  for (const key of createOnlyKeys) delete params[key];
+
+  const before = updateTable
+    ? ctx.db.prepare(`SELECT * FROM ${updateTable} WHERE id = ?`).get(existingId)
+    : null;
+
+  try {
+    ctx.db.prepare(updateSql).run(params);
+    summary.updated = (summary.updated ?? 0) + 1;
+  } catch (e) {
+    ctx.report.recordError(sheetName, rowNumber, e.message);
+    summary.skipped++;
+    return;
+  }
+
+  if (!before || !updateTable) return;
+  const after = ctx.db.prepare(`SELECT * FROM ${updateTable} WHERE id = ?`).get(existingId);
+  for (const column of Object.keys(after)) {
+    if (column === 'updated_at') continue;
+    if (String(before[column] ?? '') === String(after[column] ?? '')) continue;
+    ctx.report.recordMasterUpdate(sheetName, after.name ?? after.code ?? existingId,
+      column, before[column], after[column]);
+  }
 }
 
 /**
@@ -139,6 +220,28 @@ function isKnownIgnored(ctx, column, rawValue) {
   return list.some((v) => ctx.normalize(v) === target);
 }
 
+/**
+ * aliases.json の対応表を引く。
+ *
+ * キーは unmatched-names.csv の rawValue をそのまま貼る前提だが、
+ * 手で書き写すと幅（全角/半角）や前後の空白がずれる。
+ * そこだけのために効かない、というのは分かりにくいので、
+ * 正規化したキーでも引けるようにしておく。
+ */
+function aliasFor(ctx, column, rawValue) {
+  const table = ctx.aliases?.[column];
+  if (!table) return undefined;
+  if (Object.hasOwn(table, rawValue)) return table[rawValue];
+
+  ctx._aliasIndex ??= new Map();
+  let index = ctx._aliasIndex.get(column);
+  if (!index) {
+    index = new Map(Object.entries(table).map(([k, v]) => [ctx.normalize(k), v]));
+    ctx._aliasIndex.set(column, index);
+  }
+  return index.get(ctx.normalize(rawValue));
+}
+
 function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
   if (rawValue == null || String(rawValue).trim() === '') {
     if (required) throw new Error(`${column}が空です`);
@@ -149,8 +252,7 @@ function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
     throw new SkipRow(`${column}「${rawValue}」は移行対象外として宣言されています`);
   }
 
-  const aliasTable = ctx.aliases?.[column];
-  const aliasedValue = aliasTable?.[rawValue];
+  const aliasedValue = aliasFor(ctx, column, rawValue);
   const target = ctx.normalize(aliasedValue ?? rawValue);
 
   const id = idMap.get(target);
@@ -184,8 +286,7 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
     return null;
   }
 
-  const aliasTable = ctx.aliases?.[column];
-  const aliasedValue = aliasTable?.[rawValue] ?? rawValue;
+  const aliasedValue = aliasFor(ctx, column, rawValue) ?? rawValue;
   const target = ctx.normalize(aliasedValue);
 
   if (NON_TANK_LITERALS.has(target)) {

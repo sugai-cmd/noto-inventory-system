@@ -35,9 +35,16 @@ const UPDATE_SQL = `
 `;
 
 // 「次回todo/課題」は列ではなく営業メモとして持つ（種別はGAS版のプルダウンに合わせる）
+//
+// 営業メモは --reset の対象ではない（手で書いたメモを消せない）ので、
+// 流し直すたびに同じ課題が積み上がらないよう、同じ内容が既にあれば入れない。
 const NOTE_SQL = `
   INSERT INTO customer_notes (customer_id, noted_on, category, body)
-  VALUES (@customerId, @notedOn, '課題', @body)
+  SELECT @customerId, @notedOn, '課題', @body
+  WHERE NOT EXISTS (
+    SELECT 1 FROM customer_notes
+     WHERE customer_id = @customerId AND category = '課題' AND body = @body
+  )
 `;
 
 function load(ctx) {
