@@ -6,6 +6,7 @@
 
 const { parse } = require('csv-parse/sync');
 const iconv = require('iconv-lite');
+const { detectNotPlainText, notPlainTextMessage } = require('../utils/fileFormat');
 const { getConnection } = require('../db/connection');
 const customerModel = require('../models/customerModel');
 const breweryModel = require('../models/breweryModel');
@@ -195,6 +196,14 @@ const MODELS = {
 function decodeUpload(buffer) {
   if (!Buffer.isBuffer(buffer) || !buffer.length) {
     throw new BusinessRuleError('ファイルの中身が空です');
+  }
+
+  // 文字コードを判定する前に、そもそもテキストかを見る。
+  // リッチテキストやExcelの書類でも csv-parse は素通りしてしまい、
+  // 見出しが1列だけの表として読めてしまう（項目が全部空になるだけで原因が出ない）。
+  const format = detectNotPlainText(buffer);
+  if (format) {
+    throw new BusinessRuleError(notPlainTextMessage('このファイル', format, 'CSV'));
   }
 
   // UTF-8のBOMがあれば確定

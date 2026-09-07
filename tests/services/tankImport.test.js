@@ -166,6 +166,21 @@ test('空のファイルは取り違えずにエラーになる', async () => {
   assert.equal(status, 422);
 });
 
+test('リッチテキストの書類は、CSVとして読まずに理由を返す', async () => {
+  // テキストエディットの既定の保存形式。csv-parse は素通りしてしまい、
+  // 見出しが1列だけの表として読めてしまうので、その前で止める
+  const rtf = Buffer.from(
+    '{\\rtf1\\ansi\\ansicpg932\\cocoartf2870\n' +
+      '{\\fonttbl\\f0\\fnil Helvetica;}\n' +
+      '\\f0\\fs24 \\cf0 容器ID,容器名称\\\nT-001,ステンレスタンク1}',
+    'utf8'
+  );
+  const { status, body } = await decode(rtf);
+  assert.equal(status, 422);
+  assert.match(body.message, /リッチテキスト/);
+  assert.match(body.message, /標準テキストにする/);
+});
+
 test('ログインしていないとファイルを読み込めない', async () => {
   const res = await harness.rawFetch('/api/master-import/decode', {
     method: 'POST',

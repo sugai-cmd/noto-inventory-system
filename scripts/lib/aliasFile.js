@@ -13,6 +13,7 @@
 // 値の中身を書き換えてしまう可能性があるので、直したときは必ず警告に出す。
 
 const fs = require('node:fs');
+const { detectNotPlainText, notPlainTextMessage } = require('../../src/utils/fileFormat');
 
 /** JSONの構文には現れないはずの文字。名前で呼べるようにしておく */
 const SUSPICIOUS = new Map([
@@ -236,9 +237,23 @@ function describePlace(filePath, place) {
 function readAliasFile(filePath) {
   if (!fs.existsSync(filePath)) return { aliases: {}, warnings: [] };
 
-  const raw = fs.readFileSync(filePath, 'utf8');
+  const buffer = fs.readFileSync(filePath);
+
+  // JSONの構文を疑う前に、そもそもテキストかどうかを見る。
+  // テキストエディットの既定はリッチテキストなので、貼って保存すると中身がRTFになる。
+  // このとき「引用符の閉じ忘れ」などと言っても、原因はそこではない。
+  const format = detectNotPlainText(buffer);
+  if (format) throw new Error(notPlainTextMessage(filePath, format, 'JSON'));
+
+  const raw = buffer.toString('utf8');
   const repairWarnings = [];
   let lastError;
+
+  // 中身が無いファイルは「補正表なし」として通す。書き始める前の空ファイルで
+  // 移行が止まる理由がない。
+  if (raw.trim() === '') {
+    return { aliases: {}, warnings: [`${filePath} は中身が空なので、補正表なしとして進みます`] };
+  }
 
   // 1段目
   try {

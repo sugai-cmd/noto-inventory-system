@@ -160,3 +160,58 @@ test('全角の引用符そのものが直せない場所にあるときは、�
     }
   );
 });
+
+// --- テキストではないファイルを置いてしまったとき ---------------------------
+//
+// テキストエディットの既定はリッチテキストなので、新規ファイルに貼って保存すると
+// 中身がRTFになる。拡張子は .json のままなので開くまで気づけない。
+// 実際にこれで読めず、しかも「引用符の閉じ忘れ」という的外れな助言が出ていた。
+
+const RTF_HEAD = '{\\rtf1\\ansi\\ansicpg932\\cocoartf2870\\cocoasubrtf210\n';
+
+test('リッチテキストで保存されていたら、そう名指しして直し方を出す', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = write(dir, `${RTF_HEAD}{\\fonttbl\\f0\\fnil Helvetica;}\n\\f0 {"得意先名": {}}}`);
+  assert.throws(
+    () => readAliasFile(p),
+    (e) => {
+      assert.match(e.message, /リッチテキスト書類（RTF）/);
+      // JSONの構文の話に迷い込ませない
+      assert.doesNotMatch(e.message, /引用符の閉じ忘れ/);
+      // 直し方まで言う
+      assert.match(e.message, /標準テキストにする/);
+      assert.match(e.message, /textutil -convert txt/);
+      return true;
+    }
+  );
+});
+
+test('Excelの書類を置いてしまったときも、そうと分かる', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = path.join(dir, 'aliases.json');
+  fs.writeFileSync(p, Buffer.from('504b0304140006000800', 'hex')); // .xlsx（ZIP）
+  assert.throws(() => readAliasFile(p), /Excel・Wordなどの書類/);
+});
+
+test('中身が正しいJSONなら、この判定に引っかからない', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = write(dir, '{\n  "得意先名": { "近江町松本": "株式会社松本" }\n}\n');
+  const { aliases } = readAliasFile(p);
+  assert.equal(aliases['得意先名']['近江町松本'], '株式会社松本');
+});
+
+test('中身が空のファイルは、補正表なしとして通す', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = write(dir, '\n  \n');
+  const { aliases, warnings } = readAliasFile(p);
+  assert.deepEqual(aliases, {});
+  assert.match(warnings[0], /中身が空/);
+});

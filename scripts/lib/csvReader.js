@@ -1,6 +1,7 @@
 const fs = require('node:fs');
 const { parse } = require('csv-parse/sync');
 const { decodeUpload, detectDelimiter } = require('../../src/services/masterImportService');
+const { detectNotPlainText, notPlainTextMessage } = require('../../src/utils/fileFormat');
 
 /**
  * CSVファイルをオブジェクトの配列として読み込む。
@@ -17,7 +18,17 @@ const { decodeUpload, detectDelimiter } = require('../../src/services/masterImpo
 function readCsv(filePath) {
   if (!fs.existsSync(filePath)) return null;
 
-  const { text } = decodeUpload(fs.readFileSync(filePath));
+  const buffer = fs.readFileSync(filePath);
+
+  // テキストでないファイルは、ここで**ファイル名を添えて**止める。
+  // csv-parse はリッチテキストでもエラーを出さず、見出しが「{\rtf1...」の
+  // 1列だけの表として読めてしまう。そうなると項目が全部空になり、
+  // 「得意先名が空です」が何百件も並ぶだけで原因にたどり着けない。
+  // 21ファイルのうちどれかが分からないと直せないので、パスを必ず出す。
+  const format = detectNotPlainText(buffer);
+  if (format) throw new Error(notPlainTextMessage(filePath, format, 'CSV'));
+
+  const { text } = decodeUpload(buffer);
 
   return parse(text, {
     columns: true,
