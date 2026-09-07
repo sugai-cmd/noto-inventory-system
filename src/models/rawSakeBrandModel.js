@@ -41,6 +41,7 @@ function resolveBreweryId(db, { breweryId, breweryName }) {
 }
 
 function create({
+  code,
   name,
   abv,
   sakeMeterValue,
@@ -60,12 +61,13 @@ function create({
   const result = db
     .prepare(
       `INSERT INTO raw_sake_brands
-         (uid, name, abv, sake_meter_value, brewery_id, brewery_name_raw,
+         (uid, code, name, abv, sake_meter_value, brewery_id, brewery_name_raw,
           status, produced_on, note, registered_on, initial_stock, current_stock)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .run(
       uid,
+      code ?? null,
       name,
       abv ?? null,
       sakeMeterValue ?? null,
@@ -96,7 +98,8 @@ function update(id, fields) {
 
   db.prepare(
     `UPDATE raw_sake_brands
-     SET name = COALESCE(?, name),
+     SET code = COALESCE(?, code),
+         name = COALESCE(?, name),
          abv = COALESCE(?, abv),
          sake_meter_value = COALESCE(?, sake_meter_value),
          brewery_id = ?,
@@ -107,6 +110,7 @@ function update(id, fields) {
          registered_on = COALESCE(?, registered_on)
      WHERE id = ?`
   ).run(
+    fields.code ?? null,
     fields.name ?? null,
     fields.abv ?? null,
     fields.sakeMeterValue ?? null,

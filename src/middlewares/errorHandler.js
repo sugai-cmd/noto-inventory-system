@@ -17,7 +17,7 @@ const COLUMN_LABELS = {
   'tanks.name': '容器名称',
   'tanks.code': '容器ID',
   'breweries.name': '酒蔵名',
-  'raw_sake_brands.name': '銘柄名',
+  'raw_sake_brands.code': '原酒ID',   // 銘柄名は同じ名前の別ロットがありうるので一意ではない
 };
 
 function constraintMessage(err) {

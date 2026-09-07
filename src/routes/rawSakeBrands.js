@@ -14,6 +14,7 @@ const dateOnly = z
 
 const createSchema = z
   .object({
+    code: z.string().optional(), // 原酒ID（銘柄＋ロット。同じ銘柄の別ロットを見分ける）
     name: z.string().min(1, '銘柄名は必須です'),
     abv: z.number().optional(),
     sakeMeterValue: z.number().optional(),
@@ -33,6 +34,7 @@ const createSchema = z
 // updateSchemaは同じ形を独立して定義する（同時指定不可のrefineも引き継ぐ）
 const updateSchema = z
   .object({
+    code: z.string().optional(),
     name: z.string().min(1).optional(),
     abv: z.number().optional(),
     sakeMeterValue: z.number().optional(),

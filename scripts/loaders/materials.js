@@ -1,6 +1,6 @@
 // 資材マスタ → materials（フェーズ1）
 
-const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { loadCsvTable, existingByCodeOrName } = require('../lib/loadHelper');
 const { parseNumber, parseNumberLoose } = require('../lib/parseNumber');
 const { parseLeadTimeDays } = require('../../src/utils/leadTime');
 const { generateUid } = require('../../src/utils/uid');
@@ -14,12 +14,27 @@ const INSERT_SQL = `
      @initialStock, @supplierName, @supplierAddress, @supplierContact, @leadTimeDays, @note)
 `;
 
+// 既に同じ名前の行があるときは、シートの内容で更新する。
+// 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
+const UPDATE_SQL = `
+  UPDATE materials SET
+       name = @name,
+       code = COALESCE(@code, code), category = @category, unit = @unit,
+       unit_price = @unitPrice, lot_size = @lotSize, proper_stock_qty = @properStockQty,
+       supplier_name = @supplierName, supplier_address = @supplierAddress,
+       supplier_contact = @supplierContact, lead_time_days = @leadTimeDays, note = @note
+  WHERE id = @id
+`;
+
 function load(ctx) {
   loadCsvTable(ctx, {
     sheetName: '資材マスタ',
     csvFile: 'materials.csv',
     insertSql: INSERT_SQL,
-    findExistingId: existingByName('materials', '資材名'),
+    updateSql: UPDATE_SQL,
+    updateTable: 'materials',
+    createOnlyKeys: ['uid', 'initialStock'],
+    findExistingId: existingByCodeOrName('materials', '資材ID', '資材名'),
     mapRow(row) {
       // 資材マスタは「資材名」、資材在庫変動履歴は「資材名称」と表記が異なる（6-1）。
       // ここでは資材マスタ側の表記に従う。

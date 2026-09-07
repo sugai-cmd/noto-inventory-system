@@ -1,7 +1,7 @@
 // 得意先マスタ → customers（フェーズ1）
 
 const { parsePaymentTermMonths } = require('../../src/utils/paymentTerm');
-const { loadCsvTable, existingByName } = require('../lib/loadHelper');
+const { loadCsvTable, existingByCodeOrName } = require('../lib/loadHelper');
 const { parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly, parseMonthOnly } = require('../lib/parseDate');
 const { generateUid } = require('../../src/utils/uid');
@@ -15,6 +15,20 @@ const INSERT_SQL = `
     (@uid, @code, @name, @segment, @businessType, @markupRate, @address,
      @paymentTermMonths, @paymentTermDay, @invoiceDueNote,
      @salesRep, @salesSubRep, @salesChannel, @lastVisitedOn, @onboardedMonth, @note)
+`;
+
+// 既に同じ名前の行があるときは、シートの内容で更新する。
+// 在庫計算の起点になる列（初期在庫など）は当てない（createOnlyKeys で外す）。
+const UPDATE_SQL = `
+  UPDATE customers SET
+       name = @name,
+       code = COALESCE(@code, code), segment = @segment, business_type = @businessType,
+       markup_rate = @markupRate, address = @address,
+       payment_term_months = @paymentTermMonths, payment_term_day = @paymentTermDay,
+       invoice_due_note = @invoiceDueNote, sales_rep = @salesRep, sales_sub_rep = @salesSubRep,
+       sales_channel = @salesChannel, last_visited_on = @lastVisitedOn,
+       onboarded_month = @onboardedMonth, note = @note, updated_at = datetime('now')
+  WHERE id = @id
 `;
 
 /**
@@ -50,7 +64,10 @@ function load(ctx) {
     sheetName: '得意先マスタ',
     csvFile: 'customers.csv',
     insertSql: INSERT_SQL,
-    findExistingId: existingByName('customers', '得意先名'),
+    updateSql: UPDATE_SQL,
+    updateTable: 'customers',
+    createOnlyKeys: ['uid'],
+    findExistingId: existingByCodeOrName('customers', '顧客ID', '得意先名'),
     mapRow(row) {
       const name = (row['得意先名'] || '').trim();
       if (!name) throw new Error('得意先名が空です');
@@ -61,7 +78,10 @@ function load(ctx) {
         name,
         segment: row['区分'] || null,
         businessType: row['業態'] || null,
-        markupRate: (parseNumber(row['掛率'], '掛率') ?? 1),
+        // 空欄は空欄のまま入れる。1.0（上代どおり）は消費者向けで実在する値なので、
+        // 空を1で埋めてしまうと「まだ決めていない」支店が上代どおりに見えてしまい、
+        // 本店から掛率を引き継げなくなる（0014のコメント参照）。
+        markupRate: parseNumber(row['掛率'], '掛率'),
         address: row['住所'] || null,
         // 「当月」「翌月」「翌々月」で入っているので月数に読み替える。
         // Number()のままだとNaNになり、支払いサイトが黙って全件失われる。

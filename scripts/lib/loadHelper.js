@@ -27,10 +27,21 @@ const { aliasesForSheet, aliasRow } = require('./columnAliases');
  *        「既存」としてafterInsertだけ呼ぶ（マスタ投入を冪等にし、--reset時に
  *        マスタを保持したまま台帳だけ再投入できるようにするため。8-5）
  */
-function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert, findExistingId }) {
+function loadCsvTable(ctx, {
+  sheetName,
+  csvFile,
+  insertSql,
+  updateSql,        // 既に同じ名前の行があるときに当てるUPDATE文（マスタ系だけ渡す）
+  updateTable,      // 変更前の値を読むテーブル名（レポートに出すため）
+  createOnlyKeys = [], // 既存行には当てない項目（初期在庫など、在庫計算の起点）
+  mapRow,
+  afterInsert,
+  findExistingId,
+  rows: providedRows, // 事前に読み終えた行（原酒マスタのように下読みが要るとき）
+}) {
   const summary = ctx.report.touchSummary(sheetName);
   const filePath = path.join(ctx.dataDir, csvFile);
-  const rows = readCsv(filePath);
+  const rows = providedRows ?? readCsv(filePath);
 
   if (rows === null) {
     console.warn(`[skip] ${csvFile} が見つからないため「${sheetName}」の投入をスキップします`);
@@ -41,10 +52,11 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
 
   // 見出しの表記ゆれを吸収する。ローダーは row['資材名'] のまま書けばよく、
   // シート側が「資材名称」でも読める（columnAliases.js）。
-  const aliases = aliasesForSheet(sheetName);
+  // 事前に読んだ行は呼び出し側で吸収済みなので、二度掛けしない。
+  const aliases = providedRows ? null : aliasesForSheet(sheetName);
 
   rows.forEach((rawRow, i) => {
-    const row = aliasRow(rawRow, aliases);
+    const row = aliases ? aliasRow(rawRow, aliases) : rawRow;
     summary.read++;
     const rowNumber = i + 2; // ヘッダ行を1行目とした実際のCSV上の行番号
 
@@ -52,15 +64,32 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
     if (findExistingId) {
       let existingId;
       try {
-        existingId = findExistingId(row, ctx);
+        existingId = findExistingId(row, ctx, rowNumber);
       } catch (e) {
         ctx.report.recordError(sheetName, rowNumber, e.message);
         summary.skipped++;
         return;
       }
       if (existingId != null) {
-        summary.existing++;
-        if (afterInsert) afterInsert(row, existingId, ctx);
+        // 既に同じ名前の行があるときは、シートの内容で**更新する**。
+        // 飛ばしてしまうと、シート側で支払いサイトなどを直しても
+        // 流し直しでデータベースに反映されない。
+        if (updateSql) {
+          applyMasterUpdate(ctx, {
+            sheetName,
+            existingId,
+            row,
+            rowNumber,
+            mapRow,
+            updateSql,
+            updateTable,
+            createOnlyKeys,
+            summary,
+          });
+        } else {
+          summary.existing++;
+        }
+        if (afterInsert) afterInsert(row, existingId, ctx, rowNumber);
         return;
       }
     }
@@ -87,12 +116,66 @@ function loadCsvTable(ctx, { sheetName, csvFile, insertSql, mapRow, afterInsert,
     try {
       const result = stmt.run(mapped);
       summary.inserted++;
-      if (afterInsert) afterInsert(row, result.lastInsertRowid, ctx);
+      if (afterInsert) afterInsert(row, result.lastInsertRowid, ctx, rowNumber);
     } catch (e) {
       ctx.report.recordError(sheetName, rowNumber, e.message);
       summary.skipped++;
     }
   });
+}
+
+/**
+ * 既存のマスタ行を、シートの内容で更新する。
+ *
+ * 在庫計算の起点になる列（初期在庫数・初期在庫量など）は当てない。
+ * 上書きすると現在の在庫が動いてしまうため。
+ * 何がどう変わったかは必ずレポートに出す（黙って上書きしない）。
+ */
+function applyMasterUpdate(ctx, opts) {
+  const { sheetName, existingId, row, rowNumber, mapRow, updateSql, updateTable,
+          createOnlyKeys, summary } = opts;
+
+  let mapped;
+  try {
+    mapped = mapRow(row, rowNumber, ctx);
+  } catch (e) {
+    if (e instanceof SkipRow) {
+      summary.ignored = (summary.ignored ?? 0) + 1;
+      return;
+    }
+    ctx.report.recordError(sheetName, rowNumber, e.message);
+    summary.skipped++;
+    return;
+  }
+  if (mapped === null) {
+    summary.skipped++;
+    return;
+  }
+
+  const params = { ...mapped, id: existingId };
+  for (const key of createOnlyKeys) delete params[key];
+
+  const before = updateTable
+    ? ctx.db.prepare(`SELECT * FROM ${updateTable} WHERE id = ?`).get(existingId)
+    : null;
+
+  try {
+    ctx.db.prepare(updateSql).run(params);
+    summary.updated = (summary.updated ?? 0) + 1;
+  } catch (e) {
+    ctx.report.recordError(sheetName, rowNumber, e.message);
+    summary.skipped++;
+    return;
+  }
+
+  if (!before || !updateTable) return;
+  const after = ctx.db.prepare(`SELECT * FROM ${updateTable} WHERE id = ?`).get(existingId);
+  for (const column of Object.keys(after)) {
+    if (column === 'updated_at') continue;
+    if (String(before[column] ?? '') === String(after[column] ?? '')) continue;
+    ctx.report.recordMasterUpdate(sheetName, after.name ?? after.code ?? existingId,
+      column, before[column], after[column]);
+  }
 }
 
 /**
@@ -106,6 +189,41 @@ function existingByName(table, csvColumn) {
     if (!name) return null;
     const found = ctx.db.prepare(`SELECT id FROM ${table} WHERE name = ?`).get(name);
     return found ? found.id : null;
+  };
+}
+
+/**
+ * 既存行を「ID列 → 名前」の順で探す。
+ *
+ * 名前だけで探していると、シート側で名前を直したときに同じ行だと分からず、
+ * 更新ではなく**新しい行**として入ってしまう。旧名の行は受注を抱えたまま残るので、
+ * 同じ取引先が2行になる。マスタのシートには変わらないID列があるので、
+ * そちらを先に使えば改名がそのまま反映される。
+ *
+ * ID列が空の行（まだ採番していない）や、DB側のcodeがまだ空のとき
+ * （このID列を使い始める前に入れた行）のために、名前での照合も残す。
+ */
+function existingByCodeOrName(table, codeColumn, nameColumn) {
+  return (row, ctx) => {
+    const code = (row[codeColumn] || '').trim();
+    if (code) {
+      const found = ctx.db.prepare(`SELECT id FROM ${table} WHERE code = ?`).get(code);
+      if (found) return found.id;
+    }
+
+    const name = (row[nameColumn] || '').trim();
+    if (!name) return null;
+    const byName = ctx.db.prepare(`SELECT id, code FROM ${table} WHERE name = ?`).get(name);
+    if (!byName) return null;
+
+    // 名前が同じでも、**相手が別のIDを持っているなら別の行**。
+    // 原酒マスタには同じ銘柄の別ロット（浄酎用池月 18.3 と 18.8）が並ぶので、
+    // ここで拾ってしまうと後の行が前の行を上書きして、片方の度数が消える。
+    if (byName.code != null && byName.code !== code) return null;
+
+    // 相手にIDが無いときだけ、名前で同じ行とみなす。
+    // このID列を使い始める前に入れた行や、画面から手で登録した行を拾うため。
+    return byName.id;
   };
 }
 
@@ -139,6 +257,28 @@ function isKnownIgnored(ctx, column, rawValue) {
   return list.some((v) => ctx.normalize(v) === target);
 }
 
+/**
+ * aliases.json の対応表を引く。
+ *
+ * キーは unmatched-names.csv の rawValue をそのまま貼る前提だが、
+ * 手で書き写すと幅（全角/半角）や前後の空白がずれる。
+ * そこだけのために効かない、というのは分かりにくいので、
+ * 正規化したキーでも引けるようにしておく。
+ */
+function aliasFor(ctx, column, rawValue) {
+  const table = ctx.aliases?.[column];
+  if (!table) return undefined;
+  if (Object.hasOwn(table, rawValue)) return table[rawValue];
+
+  ctx._aliasIndex ??= new Map();
+  let index = ctx._aliasIndex.get(column);
+  if (!index) {
+    index = new Map(Object.entries(table).map(([k, v]) => [ctx.normalize(k), v]));
+    ctx._aliasIndex.set(column, index);
+  }
+  return index.get(ctx.normalize(rawValue));
+}
+
 function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
   if (rawValue == null || String(rawValue).trim() === '') {
     if (required) throw new Error(`${column}が空です`);
@@ -149,8 +289,7 @@ function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
     throw new SkipRow(`${column}「${rawValue}」は移行対象外として宣言されています`);
   }
 
-  const aliasTable = ctx.aliases?.[column];
-  const aliasedValue = aliasTable?.[rawValue];
+  const aliasedValue = aliasFor(ctx, column, rawValue);
   const target = ctx.normalize(aliasedValue ?? rawValue);
 
   const id = idMap.get(target);
@@ -184,8 +323,7 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
     return null;
   }
 
-  const aliasTable = ctx.aliases?.[column];
-  const aliasedValue = aliasTable?.[rawValue] ?? rawValue;
+  const aliasedValue = aliasFor(ctx, column, rawValue) ?? rawValue;
   const target = ctx.normalize(aliasedValue);
 
   if (NON_TANK_LITERALS.has(target)) {
@@ -206,4 +344,7 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
   return null;
 }
 
-module.exports = { loadCsvTable, resolveId, resolveTankId, existingByName, SkipRow };
+module.exports = {
+  loadCsvTable, resolveId, resolveTankId,
+  existingByName, existingByCodeOrName, SkipRow,
+};

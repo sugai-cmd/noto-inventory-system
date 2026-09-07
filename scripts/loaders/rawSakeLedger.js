@@ -66,12 +66,10 @@ function load(ctx) {
         });
       }
 
-      // 原酒スペックが原酒マスタの銘柄と一致すれば紐付ける。
+      // 原酒スペックが原酒マスタを指していれば紐付ける。
       // 一致しない書き方（自由記述）はここで止めず、spec_note に残す。
       const specNote = row['原酒スペック'] || null;
-      const rawSakeBrandId = specNote
-        ? (context.lookups.rawSakeBrandIdByName?.get(context.normalize(specNote)) ?? null)
-        : null;
+      const rawSakeBrandId = resolveRawSakeBrandId(context, specNote);
 
       return {
         lotCode,
@@ -98,6 +96,29 @@ function load(ctx) {
       if (legacy) context.lookups.rawSakeLedgerIdByLotCode.set(legacy, id);
     },
   });
+}
+
+/**
+ * 「原酒スペック」から原酒マスタの行を決める。
+ *
+ * 原酒IDでも銘柄名でも書けるようにしてある（容器が「容器名称」でも「容器ID」でも
+ * 引けるのと同じ形）。銘柄名は同じ名前の別ロットがありうるので一意とは限らず、
+ * 決められないときは**引かない**。度数の違うロットを取り違えるより、
+ * 不一致として報告して原酒IDで書き直してもらう方が安全なため。
+ */
+function resolveRawSakeBrandId(ctx, specNote) {
+  if (!specNote) return null;
+  const target = ctx.normalize(specNote);
+
+  const byCode = ctx.lookups.rawSakeBrandIdByCode?.get(target);
+  if (byCode != null) return byCode;
+
+  if (ctx.lookups.rawSakeBrandAmbiguousNames?.has(target)) {
+    ctx.report.recordUnmatched('原料受払記録', '原酒スペック', specNote, target);
+    return null;
+  }
+
+  return ctx.lookups.rawSakeBrandIdByName?.get(target) ?? null;
 }
 
 module.exports = { load };
