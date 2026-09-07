@@ -764,7 +764,12 @@ customerSelect = createSearchSelect({
   chosenId: 'customerChosen',
   endpoint: '/api/customers/search',
   renderLabel: (c) => c.name,
-  renderSub: (c) => `掛率 ${c.markup_rate} / 支払 ${c.payment_term_months ?? '-'}ヶ月後${c.payment_term_day ?? ''}`,
+  // 支店の得意先は本店名を併記する。「カナカン」で検索すると6支店が出るので、
+  // どれがどの会社の支店かが分からないと選べない。
+  renderSub: (c) =>
+    (c.parent_name ? `本店: ${c.parent_name} / ` : '') +
+    `掛率 ${c.markup_rate ?? '（本店から）'} / ` +
+    `支払 ${c.payment_term_months ?? '（本店から）'}${c.payment_term_months != null ? 'ヶ月後' : ''}${c.payment_term_day ?? ''}`,
   onSelect: (c) => {
     applyCustomer(c);
     refreshDefaults();

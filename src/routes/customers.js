@@ -5,6 +5,7 @@ const customerNoteService = require('../services/customerNoteService');
 const { validateRequest } = require('../middlewares/validateRequest');
 const { getConnection } = require('../db/connection');
 const { nextMasterCode } = require('../utils/masterCode');
+const customerService = require('../services/customerService');
 
 const router = express.Router();
 
@@ -27,6 +28,9 @@ const createSchema = z.object({
   lastVisitedOn: dateOnly.optional(),
   onboardedMonth: monthOnly.optional(),
   note: z.string().optional(),
+  // 本店。支店の得意先がこれを指すと、空欄の請求まわりの値を本店から引き継ぐ。
+  // 空文字を送れば本店を外せる。
+  parentId: z.union([z.number().int().positive(), z.null(), z.literal('')]).optional(),
 });
 
 const updateSchema = createSchema.partial();
@@ -79,9 +83,17 @@ router.get('/:id', (req, res) => {
   res.json(customer);
 });
 
+/** 空文字を「本店を外す」の意味に揃える */
+function normalizeParentId(body) {
+  if (!Object.hasOwn(body, 'parentId')) return body;
+  return { ...body, parentId: body.parentId === '' ? null : body.parentId };
+}
+
 router.post('/', validateRequest(createSchema), (req, res, next) => {
   try {
-    res.status(201).json(customerModel.create(req.body));
+    const input = normalizeParentId(req.body);
+    customerService.assertValidParent(null, input.parentId ?? null);
+    res.status(201).json(customerModel.create(input));
   } catch (err) {
     next(err);
   }
@@ -89,12 +101,25 @@ router.post('/', validateRequest(createSchema), (req, res, next) => {
 
 router.put('/:id', validateRequest(updateSchema), (req, res, next) => {
   try {
-    const updated = customerModel.update(Number(req.params.id), req.body);
+    const id = Number(req.params.id);
+    const input = normalizeParentId(req.body);
+    if (Object.hasOwn(input, 'parentId')) {
+      // 自分自身を本店にする指定と、本店と支店が輪になる指定を弾く
+      customerService.assertValidParent(id, input.parentId);
+    }
+    const updated = customerModel.update(id, input);
     if (!updated) return res.status(404).json({ error: 'not_found' });
     res.json(updated);
   } catch (err) {
     next(err);
   }
+});
+
+/** 請求まわりの値が、本店から引き継いだ状態でどうなるかを返す（画面のヒント用） */
+router.get('/:id/billing', (req, res) => {
+  const resolved = customerService.resolveBilling(Number(req.params.id));
+  if (!resolved) return res.status(404).json({ error: 'not_found' });
+  res.json(resolved);
 });
 
 // 営業メモ（得意先ごとの追記ログ）

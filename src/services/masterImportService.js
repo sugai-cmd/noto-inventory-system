@@ -46,6 +46,8 @@ const TEMPLATES = {
       流通経路: { key: 'salesChannel' },
       最終訪問日: { key: 'lastVisitedOn' },
       取引開始月: { key: 'onboardedMonth' },
+      // 支店を持つ会社の親。名前で引くので、本店の行が先に入っている必要がある
+      本店: { key: 'parentName', aliases: ['親得意先', '本社', '本店名'] },
     },
   },
 
@@ -428,10 +430,45 @@ function importCsv(kind, csvText, { dryRun = false } = {}) {
       if (p.existing) model.update(p.existing.id, forUpdate(p.input));
       else model.create(p.input);
     }
+    // 得意先の「本店」は名前で書かれている。本店の行がCSVの後ろにあることも
+    // あるので、全部入れ終わってから2周目で紐付ける。
+    if (kind === 'customers') linkCustomerParents(db, parsed, errors);
     return summarize(parsed);
   });
 
   return run();
+}
+
+/**
+ * 得意先の「本店」列を、名前から親のIDに紐付ける（取り込みの2周目）。
+ * 本店の行がCSVの後ろにあっても引けるよう、全行を入れ終わってから実行する。
+ */
+function linkCustomerParents(db, parsed, errors) {
+  const withParent = parsed.filter((p) => p.input.parentName);
+  if (!withParent.length) return;
+
+  const byName = new Map(
+    db.prepare('SELECT id, name FROM customers').all().map((c) => [normalizeName(c.name), c.id])
+  );
+  const update = db.prepare('UPDATE customers SET parent_id = ? WHERE id = ?');
+
+  for (const p of withParent) {
+    const selfId = byName.get(normalizeName(p.input.name));
+    const parentId = byName.get(normalizeName(p.input.parentName));
+
+    if (parentId == null) {
+      errors.push({
+        line: p.line,
+        message: `本店「${p.input.parentName}」が得意先マスタに見つかりません`,
+      });
+      continue;
+    }
+    if (selfId == null || parentId === selfId) {
+      errors.push({ line: p.line, message: '自分自身を本店にはできません' });
+      continue;
+    }
+    update.run(parentId, selfId);
+  }
 }
 
 /**

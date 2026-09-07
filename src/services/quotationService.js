@@ -8,6 +8,7 @@ const { getConnection } = require('../db/connection');
 const { generateUid } = require('../utils/uid');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
+const customerService = require('./customerService');
 
 const STATUSES = ['見積中', '受注', '失注'];
 
@@ -55,7 +56,8 @@ function summary({ from, to } = {}) {
 function create(input, actor = null) {
   const db = getConnection();
 
-  const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(input.customerId);
+  // 支店の得意先は掛率が空欄のことがあるので、本店から引き継いだ値で見る
+  const customer = customerService.resolveBilling(input.customerId, db);
   if (!customer) throw new NotFoundError(`得意先が見つかりません (id=${input.customerId})`);
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(input.productId);
   if (!product) throw new NotFoundError(`商品が見つかりません (id=${input.productId})`);

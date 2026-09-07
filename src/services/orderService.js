@@ -6,6 +6,7 @@ const { nextOrderNo, nextProductHistoryCode } = require('../utils/codeGenerator'
 const { calcPaymentDueOn, today } = require('../utils/dateUtil');
 const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
+const customerService = require('./customerService');
 
 /**
  * 受注登録画面の初期値を返す（DB_SCHEMA_DESIGN.md 2.3）。
@@ -15,9 +16,9 @@ const operationLogService = require('./operationLogService');
 function getOrderDefaults({ customerId, productId, quantity, deliveredOn }) {
   const db = getConnection();
 
-  const customer = customerId
-    ? db.prepare('SELECT * FROM customers WHERE id = ?').get(customerId)
-    : null;
+  // 支店の得意先は、請求まわり（掛率・支払いサイト）が空欄のことがある。
+  // その場合は本店の値を使う（customerService.resolveBilling）。
+  const customer = customerId ? customerService.resolveBilling(customerId, db) : null;
   const product = productId
     ? db.prepare('SELECT * FROM products WHERE id = ?').get(productId)
     : null;
@@ -65,7 +66,7 @@ function submitOrder(input, actor = null) {
   const items = normalizeItems(input);
 
   const run = db.transaction(() => {
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(input.customerId);
+    const customer = customerService.resolveBilling(input.customerId, db);
     if (!customer) throw new NotFoundError(`得意先が見つかりません (id=${input.customerId})`);
 
     const orderNo = input.orderNo ?? nextOrderNo(db, input.orderedOn);
@@ -180,7 +181,7 @@ function markOrderAsShipped(orderId, { deliveredOn, note } = {}, actor = null) {
     }
 
     const shippedOn = deliveredOn ?? today();
-    const customer = db.prepare('SELECT * FROM customers WHERE id = ?').get(order.customer_id);
+    const customer = customerService.resolveBilling(order.customer_id, db);
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(order.product_id);
 
     const paymentDueOn = calcPaymentDueOn(
