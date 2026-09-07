@@ -227,7 +227,12 @@ const MASTERS = {
         choices: ['飲食店', '小売', '小売(業務用)', '酒屋', '業務用酒屋', '旅館・ホテル', '道の駅',
                   '国内卸', '海外卸', '卸問屋', '個人', '消費者', '出資者', 'グループ会社',
                   '社割', '銀行', '直接販売', 'その他'] },
-      { key: 'markupRate', label: '掛率', type: 'number', step: '0.01', hint: '上代に掛ける率。1で上代どおり' },
+      // 支店を持つ会社（カナカンなど）は、支店の行がここで本店を指す。
+      // 空欄の請求まわりの値は本店から引き継ぐ。
+      { key: 'parentId', label: '本店（親の得意先）', type: 'parentCustomer',
+        hint: '支店のときだけ指定します。掛率・支払いサイト・請求先が空欄なら本店の値を使います' },
+      { key: 'markupRate', label: '掛率', type: 'number', step: '0.01',
+        hint: '上代に掛ける率。1で上代どおり。空欄なら本店の値を使います' },
       { key: 'address', label: '住所', type: 'text' },
       // シートは「当月／翌月／翌々月」表記。こちらは日付計算のため月数で持つ（18-3）
       { key: 'paymentTermMonths', label: '支払いサイト（月数）', type: 'select', valueType: 'int',
@@ -251,6 +256,7 @@ const MASTERS = {
       { key: 'segment', label: '区分' },
       { key: 'markup_rate', label: '掛率', num: true, digits: 2 },
       { key: 'sales_rep', label: '担当者' },
+      { key: 'parent_name', label: '本店' },
       { key: 'payment_term_months', label: '支払サイト', format: (r) =>
           r.payment_term_months != null ? `${r.payment_term_months}ヶ月 ${r.payment_term_day ?? ''}` : '' },
     ],
@@ -390,6 +396,8 @@ let records = [];
 let breweries = [];
 let tankPrefixes = [];
 let materials = [];
+// 「本店」欄の選択肢。得意先タブを開いたときに読み込む
+let customersForParent = [];
 let recipeDraft = [];
 
 // --- タブ -------------------------------------------------------------------
@@ -578,6 +586,17 @@ function renderForm() {
                `<option value="${escapeHtml(t.containerType)}">${escapeHtml(t.prefix)}</option>`
              ).join('')}
            </datalist>`;
+      } else if (f.type === 'parentCustomer') {
+        // 得意先の一覧から選ぶ。自分自身は選べないようにする
+        control =
+          `<select id="f_${f.key}"${disabled}>
+             <option value="">（本店を持たない）</option>
+             ${customersForParent
+               .filter((c) => editingId == null || c.id !== editingId)
+               .map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`)
+               .join('')}
+           </select>
+           <div class="hint" id="f_${f.key}_inherited"></div>`;
       } else if (f.type === 'brewery') {
         control =
           `<select id="f_${f.key}"${disabled}>
@@ -605,6 +624,18 @@ function renderForm() {
       </div>`;
     })
     .join('');
+
+  const parentSelect = el('f_parentId');
+  if (parentSelect) {
+    parentSelect.addEventListener('change', () => {
+      // 保存前は引き継ぎ結果を取れないので、選んだ本店の名前だけ出す
+      const box = el('f_parentId_inherited');
+      const chosen = customersForParent.find((c) => String(c.id) === parentSelect.value);
+      box.textContent = chosen
+        ? `本店: ${chosen.name}（空欄の掛率・支払いサイト・請求先はここから引き継ぎます）`
+        : '';
+    });
+  }
 
   const tankTypeInput = el('f_containerType');
   if (tankTypeInput && currentTab === 'tanks') {
@@ -671,6 +702,13 @@ function fillForm(record) {
     const input = el(`f_${f.key}`);
     if (!input) continue;
 
+    if (f.type === 'parentCustomer') {
+      refreshParentOptions();   // 編集中の自分自身を選択肢から外す
+      input.value = record.parent_id ? String(record.parent_id) : '';
+      showInheritedHint(record.id);
+      continue;
+    }
+
     if (f.type === 'brewery') {
       const free = el('f_brewery_free');
       if (record.brewery_id) {
@@ -698,6 +736,37 @@ function snake(key) {
 }
 
 /** 入力欄からAPIに送る本体を組み立てる */
+/**
+ * 本店から引き継がれる値を、その場でヒントとして出す。
+ * 「空欄なのに入金予定日が出る」理由が画面で分かるようにするため。
+ */
+async function showInheritedHint(customerId) {
+  const box = el('f_parentId_inherited');
+  if (!box || !customerId) return;
+  try {
+    const b = await apiGet(`/api/customers/${customerId}/billing`);
+    const entries = Object.entries(b.inheritedFrom ?? {});
+    if (!entries.length) {
+      box.textContent = b.parentName ? `本店: ${b.parentName}（引き継いでいる項目はありません）` : '';
+      return;
+    }
+    const LABELS = {
+      payment_term_months: '支払いサイト（月数）',
+      payment_term_day: '支払いサイト（日）',
+      invoice_due_note: '請求書送付期日',
+      invoice_email: '請求書送付先メール',
+      invoice_contact: '請求書の担当者',
+      markup_rate: '掛率',
+    };
+    const shown = entries
+      .map(([k, from]) => `${LABELS[k] ?? k}=${b[k]}（${from}）`)
+      .join(' / ');
+    box.textContent = `本店から引き継いでいる値: ${shown}`;
+  } catch {
+    box.textContent = '';
+  }
+}
+
 function buildPayload() {
   const editing = editingId != null;
   const payload = {};
@@ -706,6 +775,12 @@ function buildPayload() {
     if (editing && f.createOnly) continue;
     const input = el(`f_${f.key}`);
     if (!input) continue;
+
+    if (f.type === 'parentCustomer') {
+      // 空文字は「本店を外す」の意味。サーバー側でnullに揃える
+      payload[f.key] = input.value === '' ? '' : Number(input.value);
+      continue;
+    }
 
     if (f.type === 'brewery') {
       if (input.value === '__free__') {
@@ -782,7 +857,27 @@ async function loadList() {
     s.columns.map((c) => `<th${c.num ? ' class="num"' : ''}>${escapeHtml(c.label)}</th>`).join('') +
     '<th></th>';
   records = await apiGet(`${s.endpoint}${s.listQuery ?? ''}`);
+  // 得意先タブでは、そのまま「本店」欄の選択肢にも使う。
+  // renderForm() はこれより先に走るので、ここで選択肢を入れ直す。
+  if (currentTab === 'customers') {
+    customersForParent = records;
+    refreshParentOptions();
+  }
   renderRows();
+}
+
+/** 「本店」欄の選択肢を入れ直す（選択中の値は保つ） */
+function refreshParentOptions() {
+  const select = el('f_parentId');
+  if (!select) return;
+  const current = select.value;
+  select.innerHTML =
+    '<option value="">（本店を持たない）</option>' +
+    customersForParent
+      .filter((c) => editingId == null || c.id !== editingId)  // 自分自身は選べない
+      .map((c) => `<option value="${c.id}">${escapeHtml(c.name)}</option>`)
+      .join('');
+  select.value = current;
 }
 
 function renderRows() {

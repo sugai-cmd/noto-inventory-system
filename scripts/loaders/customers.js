@@ -17,7 +17,35 @@ const INSERT_SQL = `
      @salesRep, @salesSubRep, @salesChannel, @lastVisitedOn, @onboardedMonth, @note)
 `;
 
+/**
+ * 「本店」列を、名前から親のIDに紐付ける（取り込みの2周目）。
+ * 本店の行がCSVの後ろにあっても引けるよう、全行を入れ終わってから実行する。
+ * シートにこの列が無ければ何もしない（移行後に画面から設定する運用）。
+ */
+function linkParents(ctx, rows) {
+  const withParent = rows.filter((r) => (r['本店'] || '').trim());
+  if (!withParent.length) return;
+
+  const byName = new Map(
+    ctx.db.prepare('SELECT id, name FROM customers').all()
+      .map((c) => [ctx.normalize(c.name), c.id])
+  );
+  const update = ctx.db.prepare('UPDATE customers SET parent_id = ? WHERE id = ?');
+
+  for (const row of withParent) {
+    const selfId = byName.get(ctx.normalize(row['得意先名']));
+    const parentId = byName.get(ctx.normalize(row['本店']));
+    if (parentId == null) {
+      ctx.report.recordUnmatched('得意先マスタ', '本店', row['本店'], ctx.normalize(row['本店']));
+      continue;
+    }
+    if (selfId != null && parentId !== selfId) update.run(parentId, selfId);
+  }
+}
+
 function load(ctx) {
+  const seen = [];
+
   loadCsvTable(ctx, {
     sheetName: '得意先マスタ',
     csvFile: 'customers.csv',
@@ -50,8 +78,11 @@ function load(ctx) {
     },
     afterInsert(row, id, context) {
       context.lookups.customerIdByName.set(context.normalize(row['得意先名']), id);
+      seen.push({ 得意先名: row['得意先名'], 本店: row['本店'] });
     },
   });
+
+  linkParents(ctx, seen);
 }
 
 module.exports = { load };
