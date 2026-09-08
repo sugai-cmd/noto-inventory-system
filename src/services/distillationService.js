@@ -10,7 +10,7 @@
 
 const { getConnection } = require('../db/connection');
 const { generateCode } = require('../utils/codeGenerator');
-const { nextRawSakeLotCode } = require('../utils/rawSakeCode');
+const { nextRawSakeLotCode, nextRawSakeLotCodes } = require('../utils/rawSakeCode');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
@@ -53,7 +53,7 @@ function getRawSakeTankVolume(db, tankId) {
  * 原酒入荷（受入）。酒蔵から原酒タンクへ受け入れた分を原料受払記録に追加する。
  * 8-2の通り原酒マスタとの紐付けは任意（未登録なら spec_note に自由記述で残す）。
  */
-function submitRawSakeReceipt(input) {
+function submitRawSakeReceipt(input, actor) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -97,7 +97,98 @@ function submitRawSakeReceipt(input) {
     };
   });
 
-  return run();
+  const result = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'rawSake.receipt',
+    targetType: 'raw_sake_ledger',
+    targetId: result.rawSakeLedgerId,
+    summary: `原酒入荷 ${input.quantity}L を受け入れました`,
+    detail: { toTankId: input.toTankId, quantity: input.quantity, supplier: input.supplier ?? null },
+  });
+
+  return result;
+}
+
+/**
+ * 原酒入荷のまとめ登録。
+ *
+ * 原酒ポリタンクは20Lで25本まとめて入荷することがあり、1本ずつ送っていると
+ * 25回の送信になる。**1トランザクションで全部入れるか、1件も入れないか**にする
+ * （途中で落ちて「何本目まで入ったか分からない」状態を作らない）。
+ *
+ * 伝票番号は nextRawSakeLotCodes でまとめて採る。1件ずつ採ると、そのたびに
+ * その月ぶんの lot_code を全件読み直すため。
+ */
+function submitRawSakeReceipts(input, actor) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const txnDate = input.txnDate ?? today();
+
+    if (input.rawSakeBrandId) {
+      const brand = db
+        .prepare('SELECT id FROM raw_sake_brands WHERE id = ?')
+        .get(input.rawSakeBrandId);
+      if (!brand) throw new NotFoundError(`原酒銘柄が見つかりません (id=${input.rawSakeBrandId})`);
+    }
+
+    const findTank = db.prepare('SELECT * FROM tanks WHERE id = ?');
+    const tanks = input.items.map((item) => {
+      const tank = findTank.get(item.toTankId);
+      if (!tank) throw new NotFoundError(`受入先タンクが見つかりません (id=${item.toTankId})`);
+      return tank;
+    });
+
+    const lotCodes = nextRawSakeLotCodes(db, '受入', txnDate, input.items.length);
+    const insert = db.prepare(
+      `INSERT INTO raw_sake_ledger
+         (lot_code, txn_date, txn_type, from_tank_id, source_ref, to_ref, to_tank_id,
+          distillation_id, quantity, raw_sake_brand_id, spec_note, note)
+       VALUES
+         (@lotCode, @txnDate, '受入', NULL, @sourceRef, @toRef, @toTankId, NULL,
+          @quantity, @rawSakeBrandId, @specNote, @note)`
+    );
+
+    const rows = input.items.map((item, i) => {
+      const result = insert.run({
+        lotCode: lotCodes[i],
+        txnDate,
+        sourceRef: input.supplier ?? null,
+        toRef: tanks[i].name,
+        toTankId: item.toTankId,
+        quantity: item.quantity,
+        rawSakeBrandId: input.rawSakeBrandId ?? null,
+        specNote: input.specNote ?? null,
+        note: input.note ?? null,
+      });
+      return {
+        rawSakeLedgerId: Number(result.lastInsertRowid),
+        lotCode: lotCodes[i],
+        tankId: item.toTankId,
+        tankName: tanks[i].name,
+        quantity: item.quantity,
+      };
+    });
+
+    // 残量は全部入れ終わってから読む（同じタンクに2行入る場合に途中の値を返さないため）
+    return rows.map((row) => ({ ...row, tankVolume: getRawSakeTankVolume(db, row.tankId) }));
+  });
+
+  const rows = run();
+  const totalL = rows.reduce((sum, r) => sum + r.quantity, 0);
+
+  operationLogService.record({
+    user: actor,
+    action: 'rawSake.receipt.bulk',
+    targetType: 'raw_sake_ledger',
+    targetId: rows[0]?.rawSakeLedgerId ?? null,
+    summary: `原酒入荷 ${rows.length}件・合計${totalL}L をまとめて受け入れました`,
+    detail: { count: rows.length, totalL, lotCodes: rows.map((r) => r.lotCode) },
+  });
+
+  return { count: rows.length, totalL, rows };
 }
 
 /**
@@ -599,6 +690,7 @@ module.exports = {
   addDistillationDetailItem,
   acknowledgeStaleAlert,
   submitRawSakeReceipt,
+  submitRawSakeReceipts,
   submitDistillationStart,
   completeDistillation,
   cancelDistillationDetailItem,

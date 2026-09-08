@@ -21,6 +21,29 @@ const receiptSchema = z.object({
   note: z.string().optional(),
 });
 
+const bulkReceiptSchema = z.object({
+  txnDate: dateOnly.optional(),
+  rawSakeBrandId: z.number().int().positive().optional(),
+  supplier: z.string().optional(),
+  specNote: z.string().optional(),
+  note: z.string().optional(),
+  items: z
+    .array(
+      z.object({
+        toTankId: z.number().int().positive(),
+        quantity: z.number().positive('受入量は0より大きい値で入力してください'),
+      })
+    )
+    .min(1, '受入先タンクを1つ以上選んでください')
+    .max(100, '一度に登録できるのは100件までです')
+    // 同じタンクを2行入れると、どちらが正しいのか分からないまま両方入る。
+    // 数量を直したつもりで2行目を足した、という取り違えを防ぐ
+    .refine(
+      (items) => new Set(items.map((i) => i.toTankId)).size === items.length,
+      { message: '同じ受入先タンクが2行以上あります。1つにまとめてください' }
+    ),
+});
+
 /**
  * 原酒タンクの残量一覧。v_tank_monitor（浄酎タンク）とは別集計になる点に注意（8-8）。
  */
@@ -103,7 +126,21 @@ router.get('/', (req, res) => {
 
 router.post('/', validateRequest(receiptSchema), (req, res, next) => {
   try {
-    res.status(201).json(distillationService.submitRawSakeReceipt(req.body));
+    res.status(201).json(distillationService.submitRawSakeReceipt(req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * まとめて受け入れる。原酒ポリタンクは20Lで25本まとめて入ってくることがあり、
+ * 1本ずつ送っていると25回の送信になる。
+ *
+ * 日付・酒蔵・銘柄・スペックは全行に共通で、タンクと数量だけ行ごとに変える。
+ */
+router.post('/bulk', validateRequest(bulkReceiptSchema), (req, res, next) => {
+  try {
+    res.status(201).json(distillationService.submitRawSakeReceipts(req.body, req.user));
   } catch (err) {
     next(err);
   }

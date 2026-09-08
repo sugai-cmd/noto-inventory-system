@@ -18,21 +18,15 @@ function toYymm(dateOnly) {
   return dateOnly.slice(2, 4) + dateOnly.slice(5, 7);
 }
 
-/**
- * @param {import('better-sqlite3').Database} db
- * @param {'受入'|'払出'} txnType
- * @param {string} dateOnly - YYYY-MM-DD
- */
-function nextRawSakeLotCode(db, txnType, dateOnly) {
-  const yymm = toYymm(dateOnly);
+/** その月・その帯で使われている最大の連番を返す（無ければ base-1） */
+function currentMax(db, txnType, yymm) {
   const rows = db
     .prepare(`SELECT lot_code FROM raw_sake_ledger WHERE lot_code LIKE ?`)
     .all(`${PREFIX}${yymm}-%`);
 
   const isReceipt = txnType === '受入';
-  const base = isReceipt ? RECEIPT_BASE : 1;
+  let max = (isReceipt ? RECEIPT_BASE : 1) - 1;
 
-  let max = base - 1;
   for (const { lot_code: code } of rows) {
     const seq = Number.parseInt(code.slice(code.indexOf('-') + 1), 10);
     if (!Number.isFinite(seq)) continue;
@@ -40,8 +34,39 @@ function nextRawSakeLotCode(db, txnType, dateOnly) {
     const inBand = isReceipt ? seq >= RECEIPT_BASE : seq < RECEIPT_BASE;
     if (inBand && seq > max) max = seq;
   }
-
-  return `${PREFIX}${yymm}-${String(max + 1).padStart(SEQ_DIGITS, '0')}`;
+  return max;
 }
 
-module.exports = { nextRawSakeLotCode };
+/**
+ * 連番をまとめて採る。
+ *
+ * 1件ずつ nextRawSakeLotCode を呼ぶと、そのたびに月ぶんの lot_code を
+ * 全件読み直す。原酒ポリ25本をまとめて登録すると25回走るので、
+ * **1回だけ読んで、あとはメモリで数える**。
+ * lot_code は UNIQUE なので、取りこぼしがあってもDB側で止まる。
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {'受入'|'払出'} txnType
+ * @param {string} dateOnly - YYYY-MM-DD
+ * @param {number} count - 必要な個数
+ * @returns {string[]}
+ */
+function nextRawSakeLotCodes(db, txnType, dateOnly, count) {
+  const yymm = toYymm(dateOnly);
+  const max = currentMax(db, txnType, yymm);
+
+  return Array.from({ length: count }, (_, i) =>
+    `${PREFIX}${yymm}-${String(max + 1 + i).padStart(SEQ_DIGITS, '0')}`
+  );
+}
+
+/**
+ * @param {import('better-sqlite3').Database} db
+ * @param {'受入'|'払出'} txnType
+ * @param {string} dateOnly - YYYY-MM-DD
+ */
+function nextRawSakeLotCode(db, txnType, dateOnly) {
+  return nextRawSakeLotCodes(db, txnType, dateOnly, 1)[0];
+}
+
+module.exports = { nextRawSakeLotCode, nextRawSakeLotCodes };
