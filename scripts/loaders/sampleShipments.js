@@ -95,6 +95,11 @@ function load(ctx) {
  * 8-1: 日付×商品×数量が一意に一致する product_stock_ledger の未紐付け出荷行を探し、
  * 見つかった場合のみ sample_shipment_id をセットする。0件・複数件は無理にマッチさせず
  * レポートに記録するだけに留める。
+ *
+ * ここで紐付かなくても**何も落ちない**。サンプル送付の行も出荷履歴の行も
+ * 両方そのまま入っていて、両者を結ぶ任意の参照が空のままになるだけ。
+ * だから errors.csv ではなく notices.csv に出す（実データでは49件中35件が
+ * 決まらず、エラー扱いだと「エラー51件」と出て手が止まっていた）。
  */
 function linkToProductStockLedger(ctx) {
   const sheetName = 'サンプル送付↔商品在庫変動履歴（突合）';
@@ -132,14 +137,14 @@ function linkToProductStockLedger(ctx) {
       summary.inserted++;
     } else if (candidates.length === 0) {
       summary.skipped++;
-      ctx.report.recordError(
+      ctx.report.recordNotice(
         sheetName,
         sample.id,
         `sample_shipments.id=${sample.id} に一致する出荷履歴(product_stock_ledger)が見つかりません（0件）`
       );
     } else {
       summary.skipped++;
-      ctx.report.recordError(
+      ctx.report.recordNotice(
         sheetName,
         sample.id,
         `sample_shipments.id=${sample.id} に一致する出荷履歴が${candidates.length}件あり一意に決まりません（曖昧マッチのためスキップ）`

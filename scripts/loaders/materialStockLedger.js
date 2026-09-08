@@ -31,7 +31,7 @@ function load(ctx) {
         context.counters, 'material', (row['資材履歴ID'] || '').trim() || null
       );
       if (duplicated) {
-        context.report.recordError(
+        context.report.recordNotice(
           '資材在庫変動履歴', rowNumber,
           `資材履歴ID「${row['資材履歴ID']}」が重複していたため ${dedupedCode} として取り込みました`
         );

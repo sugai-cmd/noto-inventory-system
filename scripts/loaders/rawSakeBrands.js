@@ -90,7 +90,7 @@ function load(ctx) {
   const { codeByRow, renumbered } = assignLotCodes(rows);
 
   for (const r of renumbered) {
-    ctx.report.recordError(
+    ctx.report.recordNotice(
       SHEET,
       r.rowNumber,
       `原酒ID「${r.from}」が複数行にあるため ${r.to} として取り込みました（別ロットとして分けています）`

@@ -23,7 +23,12 @@ class MigrationReport {
   constructor(outDir) {
     this.outDir = outDir;
     this.unmatchedNames = []; // 名寄せ不一致（8-3）
-    this.errors = []; // 行単位のエラー・警告（8-5）
+    this.errors = []; // 行単位のエラー（8-5）。**行が入らなかったもの**だけを入れる
+    // 行は入ったが、そのままではシートと突き合わせられないもの。
+    // 伝票番号に枝番を付けた、任意の紐付けが決まらなかった、など。
+    // エラーに混ぜると「エラー51件」と出て、直すものが無いのに手が止まる
+    // （実データで51件のうち51件が直す必要のないものだった）。
+    this.notices = [];
     this.summary = {}; // シートごとの読込/投入/スキップ件数
     this.masterUpdates = []; // 既存のマスタ行を書き換えた内容（黙って上書きしないため）
     // 取り込まずに飛ばした行。件数だけ数えて中身を残さないと、
@@ -58,6 +63,14 @@ class MigrationReport {
 
   recordError(sheet, rowNumber, message) {
     this.errors.push({ sheet, rowNumber, message });
+  }
+
+  /**
+   * 行は入ったが、伝えておくべきこと。
+   * 直す必要が無いので errors.csv には入れない（そちらは行が落ちたものだけ）。
+   */
+  recordNotice(sheet, rowNumber, message) {
+    this.notices.push({ sheet, rowNumber, message });
   }
 
   touchSummary(sheet) {
@@ -120,6 +133,7 @@ class MigrationReport {
       this.withCandidates()
     );
     writeCsv(path.join(this.outDir, 'errors.csv'), ['sheet', 'rowNumber', 'message'], this.errors);
+    writeCsv(path.join(this.outDir, 'notices.csv'), ['sheet', 'rowNumber', 'message'], this.notices);
     writeCsv(
       path.join(this.outDir, 'master-updates.csv'),
       ['sheet', 'name', 'column', 'before', 'after'],
@@ -174,7 +188,13 @@ class MigrationReport {
       );
     }
     if (this.errors.length) {
-      console.log(`\nエラー・警告: ${this.errors.length}件 → ${path.join(this.outDir, 'errors.csv')}`);
+      console.log(`\nエラー: ${this.errors.length}件 → ${path.join(this.outDir, 'errors.csv')}`);
+      console.log('  この行は入っていません。直してから流し直してください。');
+    }
+    if (this.notices.length) {
+      console.log(`\nお知らせ: ${this.notices.length}件 → ${path.join(this.outDir, 'notices.csv')}`);
+      console.log('  行は入っています。直す必要はありませんが、目を通してください');
+      console.log('  （伝票番号に枝番を付けたもの、任意の紐付けが決まらなかったもの）。');
     }
     if (this.masterUpdates.length) {
       console.log(

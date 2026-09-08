@@ -39,7 +39,7 @@ function load(ctx) {
       const renumbered = legacyLotCode ? renumber(legacyLotCode, 'R') : null;
       const { code: lotCode, duplicated } = dedupeCode(context.counters, 'rawSake', renumbered);
       if (duplicated) {
-        context.report.recordError(
+        context.report.recordNotice(
           '原料受払記録', rowNumber,
           `原酒受払ID「${legacyLotCode}」が重複していたため ${lotCode} として取り込みました`
         );
