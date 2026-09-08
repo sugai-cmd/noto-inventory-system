@@ -13,7 +13,11 @@
 // 値の中身を書き換えてしまう可能性があるので、直したときは必ず警告に出す。
 
 const fs = require('node:fs');
+const path = require('node:path');
 const { detectNotPlainText, notPlainTextMessage } = require('../../src/utils/fileFormat');
+
+/** 一度決めた読み替えの置き場。移行と答え合わせで同じ表を使う */
+const KNOWN_ALIASES_PATH = path.resolve(__dirname, '..', 'data', 'known-aliases.json');
 
 /** JSONの構文には現れないはずの文字。名前で呼べるようにしておく */
 const SUSPICIOUS = new Map([
@@ -496,7 +500,53 @@ function duplicateWarnings(text) {
   );
 }
 
+/**
+ * 組み込みの補正表に、手元の aliases.json を重ねて返す。
+ *
+ * 移行（migrate-from-sheets.js）と答え合わせ（verify-migration.js）で
+ * **同じ表**を使うためにここに置いてある。片方だけが読み替えを知らないと、
+ * 移行では正しく寄っているのに答え合わせでは「同じ名前がありません」と出て、
+ * 直すところが無いものを探すことになる。
+ *
+ * @returns {{aliases: object, userAliases: object, warnings: string[]}}
+ */
+function readMergedAliases(userPath, knownPath = KNOWN_ALIASES_PATH) {
+  const warnings = [];
+  let known = {};
+  try {
+    known = readAliasFile(knownPath).aliases;
+  } catch (e) {
+    // 同梱ファイルが壊れているのは利用者の落ち度ではない。止めずに知らせる
+    warnings.push(`組み込みの補正表（known-aliases.json）を読めませんでした: ${e.message}`);
+  }
+
+  const user = readAliasFile(userPath); // 手元のファイルの読み取り失敗は呼び出し側で扱う
+  return {
+    aliases: mergeAliases(known, user.aliases),
+    userAliases: user.aliases,
+    warnings: [...warnings, ...user.warnings],
+  };
+}
+
+/**
+ * 補正表を引く。列は候補を順に試す（シートによって列名が違うため。
+ * 資材は「資材名」と「資材名称」、商品は「商品名称」と「商品名」）。
+ * @returns {string|null} 寄せ先の名前。無ければ null
+ */
+function aliasTarget(aliases, columns, rawValue, normalize) {
+  for (const column of columns) {
+    const table = aliases?.[column];
+    if (!table || typeof table !== 'object') continue;
+    if (Object.hasOwn(table, rawValue) && typeof table[rawValue] === 'string') return table[rawValue];
+    for (const [from, to] of Object.entries(table)) {
+      if (typeof to === 'string' && normalize(from) === normalize(rawValue)) return to;
+    }
+  }
+  return null;
+}
+
 module.exports = {
   readAliasFile, relax, collectWarnings, locate,
-  mergeAliases, findDuplicateKeys,
+  mergeAliases, findDuplicateKeys, readMergedAliases, aliasTarget,
+  KNOWN_ALIASES_PATH,
 };

@@ -19,7 +19,7 @@ const { getConnection } = require('../src/db/connection');
 const { migrate } = require('../src/db/migrate');
 const { normalizeName } = require('../src/utils/normalizeName');
 const { MigrationReport } = require('./lib/report');
-const { readAliasFile, mergeAliases } = require('./lib/aliasFile');
+const { readMergedAliases } = require('./lib/aliasFile');
 const { suggest } = require('./lib/similarName');
 
 // 置き場所は環境変数で差し替えられる。試験どうしが同じフォルダを取り合わないため
@@ -33,8 +33,6 @@ const REPORT_DIR = process.env.MIGRATION_REPORT_DIR
 const ALIASES_PATH = process.env.MIGRATION_ALIASES
   ? path.resolve(process.env.MIGRATION_ALIASES)
   : path.resolve(__dirname, 'data', 'aliases.json');
-// 一度決めた読み替えを毎回書き直さずに済むよう、既定を同梱してある（編集不要）
-const KNOWN_ALIASES_PATH = path.resolve(__dirname, 'data', 'known-aliases.json');
 
 // 8.0のフェーズ順序。依存関係があるため、この配列の順序を変えてはいけない。
 const PHASE1_MASTERS = [
@@ -106,18 +104,10 @@ function parseArgs(argv) {
  * （同じ列の同じ左辺があれば手元のファイルが勝つ）。
  */
 function loadAliases() {
-  let known = {};
   try {
-    known = readAliasFile(KNOWN_ALIASES_PATH).aliases;
-  } catch (e) {
-    // 同梱ファイルが壊れているのは利用者の落ち度ではない。止めずに知らせる
-    console.warn(`[known-aliases.json] 組み込みの補正表を読めませんでした: ${e.message}`);
-  }
-
-  try {
-    const { aliases, warnings } = readAliasFile(ALIASES_PATH);
+    const { aliases, userAliases, warnings } = readMergedAliases(ALIASES_PATH);
     for (const w of warnings) console.warn(`[aliases.json] ${w}`);
-    return { aliases: mergeAliases(known, aliases), userAliases: aliases };
+    return { aliases, userAliases };
   } catch (e) {
     console.error(`aliases.json を読み込めませんでした。\n${e.message}`);
     process.exit(1);
@@ -198,6 +188,7 @@ function captureNamePools(ctx, db) {
     元容器ID: tanks,
     '受入元(投入元タンク)': tanks,
     '払出先(受入先タンク)': tanks,
+    浄酎タンク: tanks, // タンクモニターの列名。答え合わせが使う
     '払出先(蒸留ID)': distillations,
     蒸留ID: distillations,
     受注番号: orders,
