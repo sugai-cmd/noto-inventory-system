@@ -255,10 +255,16 @@ function readAliasFile(filePath) {
     return { aliases: {}, warnings: [`${filePath} は中身が空なので、補正表なしとして進みます`] };
   }
 
+  // 読めたときの共通の締め。重複キーの検査もここでまとめて行う
+  const done = (aliases, text) => ({
+    aliases,
+    warnings: [...repairWarnings, ...duplicateWarnings(text), ...collectWarnings(aliases)],
+  });
+
   // 1段目
   try {
-    const aliases = JSON.parse(relax(raw));
-    return { aliases, warnings: collectWarnings(aliases) };
+    const text = relax(raw);
+    return done(JSON.parse(text), text);
   } catch (e) {
     lastError = e;
   }
@@ -267,9 +273,10 @@ function readAliasFile(filePath) {
   const quoted = fixSmartQuotes(stripBom(raw));
   if (quoted.fixes.length) {
     try {
-      const aliases = JSON.parse(relax(quoted.text));
+      const text = relax(quoted.text);
+      const aliases = JSON.parse(text);
       pushFixWarnings(repairWarnings, raw, quoted.fixes);
-      return { aliases, warnings: [...repairWarnings, ...collectWarnings(aliases)] };
+      return done(aliases, text);
     } catch (e) {
       lastError = e;
     }
@@ -279,9 +286,10 @@ function readAliasFile(filePath) {
   const punct = fixFullwidthPunct(quoted.text);
   if (punct.fixes.length) {
     try {
-      const aliases = JSON.parse(relax(punct.text));
+      const text = relax(punct.text);
+      const aliases = JSON.parse(text);
       pushFixWarnings(repairWarnings, raw, [...quoted.fixes, ...punct.fixes]);
-      return { aliases, warnings: [...repairWarnings, ...collectWarnings(aliases)] };
+      return done(aliases, text);
     } catch (e) {
       lastError = e;
     }
@@ -294,6 +302,97 @@ function readAliasFile(filePath) {
       : `${filePath} を読み取れませんでした（${lastError.message}）\n` +
           '  よくある原因: 引用符の閉じ忘れ／括弧の対応／コロンの書き忘れ'
   );
+}
+
+/**
+ * 同じキーが2回書かれていないかを見る。
+ *
+ * JSONは重複したキーを**黙って後勝ちにする**。エラーも警告も出ない。
+ * 「元容器ID」のブロックを2つ書くと、先に書いたほうの中身（QB009など）が
+ * まるごと消えるのに、ファイルは正しく読めてしまう。
+ * 手で書き足していく使い方なので、これは必ず起きる。
+ */
+function findDuplicateKeys(text) {
+  const duplicates = [];
+  const stack = []; // オブジェクトなら Map（キー→行番号）、配列なら null
+  let expectKey = false;
+  let i = 0;
+
+  const lineAt = (pos) => text.slice(0, pos).split('\n').length;
+
+  while (i < text.length) {
+    const ch = text[i];
+
+    if (ch === '{') { stack.push(new Map()); expectKey = true; i++; continue; }
+    if (ch === '[') { stack.push(null); expectKey = false; i++; continue; }
+    if (ch === '}' || ch === ']') { stack.pop(); expectKey = false; i++; continue; }
+    if (ch === ':') { expectKey = false; i++; continue; }
+    if (ch === ',') { expectKey = stack[stack.length - 1] instanceof Map; i++; continue; }
+
+    if (ch !== '"') { i++; continue; }
+
+    // 文字列を読み飛ばしつつ、キーなら控える
+    let j = i + 1;
+    let value = '';
+    while (j < text.length) {
+      if (text[j] === '\\') { value += text[j + 1] ?? ''; j += 2; continue; }
+      if (text[j] === '"') break;
+      value += text[j];
+      j++;
+    }
+
+    const keys = stack[stack.length - 1];
+    if (expectKey && keys instanceof Map) {
+      if (keys.has(value)) duplicates.push({ key: value, first: keys.get(value), again: lineAt(i) });
+      else keys.set(value, lineAt(i));
+    }
+    expectKey = false;
+    i = j + 1;
+  }
+  return duplicates;
+}
+
+/**
+ * 組み込みの補正表に、手元の aliases.json を重ねる。
+ *
+ * 一度決めた読み替えを毎回書き直さなくて済むよう、既定は同梱の
+ * known-aliases.json に置いてある。手元のファイルは**足し算**として扱い、
+ * 同じ列の同じ左辺があればそちらを採る（既定を上書きできる）。
+ *
+ * __ignore__ は列ごとの配列なので、つなげて重複を落とす。
+ * 片方にしか無い列が消えないようにするため。
+ */
+function mergeAliases(base, override) {
+  const merged = { ...base };
+
+  for (const [column, table] of Object.entries(override ?? {})) {
+    if (column === '__ignore__') continue;
+    if (typeof table !== 'object' || table === null || Array.isArray(table)) {
+      merged[column] = table; // 形が違うものは collectWarnings が拾う
+      continue;
+    }
+    const current = merged[column];
+    merged[column] =
+      typeof current === 'object' && current !== null && !Array.isArray(current)
+        ? { ...current, ...table }
+        : { ...table };
+  }
+
+  const ignoreColumns = new Set([
+    ...Object.keys(base?.__ignore__ ?? {}),
+    ...Object.keys(override?.__ignore__ ?? {}),
+  ]);
+  if (ignoreColumns.size) {
+    merged.__ignore__ = {};
+    for (const column of ignoreColumns) {
+      const values = [
+        ...(base?.__ignore__?.[column] ?? []),
+        ...(override?.__ignore__?.[column] ?? []),
+      ];
+      merged.__ignore__[column] = [...new Set(values)];
+    }
+  }
+  return merged;
 }
 
 /** 直した箇所を「何行目の何を直したか」で伝える */
@@ -334,4 +433,16 @@ function collectWarnings(aliases) {
   return warnings;
 }
 
-module.exports = { readAliasFile, relax, collectWarnings, locate };
+/** 重複キーを、消えるほうの行番号つきで伝える */
+function duplicateWarnings(text) {
+  return findDuplicateKeys(text).map(
+    (d) =>
+      `「${d.key}」が2回書かれています（${d.first}行目と${d.again}行目）。` +
+      `後の${d.again}行目だけが使われ、${d.first}行目の中身は消えます。1つにまとめてください`
+  );
+}
+
+module.exports = {
+  readAliasFile, relax, collectWarnings, locate,
+  mergeAliases, findDuplicateKeys,
+};

@@ -19,7 +19,7 @@ const { getConnection } = require('../src/db/connection');
 const { migrate } = require('../src/db/migrate');
 const { normalizeName } = require('../src/utils/normalizeName');
 const { MigrationReport } = require('./lib/report');
-const { readAliasFile } = require('./lib/aliasFile');
+const { readAliasFile, mergeAliases } = require('./lib/aliasFile');
 const { suggest } = require('./lib/similarName');
 
 // 置き場所は環境変数で差し替えられる。試験どうしが同じフォルダを取り合わないため
@@ -33,6 +33,8 @@ const REPORT_DIR = process.env.MIGRATION_REPORT_DIR
 const ALIASES_PATH = process.env.MIGRATION_ALIASES
   ? path.resolve(process.env.MIGRATION_ALIASES)
   : path.resolve(__dirname, 'data', 'aliases.json');
+// 一度決めた読み替えを毎回書き直さずに済むよう、既定を同梱してある（編集不要）
+const KNOWN_ALIASES_PATH = path.resolve(__dirname, 'data', 'known-aliases.json');
 
 // 8.0のフェーズ順序。依存関係があるため、この配列の順序を変えてはいけない。
 const PHASE1_MASTERS = [
@@ -41,6 +43,7 @@ const PHASE1_MASTERS = [
   require('./loaders/products'),
   require('./loaders/materials'),
   require('./loaders/tanks'),
+  require('./loaders/knownTanks'),       // シートに行が無い容器を足す（tanksの後）
   require('./loaders/productRecipes'),
   require('./loaders/breweries'),
   require('./loaders/rawSakeBrands'),    // 酒蔵の後（酒蔵名で紐付けるため）
@@ -95,14 +98,64 @@ function parseArgs(argv) {
   };
 }
 
+/**
+ * 補正表を組み立てる。
+ *
+ * 一度決めた読み替えは同梱の known-aliases.json に置いてあり、毎回書き直す
+ * 必要はない。aliases.json はその上に重ねる**足し算**として扱う
+ * （同じ列の同じ左辺があれば手元のファイルが勝つ）。
+ */
 function loadAliases() {
+  let known = {};
+  try {
+    known = readAliasFile(KNOWN_ALIASES_PATH).aliases;
+  } catch (e) {
+    // 同梱ファイルが壊れているのは利用者の落ち度ではない。止めずに知らせる
+    console.warn(`[known-aliases.json] 組み込みの補正表を読めませんでした: ${e.message}`);
+  }
+
   try {
     const { aliases, warnings } = readAliasFile(ALIASES_PATH);
     for (const w of warnings) console.warn(`[aliases.json] ${w}`);
-    return aliases;
+    return { aliases: mergeAliases(known, aliases), userAliases: aliases };
   } catch (e) {
     console.error(`aliases.json を読み込めませんでした。\n${e.message}`);
     process.exit(1);
+  }
+}
+
+/**
+ * タンクの引き先に、CSVに無いDBの行を足す。
+ *
+ * tankIdByName / tankIdByCode は tanks.csv を読んだ行だけで組み立てている。
+ * 画面から直接登録したタンクはDBにあってもシートに無いので、台帳が
+ * その名前で参照していても引けず、「タンクが空の行」として入ってしまう。
+ *
+ * しかも checkAliases が見る namePools はDBから作っているため、
+ * 「aliases.json は効くはず」と言われたのに実際は当たらない、という
+ * 食い違いが起きる。ここで埋めて、両方をDBの実態に揃える。
+ *
+ * code も name も UNIQUE なので、どちらで引いても一意に決まる。
+ * CSVで読んだ行が既に入っているキーは上書きしない（同じidになるはずだが、
+ * シート側を正とする建て付けを崩さないため）。
+ */
+function fillTankLookupsFromDb(ctx, db) {
+  let rows;
+  try {
+    rows = db.prepare('SELECT id, code, name FROM tanks').all();
+  } catch {
+    return; // tanks が無いDB（テスト用の最小構成など）では何もしない
+  }
+
+  for (const tank of rows) {
+    const byName = ctx.normalize(tank.name);
+    if (byName && !ctx.lookups.tankIdByName.has(byName)) {
+      ctx.lookups.tankIdByName.set(byName, tank.id);
+    }
+    const byCode = ctx.normalize(tank.code);
+    if (byCode && !ctx.lookups.tankIdByCode.has(byCode)) {
+      ctx.lookups.tankIdByCode.set(byCode, tank.id);
+    }
   }
 }
 
@@ -166,7 +219,9 @@ function checkAliases(ctx) {
   const known = Object.keys(pools);
   const warn = (msg) => console.warn(`[aliases.json] ${msg}`);
 
-  for (const [column, table] of Object.entries(ctx.aliases ?? {})) {
+  // 見るのは**手元で書いた分だけ**。組み込みの補正表（known-aliases.json）は
+  // 利用者が直せないので、そこへの注意を混ぜると直しようのない警告が並ぶ。
+  for (const [column, table] of Object.entries(ctx.userAliases ?? {})) {
     if (column.startsWith('_') && column !== '__ignore__') continue;
 
     if (column === '__ignore__') {
@@ -198,6 +253,13 @@ function checkAliases(ctx) {
     const registered = new Set(pool.map((n) => ctx.normalize(n)));
     for (const [from, to] of Object.entries(table ?? {})) {
       if (typeof to !== 'string' || from === to) continue; // 別途 collectWarnings が拾う
+
+      // 左辺がマスタに登録されているなら、読み替えずにそのまま引ける
+      if (registered.has(ctx.normalize(from))) {
+        warn(`「${column}」の「${from}」はマスタに登録されているので、読み替えずにそのまま使います`);
+        continue;
+      }
+
       if (registered.has(ctx.normalize(to))) continue;
 
       const candidates = suggest(to, pool, { limit: 3 }).map((c) => c.name);
@@ -257,11 +319,16 @@ function nearestColumns(known) {
 }
 
 function buildContext(db, options) {
+  // aliases は組み込みと手元を重ねたもの。userAliases は手元で書いた分だけで、
+  // 「書いたのに効かない」を伝える検算（checkAliases）はこちらだけを見る
+  const { aliases, userAliases } = loadAliases();
+
   return {
     db,
     options,
     dataDir: DATA_DIR,
-    aliases: loadAliases(),
+    aliases,
+    userAliases,
     normalize: normalizeName,
     report: new MigrationReport(REPORT_DIR),
     lookups: {
@@ -368,6 +435,8 @@ function main() {
 
     console.log('\n--- フェーズ1: マスタ系 ---');
     for (const loader of PHASE1_MASTERS) loader.load(ctx);
+    // 画面から登録したタンクなど、シートに無いDBの行も引けるようにする
+    fillTankLookupsFromDb(ctx, db);
     // 中止してロールバックしても候補を出せるよう、この時点で控える
     captureNamePools(ctx, db);
     // マスタが揃ったので、aliases.json が実際に効くかをここで確かめる

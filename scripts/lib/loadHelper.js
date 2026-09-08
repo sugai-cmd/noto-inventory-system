@@ -333,6 +333,12 @@ function resolveId(ctx, { sheet, column, rawValue, idMap, required = false }) {
     throw new SkipRow(`${column}「${rawValue}」は移行対象外として宣言されています`);
   }
 
+  // マスタにその名前がそのままあるなら、補正表より優先する。
+  // マスタ側の名前を直したとき（「日航ホテル」→「ホテル日航金沢」など）に、
+  // 補正表が古いままでも壊れないようにするため。補正表はあくまで後詰め。
+  const direct = idMap.get(ctx.normalize(rawValue));
+  if (direct != null) return direct;
+
   const aliasedValue = aliasFor(ctx, column, rawValue);
   const target = ctx.normalize(aliasedValue ?? rawValue);
 
@@ -367,6 +373,14 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
     return null;
   }
 
+  // 容器名称・容器IDのどちらかにそのまま一致するなら、補正表より優先する
+  // （resolveId と同じ理由。マスタ側の名前を直しても壊れないように）
+  const asWritten = ctx.normalize(rawValue);
+  const directName = ctx.lookups.tankIdByName.get(asWritten);
+  if (directName != null) return directName;
+  const directCode = ctx.lookups.tankIdByCode.get(asWritten);
+  if (directCode != null) return directCode;
+
   const aliasedValue = aliasFor(ctx, column, rawValue) ?? rawValue;
   const target = ctx.normalize(aliasedValue);
 
@@ -390,5 +404,5 @@ function resolveTankId(ctx, { sheet, column, rawValue, required = false }) {
 
 module.exports = {
   loadCsvTable, resolveId, resolveTankId,
-  existingByName, existingByCodeOrName, SkipRow, hintOf,
+  existingByName, existingByCodeOrName, SkipRow, hintOf, touchedIds,
 };
