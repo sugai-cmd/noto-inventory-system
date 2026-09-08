@@ -214,6 +214,9 @@ function productBreakdown(db, productId, field) {
     return formatBreakdown(p.initial_wip_stock, [
       { label: '瓶詰', sign: 1, quantity: q('瓶詰') },
       { label: '箱詰', sign: -1, quantity: q('箱詰') },
+      // 0013 で足した区分。瓶詰めロットからの払い出しなので仕掛品を減らす。
+      // シートのモニターはこれを引いていないので、そのぶんの差が出る
+      { label: '未納税移出', sign: -1, quantity: q('未納税移出') },
       { label: '棚卸調整', sign: 1, quantity: q('棚卸調整_仕掛品') },
       { label: '欠損', sign: -1, quantity: q('欠損_仕掛品') },
     ]);
@@ -251,7 +254,15 @@ function materialBreakdown(db, materialId) {
   ]);
 }
 
-/** v_tank_monitor と同じ式（受入＝to_tank、払出＝from_tank） */
+/**
+ * v_tank_monitor と同じ式。
+ *
+ * ビューは1行ごとに CASE を上から見るので、**受入元と払出先が同じタンクの行**は
+ * 「受入」だけに数えられ、払出には入らない。素直に2つのSUMで書くと
+ * 相殺されて0になり、ビューの値と合わない（実データのステンレスタンク1で
+ * 24Lずれた）。内訳が本体の数字と食い違うのは、内訳が無いより悪い。
+ * ここではビューの数え方をそのまま写す。
+ */
 function tankBreakdown(db, tankId) {
   const t = db.prepare('SELECT initial_volume_l FROM tanks WHERE id = ?').get(tankId);
   if (!t) return null;
@@ -259,12 +270,12 @@ function tankBreakdown(db, tankId) {
   const io = db
     .prepare(
       `SELECT
-         COALESCE(SUM(CASE WHEN to_tank_id   = ? THEN quantity_l END), 0) AS came,
-         COALESCE(SUM(CASE WHEN from_tank_id = ? THEN quantity_l END), 0) AS went
+         COALESCE(SUM(CASE WHEN to_tank_id = ? THEN quantity_l END), 0) AS came,
+         COALESCE(SUM(CASE WHEN to_tank_id IS NOT ? AND from_tank_id = ? THEN quantity_l END), 0) AS went
        FROM tank_ledger
        WHERE is_cancelled = 0 AND (to_tank_id = ? OR from_tank_id = ?)`
     )
-    .get(tankId, tankId, tankId, tankId);
+    .get(tankId, tankId, tankId, tankId, tankId);
 
   return formatBreakdown(t.initial_volume_l ?? 0, [
     { label: '受入', sign: 1, quantity: io.came },
@@ -371,6 +382,30 @@ function main() {
     console.log(`\n=== ${excludePrefix} で始まる受注ぶんの出荷（既知の差） ===`);
     if (!rows.length) console.log('  ありません');
     for (const r of rows) console.log(`  ${r.name}: ${r.qty}本`);
+  }
+
+  // --- 受入元と払出先が同じ行 ---
+  // ビューは1行ごとにCASEを上から見るので、この行を「受入」だけに数える。
+  // 動かしていない量が入庫として積まれるので、残量が実物より多く出る。
+  // シートの書き間違いか、移行での寄せ間違いのどちらか。人が見て決める。
+  const selfMoves = db
+    .prepare(
+      `SELECT t.name, l.txn_date, l.quantity_l, l.note
+         FROM tank_ledger l JOIN tanks t ON t.id = l.to_tank_id
+        WHERE l.is_cancelled = 0 AND l.from_tank_id = l.to_tank_id
+        ORDER BY t.name, l.txn_date`
+    )
+    .all();
+  if (selfMoves.length) {
+    console.log('\n=== 受入元と払出先が同じタンクの行 ===');
+    console.log('  同じタンクへの移動として記録されています。');
+    console.log('  タンクモニターはこれを「受入」として数えるので、残量がそのぶん多く出ます。');
+    console.log('  シートの書き間違いか、寄せ間違いのどちらかです。');
+    const total = selfMoves.reduce((n, r) => n + r.quantity_l, 0);
+    for (const r of selfMoves) {
+      console.log(`  ${r.txn_date} ${r.name}: ${Math.round(r.quantity_l * 100) / 100}L${r.note ? ` （${r.note}）` : ''}`);
+    }
+    console.log(`  合計 ${Math.round(total * 100) / 100}L が多く数えられています`);
   }
 
   // --- 台帳が合っていないタンク ---
