@@ -156,6 +156,43 @@ function fixFullwidthPunct(text) {
   return { text: out, fixes: fixes.map((f) => ({ ...f, at: text.indexOf(f.char) })) };
 }
 
+/**
+ * 4段目。項目のあいだで抜けているカンマを補う。
+ *
+ * 行を書き足すときに、前の行の末尾へカンマを付け忘れる。実際に起きた。
+ * このときV8は**次の行の先頭**を指すので、メッセージだけ見ると直す行を
+ * 間違える（「10行目でつまずきました」と言われて、原因は9行目の行末）。
+ *
+ * 補ってもデータの中身は変わらない。JSONに「値と値がただ並ぶ」書き方は無く、
+ * ここに入る文字はカンマ以外にあり得ないので、読み取り方が分かれることもない。
+ * 末尾カンマの除去と同じ扱いにする。ただし直したことは必ず警告に出す。
+ */
+function fixMissingCommas(text) {
+  const fixes = [];
+  let current = text;
+
+  for (let attempt = 0; attempt < 100; attempt++) {
+    try {
+      JSON.parse(current);
+      return { text: current, fixes };
+    } catch (e) {
+      if (!/Expected ',' or '[}\]]'/.test(e.message)) return { text: current, fixes };
+      const m = /position (\d+)/.exec(e.message);
+      if (!m) return { text: current, fixes };
+
+      // つまずいた位置の手前にある、最後の意味のある文字の直後に入れる
+      let i = Number(m[1]) - 1;
+      while (i >= 0 && /\s/.test(current[i])) i--;
+      if (i < 0) return { text: current, fixes };
+
+      // カンマは改行を増やさないので、ここで数えた行番号は元のファイルでも通じる
+      fixes.push({ line: positionToPlace(current, i).line });
+      current = `${current.slice(0, i + 1)},${current.slice(i + 1)}`;
+    }
+  }
+  return { text: current, fixes };
+}
+
 const CJK = /[ᄀ-ᅟ⺀-꓏가-힣豈-﫿︰-﹯＀-｠￠-￦　-〿]/;
 
 /** ターミナル上の見た目の幅。キャレットの位置を合わせるのに使う */
@@ -290,6 +327,23 @@ function readAliasFile(filePath) {
       const aliases = JSON.parse(text);
       pushFixWarnings(repairWarnings, raw, [...quoted.fixes, ...punct.fixes]);
       return done(aliases, text);
+    } catch (e) {
+      lastError = e;
+    }
+  }
+
+  // 4段目: 項目のあいだで抜けているカンマ
+  const commas = fixMissingCommas(relax(punct.fixes.length ? punct.text : quoted.text));
+  if (commas.fixes.length) {
+    try {
+      const aliases = JSON.parse(commas.text);
+      pushFixWarnings(repairWarnings, raw, [...quoted.fixes, ...punct.fixes]);
+      for (const fix of commas.fixes) {
+        repairWarnings.push(
+          `${fix.line}行目の終わりにカンマ（,）が無かったので、補って読み込みました`
+        );
+      }
+      return done(aliases, commas.text);
     } catch (e) {
       lastError = e;
     }

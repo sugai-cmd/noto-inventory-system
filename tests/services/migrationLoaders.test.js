@@ -150,27 +150,20 @@ test('Shift_JISとタブ区切りのCSVを読める', (t) => {
 
 const { execFileSync } = require('node:child_process');
 
+// 実データの置き場（scripts/data/csv・aliases.json）には触らない。
+// 以前ここで本物のCSVを退避してから戻していたが、
+//   ・途中で落ちると利用者のCSVが戻らない
+//   ・手元の aliases.json の書き間違いで、関係のないこの試験が落ちる
+// （実際に「aliases.json の10行目でつまずきました」で落ちた）
+// 環境変数で置き場を差し替えて、この試験専用のフォルダだけを使う。
 test('浄酎容器変動履歴を通すと、移動元が減って移動先が増える', (t) => {
   const root = path.resolve(__dirname, '..', '..');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'mig-e2e-'));
-  const csvDir = path.join(root, 'scripts', 'data', 'csv');
-  const dbPath = path.join(dir, 'e2e.sqlite');
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
 
-  // 既存のCSVを退避して、この試験用の最小データだけを置く
-  const saved = path.join(dir, 'saved');
-  fs.mkdirSync(saved);
-  for (const f of fs.readdirSync(csvDir)) {
-    if (f.endsWith('.csv')) fs.renameSync(path.join(csvDir, f), path.join(saved, f));
-  }
-  t.after(() => {
-    for (const f of fs.readdirSync(csvDir)) {
-      if (f.endsWith('.csv')) fs.rmSync(path.join(csvDir, f));
-    }
-    for (const f of fs.readdirSync(saved)) {
-      fs.renameSync(path.join(saved, f), path.join(csvDir, f));
-    }
-    fs.rmSync(dir, { recursive: true, force: true });
-  });
+  const csvDir = path.join(dir, 'csv');
+  fs.mkdirSync(csvDir);
+  const dbPath = path.join(dir, 'e2e.sqlite');
 
   fs.writeFileSync(
     path.join(csvDir, 'tanks.csv'),
@@ -189,7 +182,13 @@ test('浄酎容器変動履歴を通すと、移動元が減って移動先が�
 
   execFileSync('node', [path.join(root, 'scripts', 'migrate-from-sheets.js'), '--allow-partial'], {
     cwd: root,
-    env: { ...process.env, DB_PATH: dbPath },
+    env: {
+      ...process.env,
+      DB_PATH: dbPath,
+      MIGRATION_CSV_DIR: csvDir,
+      MIGRATION_REPORT_DIR: path.join(dir, 'report'),
+      MIGRATION_ALIASES: path.join(dir, 'aliases.json'), // 置かない＝補正表なし
+    },
     stdio: 'pipe',
   });
 
