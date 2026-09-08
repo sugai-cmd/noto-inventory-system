@@ -166,6 +166,30 @@ test('マスタに登録されている名前は、補正表より優先され�
   assert.equal(row?.name, 'ホテル日航金沢');
 });
 
+test('同じ先の2つの名前は、マスタがどちらでも寄る', (t) => {
+  // マスタが「ホテル日航金沢」でシートが「日航ホテル」でも、その逆でも通ること。
+  // 組み込みの補正表には両方向が入っていて、マスタにある名前は
+  // 読み替えより優先されるので、片方だけが当たる
+  for (const [master, sheet] of [
+    ['ホテル日航金沢', '日航ホテル'],
+    ['日航ホテル', 'ホテル日航金沢'],
+  ]) {
+    const ctx = useCsv(t, {
+      'customers.csv': `${CUSTOMER_HEADER}\nC0100,${master},得意先,飲食店,0.7,金沢市,翌月,末日,,,,,,,\n`,
+      'products.csv': `${PRODUCT_HEADER}\nP001,浄酎 300ml,300,35,瓶,本,3000,\n`,
+      'orders.csv':
+        `${ORDER_HEADER}\n` +
+        `O2604-001,2026-04-01,${sheet},浄酎 300ml,6,3000,0.7,12600,0,12600,,,,,,,,,,\n`,
+    });
+    run(ctx);
+
+    const db = require('better-sqlite3')(ctx.dbPath);
+    const row = db.prepare('SELECT c.name FROM orders o JOIN customers c ON c.id = o.customer_id').get();
+    db.close();
+    assert.equal(row?.name, master, `マスタ「${master}」・シート「${sheet}」で引けませんでした`);
+  }
+});
+
 test('マスタにある名前を左辺に書いていたら、そう伝える', (t) => {
   const ctx = useCsv(
     t,
@@ -234,6 +258,46 @@ test('mergeAliases は、__ignore__ を列ごとにつなげて重複を落と�
     得意先: ['カナカン', '見本'],
     商品名称: ['旧品'],
   });
+});
+
+// --- エラーとお知らせを分ける ------------------------------------------------
+
+test('伝票番号に枝番を付けたことは、エラーではなくお知らせに出す', (t) => {
+  const ctx = useCsv(t, {
+    'tanks.csv': `${TANK_HEADER}\n${SP001}\n`,
+    'raw_sake_ledger.csv':
+      `${RAW_LEDGER_HEADER}\n` +
+      '2026-04-01,受入,鳥屋酒造,10,原酒ポリ1,M2604-0001,aaaaaaaa,\n' +
+      '2026-04-02,受入,鳥屋酒造,5,原酒ポリ1,M2604-0001,bbbbbbbb,\n',
+  });
+  const out = run(ctx);
+
+  // 行は2件とも入っている。直すものが無いのに「エラー」と出すと手が止まる
+  assert.match(out, /原料受払記録: 読込2 \/ 投入2/);
+  assert.match(out, /お知らせ: 1件/);
+  assert.match(out, /行は入っています。直す必要はありません/);
+  assert.doesNotMatch(out, /^エラー: /m);
+
+  const notices = fs.readFileSync(path.join(ctx.reportDir, 'notices.csv'), 'utf8');
+  assert.match(notices, /R2604-0001-2 として取り込みました/);
+
+  const errors = fs.readFileSync(path.join(ctx.reportDir, 'errors.csv'), 'utf8');
+  assert.equal(errors.trim().split('\n').length, 1); // 見出しだけ
+});
+
+test('行が落ちたものは、これまで通りエラーに出す', (t) => {
+  const ctx = useCsv(t, {
+    'tanks.csv': `${TANK_HEADER}\n${SP001}\n`,
+    'raw_sake_ledger.csv':
+      `${RAW_LEDGER_HEADER}\n2026-04-01,よくわからない,鳥屋酒造,10,原酒ポリ1,M2604-0001,aaaaaaaa,\n`,
+  });
+  const out = run(ctx);
+
+  assert.match(out, /^エラー: 1件/m);
+  assert.match(out, /この行は入っていません/);
+
+  const errors = fs.readFileSync(path.join(ctx.reportDir, 'errors.csv'), 'utf8');
+  assert.match(errors, /受入.*払出/);
 });
 
 // --- シートに無い容器の補完 --------------------------------------------------

@@ -89,10 +89,11 @@ test('同じ原酒IDが2行あるときは、両方に -L1 -L2 を付けて分�
   assert.deepEqual(rows.map((r) => r.abv), [18.4, 18.8]);
   db.close();
 
-  // 勝手に振り直したことは黙っていない
-  const errors = report(ctx, 'errors.csv');
-  assert.match(errors, /原酒ID「unzan-BYR6」が複数行にあるため unzan-BYR6-L1/);
-  assert.match(errors, /原酒ID「unzan-BYR6」が複数行にあるため unzan-BYR6-L2/);
+  // 勝手に振り直したことは黙っていない。ただし行は入っているのでエラーではない
+  const notices = report(ctx, 'notices.csv');
+  assert.match(notices, /原酒ID「unzan-BYR6」が複数行にあるため unzan-BYR6-L1/);
+  assert.match(notices, /原酒ID「unzan-BYR6」が複数行にあるため unzan-BYR6-L2/);
+  assert.doesNotMatch(report(ctx, 'errors.csv'), /複数行にあるため/);
 });
 
 test('採番は、既に使われている枝番を避ける', () => {

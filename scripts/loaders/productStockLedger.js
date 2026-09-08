@@ -44,7 +44,7 @@ function load(ctx) {
         context.counters, 'product', (row['商品履歴ID'] || '').trim() || null
       );
       if (duplicated) {
-        context.report.recordError(
+        context.report.recordNotice(
           '商品在庫変動履歴', rowNumber,
           `商品履歴ID「${row['商品履歴ID']}」が重複していたため ${dedupedCode} として取り込みました`
         );

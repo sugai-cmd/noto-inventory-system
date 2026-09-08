@@ -118,7 +118,9 @@ test('原酒受払IDが重複していても、行を落とさず枝番を付け
   assert.deepEqual(legacy.map((r) => r.legacy_lot_code), ['M2604-0001', 'M2604-0001']);
   db.close();
 
-  assert.match(report(ctx, 'errors.csv'), /原酒受払ID「M2604-0001」が重複していたため R2604-0001-2/);
+  // 行は入っているので、エラーではなくお知らせに出す
+  assert.match(report(ctx, 'notices.csv'), /原酒受払ID「M2604-0001」が重複していたため R2604-0001-2/);
+  assert.doesNotMatch(report(ctx, 'errors.csv'), /重複していたため/);
 });
 
 test('台帳に前回の投入分が残っていたら、--reset を促す', (t) => {
