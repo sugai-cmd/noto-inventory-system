@@ -89,7 +89,13 @@ function matchRow(computed, aliases, aliasColumns, raw) {
 }
 
 /** 差のある行だけを表にして出す */
-function compare(title, monitor, computed, fields, { note, aliases = {}, aliasColumns = [] } = {}) {
+function compare(
+  title,
+  monitor,
+  computed,
+  fields,
+  { note, aliases = {}, aliasColumns = [], breakdown } = {}
+) {
   console.log(`\n=== ${title} ===`);
   if (!monitor) {
     console.log('  （突合用のCSVが無いので飛ばしました）');
@@ -122,7 +128,7 @@ function compare(title, monitor, computed, fields, { note, aliases = {}, aliasCo
       const b = hit.row[name];
       if (a == null || b == null) continue;
       if (Math.abs(a - b) < 0.005) continue;
-      diffs.push({ name: raw, label, sheet: a, ours: b, delta: b - a });
+      diffs.push({ name: raw, label, sheet: a, ours: b, delta: b - a, id: hit.row.id, field: name });
     }
   }
 
@@ -147,6 +153,13 @@ function compare(title, monitor, computed, fields, { note, aliases = {}, aliasCo
         `  ${d.name.slice(0, 36).padEnd(38)} ${d.label.padEnd(8)} ` +
           `${f(d.sheet).padStart(10)} ${f(d.ours).padStart(10)} ${(d.delta > 0 ? '+' : '') + f(d.delta)}`.padStart(10)
       );
+      // 「こちら」の数字がどこから来たのかを、その場で出す。
+      // 内訳が無いと「差がある」で止まってしまい、初期値なのか台帳なのかを
+      // 毎回SQLで調べ直すことになる（実データの仕掛品で実際にそうなった）。
+      if (breakdown) {
+        const detail = breakdown(d.id, d.field);
+        if (detail) console.log(`      内訳: ${detail}`);
+      }
     }
   } else if (matched) {
     console.log('  突き合わせた行に差はありません');
@@ -164,6 +177,99 @@ function compare(title, monitor, computed, fields, { note, aliases = {}, aliasCo
   }
 
   return { rows: monitor.size, matched, unmatched, diff: diffs.length };
+}
+
+/** 「初期100 + 入荷20 - 消費5 = 115」の形に組み立てる */
+function formatBreakdown(initial, moves) {
+  const round = (n) => Math.round(n * 100) / 100;
+  let total = initial;
+  let text = `初期${round(initial)}`;
+  for (const { label, sign, quantity } of moves) {
+    if (!quantity) continue;
+    total += sign * quantity;
+    text += ` ${sign > 0 ? '+' : '-'} ${label}${round(quantity)}`;
+  }
+  return `${text} = ${round(total)}`;
+}
+
+/** v_product_stock と同じ式を、項目ごとに並べ直す */
+function productBreakdown(db, productId, field) {
+  const p = db
+    .prepare('SELECT initial_product_stock, initial_wip_stock FROM products WHERE id = ?')
+    .get(productId);
+  if (!p) return null;
+
+  const sums = new Map(
+    db
+      .prepare(
+        `SELECT txn_type, SUM(quantity) AS q FROM product_stock_ledger
+          WHERE product_id = ? AND is_cancelled = 0 GROUP BY txn_type`
+      )
+      .all(productId)
+      .map((r) => [r.txn_type, r.q])
+  );
+  const q = (type) => sums.get(type) ?? 0;
+
+  if (field === '仕掛品') {
+    return formatBreakdown(p.initial_wip_stock, [
+      { label: '瓶詰', sign: 1, quantity: q('瓶詰') },
+      { label: '箱詰', sign: -1, quantity: q('箱詰') },
+      { label: '棚卸調整', sign: 1, quantity: q('棚卸調整_仕掛品') },
+      { label: '欠損', sign: -1, quantity: q('欠損_仕掛品') },
+    ]);
+  }
+  return formatBreakdown(p.initial_product_stock, [
+    { label: '箱詰', sign: 1, quantity: q('箱詰') },
+    { label: '返品', sign: 1, quantity: q('返品') },
+    { label: '出荷', sign: -1, quantity: q('出荷') },
+    { label: '棚卸調整', sign: 1, quantity: q('棚卸調整_商品') },
+    { label: '欠損', sign: -1, quantity: q('欠損_商品') },
+  ]);
+}
+
+/** v_material_stock と同じ式 */
+function materialBreakdown(db, materialId) {
+  const m = db.prepare('SELECT initial_stock FROM materials WHERE id = ?').get(materialId);
+  if (!m) return null;
+
+  const sums = new Map(
+    db
+      .prepare(
+        `SELECT txn_type, SUM(quantity) AS q FROM material_stock_ledger
+          WHERE material_id = ? AND is_cancelled = 0 GROUP BY txn_type`
+      )
+      .all(materialId)
+      .map((r) => [r.txn_type, r.q])
+  );
+  const q = (type) => sums.get(type) ?? 0;
+
+  return formatBreakdown(m.initial_stock, [
+    { label: '入荷', sign: 1, quantity: q('入荷') },
+    { label: '消費', sign: -1, quantity: q('消費') },
+    { label: '棚卸調整', sign: 1, quantity: q('棚卸調整') },
+    { label: '欠損', sign: -1, quantity: q('欠損') },
+  ]);
+}
+
+/** v_tank_monitor と同じ式（受入＝to_tank、払出＝from_tank） */
+function tankBreakdown(db, tankId) {
+  const t = db.prepare('SELECT initial_volume_l FROM tanks WHERE id = ?').get(tankId);
+  if (!t) return null;
+
+  const io = db
+    .prepare(
+      `SELECT
+         COALESCE(SUM(CASE WHEN to_tank_id   = ? THEN quantity_l END), 0) AS came,
+         COALESCE(SUM(CASE WHEN from_tank_id = ? THEN quantity_l END), 0) AS went
+       FROM tank_ledger
+       WHERE is_cancelled = 0 AND (to_tank_id = ? OR from_tank_id = ?)`
+    )
+    .get(tankId, tankId, tankId, tankId);
+
+  return formatBreakdown(t.initial_volume_l ?? 0, [
+    { label: '受入', sign: 1, quantity: io.came },
+    { label: '払出', sign: -1, quantity: io.went },
+  ]);
 }
 
 function main() {
@@ -186,41 +292,54 @@ function main() {
   // --- 商品在庫 ---
   const productComputed = new Map(
     db
-      .prepare('SELECT name, product_stock, wip_stock FROM v_product_stock')
+      .prepare('SELECT product_id, name, product_stock, wip_stock FROM v_product_stock')
       .all()
-      .map((r) => [normalizeName(r.name), { 商品: r.product_stock, 仕掛品: r.wip_stock }])
+      .map((r) => [
+        normalizeName(r.name),
+        { id: r.product_id, 商品: r.product_stock, 仕掛品: r.wip_stock },
+      ])
   );
   const p = compare(
     '商品在庫',
     loadMonitor('product_stock_monitor.csv', '商品名称', { 商品: '商品', 仕掛品: '仕掛品' }),
     productComputed,
     { 商品: '商品', 仕掛品: '仕掛品' },
-    { aliases, aliasColumns: ['商品名称', '商品名', '商品'] }
+    {
+      aliases,
+      aliasColumns: ['商品名称', '商品名', '商品'],
+      breakdown: (id, field) => productBreakdown(db, id, field),
+    }
   );
 
   // --- 資材在庫 ---
   const materialComputed = new Map(
     db
-      .prepare('SELECT name, current_stock FROM v_material_stock')
+      .prepare('SELECT material_id, name, current_stock FROM v_material_stock')
       .all()
-      .map((r) => [normalizeName(r.name), { 現在庫: r.current_stock }])
+      .map((r) => [normalizeName(r.name), { id: r.material_id, 現在庫: r.current_stock }])
   );
   const m = compare(
     '資材在庫',
     loadMonitor('material_stock_monitor.csv', '資材名', { 現在庫: '現在庫数' }),
     materialComputed,
     { 現在庫: '現在庫' },
-    { aliases, aliasColumns: ['資材名', '資材名称'] }
+    {
+      aliases,
+      aliasColumns: ['資材名', '資材名称'],
+      breakdown: (id) => materialBreakdown(db, id),
+    }
   );
 
   // --- タンク ---
   // 容器IDでも引けるようにする。モニターが「T-001」と書いていることがある
   const tankComputed = new Map();
   const tankRows = db
-    .prepare('SELECT t.code, v.name, v.current_volume_l FROM v_tank_monitor v JOIN tanks t ON t.id = v.tank_id')
+    .prepare(
+      'SELECT v.tank_id, t.code, v.name, v.current_volume_l FROM v_tank_monitor v JOIN tanks t ON t.id = v.tank_id'
+    )
     .all();
   for (const r of tankRows) {
-    const row = { 現在液量: r.current_volume_l };
+    const row = { id: r.tank_id, 現在液量: r.current_volume_l };
     tankComputed.set(normalizeName(r.name), row);
     if (r.code) tankComputed.set(normalizeName(r.code), row);
   }
@@ -233,6 +352,7 @@ function main() {
       aliases,
       aliasColumns: ['浄酎タンク', '受入元', '払出先', '元容器ID'],
       note: 'モニターの名前（タンク1）と容器マスタの名前（ステンレスタンク1）が違うときは、補正表で寄せます',
+      breakdown: (id) => tankBreakdown(db, id),
     }
   );
 
