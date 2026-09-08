@@ -8,6 +8,8 @@
 //   node scripts/migrate-from-sheets.js                 # --strict（既定）で投入
 //   node scripts/migrate-from-sheets.js --allow-partial # 名寄せ不一致を許容して投入
 //   node scripts/migrate-from-sheets.js --reset         # 台帳・トランザクションを消してから再投入
+//   node scripts/migrate-from-sheets.js --reset --force-reset
+//                                                       # 前回の投入より増えた行があっても消す
 //
 // 注意: 酒蔵マスタ・原酒マスタは 8-2 の決定により移行対象外。
 //       移行後に /api/breweries, /api/raw-sake-brands から順次登録する。
@@ -82,7 +84,7 @@ const RESETTABLE_TABLES = [
 function parseArgs(argv) {
   const flags = new Set(argv.slice(2));
   const unknown = [...flags].filter(
-    (f) => !['--dry-run', '--strict', '--allow-partial', '--reset'].includes(f)
+    (f) => !['--dry-run', '--strict', '--allow-partial', '--reset', '--force-reset'].includes(f)
   );
   if (unknown.length) {
     console.error(`不明なオプション: ${unknown.join(', ')}`);
@@ -93,6 +95,8 @@ function parseArgs(argv) {
     // --allow-partial が指定されない限り strict（既定）
     strict: !flags.has('--allow-partial'),
     reset: flags.has('--reset'),
+    // 前回の投入より後に増えた行があっても --reset を通す（消えたら戻らない）
+    forceReset: flags.has('--force-reset'),
   };
 }
 
@@ -372,10 +376,86 @@ function warnIfLedgersNotEmpty(db) {
   console.warn('  確認だけなら: node scripts/migrate-from-sheets.js --dry-run --reset\n');
 }
 
-function resetTables(db) {
+/** いまの台帳の行数 */
+function tableCounts(db) {
+  const counts = {};
+  for (const table of RESETTABLE_TABLES) {
+    try {
+      counts[table] = db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get().c;
+    } catch {
+      // まだ無いテーブル（古いDB）は数えない
+    }
+  }
+  return counts;
+}
+
+/** 投入し終えた時点の行数を控える。次の --reset で「増えた分」を見つけるため */
+function recordRun(db, options) {
+  try {
+    db.prepare('INSERT INTO migration_runs (mode, table_counts) VALUES (?, ?)').run(
+      options.reset ? 'reset' : 'append',
+      JSON.stringify(tableCounts(db))
+    );
+  } catch {
+    // migration_runs がまだ無いDBでも移行そのものは通す
+  }
+}
+
+/**
+ * --reset で消える行のうち、**前回の投入より後に増えた分**を数える。
+ *
+ * 移行が済めばシステムは本番で使われる。画面から入力した記録はシートに無いので、
+ * --reset で消すと戻らない。手順書は「流し直すときは必ず --reset」と書いてあるので、
+ * 表記ゆれを1件直すつもりで流し直したときに黙って失われる。
+ */
+function rowsAddedSinceLastRun(db) {
+  let last;
+  try {
+    last = db
+      .prepare('SELECT table_counts FROM migration_runs ORDER BY id DESC LIMIT 1')
+      .get();
+  } catch {
+    return null; // migration_runs が無い＝比べようがない
+  }
+  if (!last) return null;
+
+  let before;
+  try {
+    before = JSON.parse(last.table_counts);
+  } catch {
+    return null;
+  }
+
+  const now = tableCounts(db);
+  const added = [];
+  for (const [table, count] of Object.entries(now)) {
+    const was = before[table];
+    if (typeof was === 'number' && count > was) added.push({ table, was, now: count });
+  }
+  return added;
+}
+
+function resetTables(db, options) {
+  const added = rowsAddedSinceLastRun(db);
+  if (added?.length && !options.forceReset) {
+    const lines = added.map((a) => `  ${a.table}: 前回の投入後 ${a.now - a.was}件 増えています（${a.was}→${a.now}）`);
+    throw new Error(
+      '前回の投入より後に増えた行があります。--reset で消えると戻りません。\n' +
+        `${lines.join('\n')}\n` +
+        '  画面から入力した記録はシートに無いので、消すと復元できません。\n' +
+        '  それでも消してよければ --force-reset を付けてください。\n' +
+        '  先に backups/ へバックアップを取ることをおすすめします。'
+    );
+  }
+
   console.log('[reset] トランザクション・台帳系テーブルを削除します（マスタは保持）');
+  const before = tableCounts(db);
   for (const table of RESETTABLE_TABLES) {
     db.prepare(`DELETE FROM ${table}`).run();
+  }
+  // 何をどれだけ消したかは、消す前に言っておく。あとから数えられないため
+  for (const [table, count] of Object.entries(before)) {
+    if (count) console.log(`  ${table}: ${count}件を削除`);
   }
 }
 
@@ -421,7 +501,7 @@ function main() {
   try {
     db.exec('BEGIN');
 
-    if (options.reset) resetTables(db);
+    if (options.reset) resetTables(db, options);
     else warnIfLedgersNotEmpty(db);
 
     console.log('\n--- フェーズ1: マスタ系 ---');
@@ -464,6 +544,9 @@ function main() {
       db.exec('ROLLBACK');
       console.log('\n[dry-run] 変更をロールバックしました（DBには何も投入されていません）');
     } else {
+      // 投入し終えた行数を控える。次に --reset するとき、
+      // 「そのときより増えている＝画面から入れた行がある」と分かるようにする
+      recordRun(db, options);
       db.exec('COMMIT');
       committed = true;
       console.log('\n[commit] 移行を確定しました');
