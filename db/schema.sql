@@ -176,6 +176,13 @@ CREATE TABLE materials (
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE migration_runs (
+  id           INTEGER PRIMARY KEY,
+  finished_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  mode         TEXT,                        -- reset / append
+  table_counts TEXT NOT NULL                -- 投入直後の行数 {"orders": 156, ...}
+);
+
 CREATE TABLE operation_logs (
   id          INTEGER PRIMARY KEY,
   occurred_at TEXT NOT NULL DEFAULT (datetime('now')),
