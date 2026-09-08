@@ -15,7 +15,7 @@
 const { loadCsvTable, resolveId, resolveTankId } = require('../lib/loadHelper');
 const { parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly } = require('../lib/parseDate');
-const { renumber } = require('../lib/legacyCode');
+const { renumber, dedupeCode } = require('../lib/legacyCode');
 
 const INSERT_SQL = `
   INSERT INTO raw_sake_ledger
@@ -33,7 +33,17 @@ function load(ctx) {
     insertSql: INSERT_SQL,
     mapRow(row, rowNumber, context) {
       const legacyLotCode = (row['原酒受払ID'] || '').trim() || null;
-      const lotCode = legacyLotCode ? renumber(legacyLotCode, 'R') : null;
+      // 商品履歴ID・資材履歴IDと同じく、番号が重複していても行は落とさない。
+      // lot_code は UNIQUE なので2件目がINSERTで落ちるが、落とすと原酒の受払が
+      // 1件消えて在庫が合わなくなる。番号のほうに枝番を付ける。
+      const renumbered = legacyLotCode ? renumber(legacyLotCode, 'R') : null;
+      const { code: lotCode, duplicated } = dedupeCode(context.counters, 'rawSake', renumbered);
+      if (duplicated) {
+        context.report.recordError(
+          '原料受払記録', rowNumber,
+          `原酒受払ID「${legacyLotCode}」が重複していたため ${lotCode} として取り込みました`
+        );
+      }
       const txnType = (row['受払'] || '').trim();
       if (txnType !== '受入' && txnType !== '払出') {
         throw new Error(`受払は「受入」「払出」のいずれかである必要があります: "${row['受払']}"`);

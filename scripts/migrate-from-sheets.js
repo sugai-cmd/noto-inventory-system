@@ -286,6 +286,34 @@ function buildContext(db, options) {
   };
 }
 
+/**
+ * 台帳に前回の投入分が残ったまま流そうとしていたら、先に知らせる。
+ *
+ * --reset を付けないと台帳は消えないので、受注番号や履歴IDが前回の行と
+ * ぶつかって UNIQUE 違反になる。**シートにもデータにも問題が無いのに**
+ * 「受注8件が落ちた」「原酒受払27件が落ちた」と出るので、
+ * 表記ゆれの調査に何往復も費やすことになる（実際にそうなった）。
+ */
+function warnIfLedgersNotEmpty(db) {
+  const filled = [];
+  for (const table of RESETTABLE_TABLES) {
+    try {
+      const { c } = db.prepare(`SELECT COUNT(*) AS c FROM ${table}`).get();
+      if (c > 0) filled.push(`${table}(${c}件)`);
+    } catch {
+      // テーブルがまだ無いDBもある
+    }
+  }
+  if (!filled.length) return;
+
+  console.warn('\n[注意] 台帳に既にデータが入っています。');
+  console.warn(`  ${filled.join(' / ')}`);
+  console.warn('  このまま流すと前回投入した行と伝票番号がぶつかり、');
+  console.warn('  シートに問題が無くても「UNIQUE constraint failed」が出ます。');
+  console.warn('  流し直すときは --reset を付けてください（台帳だけ消し、マスタは残します）。');
+  console.warn('  確認だけなら: node scripts/migrate-from-sheets.js --dry-run --reset\n');
+}
+
 function resetTables(db) {
   console.log('[reset] トランザクション・台帳系テーブルを削除します（マスタは保持）');
   for (const table of RESETTABLE_TABLES) {
@@ -336,6 +364,7 @@ function main() {
     db.exec('BEGIN');
 
     if (options.reset) resetTables(db);
+    else warnIfLedgersNotEmpty(db);
 
     console.log('\n--- フェーズ1: マスタ系 ---');
     for (const loader of PHASE1_MASTERS) loader.load(ctx);
