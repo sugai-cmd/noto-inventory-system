@@ -107,6 +107,41 @@ function loadAliases() {
 }
 
 /**
+ * タンクの引き先に、CSVに無いDBの行を足す。
+ *
+ * tankIdByName / tankIdByCode は tanks.csv を読んだ行だけで組み立てている。
+ * 画面から直接登録したタンクはDBにあってもシートに無いので、台帳が
+ * その名前で参照していても引けず、「タンクが空の行」として入ってしまう。
+ *
+ * しかも checkAliases が見る namePools はDBから作っているため、
+ * 「aliases.json は効くはず」と言われたのに実際は当たらない、という
+ * 食い違いが起きる。ここで埋めて、両方をDBの実態に揃える。
+ *
+ * code も name も UNIQUE なので、どちらで引いても一意に決まる。
+ * CSVで読んだ行が既に入っているキーは上書きしない（同じidになるはずだが、
+ * シート側を正とする建て付けを崩さないため）。
+ */
+function fillTankLookupsFromDb(ctx, db) {
+  let rows;
+  try {
+    rows = db.prepare('SELECT id, code, name FROM tanks').all();
+  } catch {
+    return; // tanks が無いDB（テスト用の最小構成など）では何もしない
+  }
+
+  for (const tank of rows) {
+    const byName = ctx.normalize(tank.name);
+    if (byName && !ctx.lookups.tankIdByName.has(byName)) {
+      ctx.lookups.tankIdByName.set(byName, tank.id);
+    }
+    const byCode = ctx.normalize(tank.code);
+    if (byCode && !ctx.lookups.tankIdByCode.has(byCode)) {
+      ctx.lookups.tankIdByCode.set(byCode, tank.id);
+    }
+  }
+}
+
+/**
  * 名寄せで引けなかった名前に、似ている候補を出すための「引き先の一覧」。
  * ロールバックしても残るよう、投入直後に配列として控えておく。
  */
@@ -368,6 +403,8 @@ function main() {
 
     console.log('\n--- フェーズ1: マスタ系 ---');
     for (const loader of PHASE1_MASTERS) loader.load(ctx);
+    // 画面から登録したタンクなど、シートに無いDBの行も引けるようにする
+    fillTankLookupsFromDb(ctx, db);
     // 中止してロールバックしても候補を出せるよう、この時点で控える
     captureNamePools(ctx, db);
     // マスタが揃ったので、aliases.json が実際に効くかをここで確かめる
