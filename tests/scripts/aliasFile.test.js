@@ -26,6 +26,71 @@ test('行末の余分なカンマがあっても読める', (t) => {
   assert.deepEqual(readAliasFile(p).aliases, { 得意先: { a: 'b' } });
 });
 
+test('項目のあいだのカンマが抜けていても読める', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  // 実際に起きた形。行を書き足すときに、前の行の末尾にカンマを付け忘れる
+  const p = write(
+    dir,
+    '{\n' +
+      '  "得意先": {\n' +
+      '    "道の駅千里浜": "道の駅のと千里浜"\n' +
+      '  },\n' +
+      '  "得意先名": {\n' +
+      '    "強羅花壇　富士": "強羅花壇",\n' +
+      '    "近江町松本": "松本"\n' +
+      '    "サーフBar七尾": "サーフBar",\n' +
+      '    "蜂の巣七尾": "蜂の巣"\n' +
+      '  }\n' +
+      '}\n'
+  );
+  const { aliases, warnings } = readAliasFile(p);
+
+  assert.deepEqual(aliases, {
+    得意先: { 道の駅千里浜: '道の駅のと千里浜' },
+    得意先名: {
+      '強羅花壇　富士': '強羅花壇',
+      近江町松本: '松本',
+      'サーフBar七尾': 'サーフBar',
+      蜂の巣七尾: '蜂の巣',
+    },
+  });
+
+  // V8は**次の行の先頭**を指すので、そのまま伝えると直す行を間違える。
+  // カンマが要るのは7行目（"近江町松本" の行）の終わり
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /7行目の終わりにカンマ（,）が無かったので、補って読み込みました/);
+});
+
+test('カンマ抜けが何か所あっても、全部補う', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = write(
+    dir,
+    '{\n' +
+      '  "得意先": {\n' +
+      '    "a": "1"\n' +
+      '    "b": "2"\n' +
+      '    "c": "3"\n' +
+      '  }\n' +
+      '}\n'
+  );
+  const { aliases, warnings } = readAliasFile(p);
+
+  assert.deepEqual(aliases, { 得意先: { a: '1', b: '2', c: '3' } });
+  assert.equal(warnings.length, 2);
+});
+
+test('__ignore__ の配列でカンマが抜けていても読める', (t) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
+  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+
+  const p = write(dir, '{\n  "__ignore__": {\n    "得意先": [\n      "カナカン"\n      "百楽荘"\n    ]\n  }\n}\n');
+  assert.deepEqual(readAliasFile(p).aliases, { __ignore__: { 得意先: ['カナカン', '百楽荘'] } });
+});
+
 test('行頭の全角スペースがあっても読める', (t) => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'alias-'));
   t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
