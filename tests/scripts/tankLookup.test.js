@@ -155,12 +155,12 @@ test('DBにも無いタンクは、これまで通り名寄せ不一致として
   const ctx = useCsv(t, {
     'tanks.csv': `${TANK_HEADER}\n${SP001}\n`,
     'raw_sake_ledger.csv':
-      `${RAW_LEDGER_HEADER}\n2026-04-01,受入,鳥屋酒造,10,出荷用ポリ6,M2604-0001,aaaaaaaa,\n`,
+      `${RAW_LEDGER_HEADER}\n2026-04-01,受入,鳥屋酒造,10,聞いたことのないタンク,M2604-0001,aaaaaaaa,\n`,
   });
   run(ctx);
 
   // 黙って通してはいけない。マスタに無いものは無いと言う
-  assert.match(report(ctx, 'unmatched-names.csv'), /出荷用ポリ6/);
+  assert.match(report(ctx, 'unmatched-names.csv'), /聞いたことのないタンク/);
   assert.equal(toTankCodeOf(ctx.dbPath), null);
 });
 
