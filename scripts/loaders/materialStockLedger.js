@@ -5,6 +5,10 @@ const { parseInteger, parseNumber } = require('../lib/parseNumber');
 const { parseDateOnly } = require('../lib/parseDate');
 const { dedupeCode } = require('../lib/legacyCode');
 
+// material_stock_ledger.txn_type の CHECK と同じ並び（0003）。
+// DBが受ける区分と、取り込みが受ける区分をずらさないこと。
+const VALID_TXN_TYPES = new Set(['入荷', '消費', '棚卸調整', '欠損']);
+
 const INSERT_SQL = `
   INSERT INTO material_stock_ledger
     (history_code, txn_date, material_id, txn_type, quantity, counterparty,
@@ -32,9 +36,14 @@ function load(ctx) {
           `資材履歴ID「${row['資材履歴ID']}」が重複していたため ${dedupedCode} として取り込みました`
         );
       }
+      // 0003 で棚卸に対応したとき、DBは「棚卸調整」「欠損」も受けるようにしたのに、
+      // ここの判定が「入荷」「消費」のままだった。実データに26行あり、
+      // 在庫の増減がそのぶん丸ごと落ちていた（v_material_stock も両方を計算に入れている）。
       const txnType = (row['受払'] || '').trim();
-      if (txnType !== '入荷' && txnType !== '消費') {
-        throw new Error(`受払は「入荷」「消費」のいずれかである必要があります: "${row['受払']}"`);
+      if (!VALID_TXN_TYPES.has(txnType)) {
+        throw new Error(
+          `受払は「${[...VALID_TXN_TYPES].join('」「')}」のいずれかである必要があります: "${row['受払']}"`
+        );
       }
 
       const materialId = resolveId(context, {

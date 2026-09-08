@@ -102,6 +102,17 @@ node scripts/migrate-from-sheets.js --dry-run
 
 読み込み件数と、直すべき点が表示されます。実際には書き込みません。
 
+**一度でも本番投入したあとは `--reset` も付けてください。**
+
+```bash
+node scripts/migrate-from-sheets.js --dry-run --reset
+```
+
+`--dry-run` は台帳を消しません。前回投入した行が残ったまま流すと、
+受注番号や履歴IDがぶつかって `UNIQUE constraint failed` が並びます。
+**シートにもデータにも問題が無いのにエラーが出る**ので、原因の調査が空回りします。
+台帳にデータがある状態で `--reset` を付けずに流すと、その旨を先に知らせます。
+
 ### レポートを見る
 
 `scripts/migration-report/` に次のファイルが出ます。
