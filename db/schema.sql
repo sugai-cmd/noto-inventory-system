@@ -128,7 +128,7 @@ CREATE TABLE distillations (                     -- 蒸留記録（ヘッダ）
   residue_qty         REAL,                      -- 残渣回収量（サマリ、詳細はdistillation_residues）
   completed_on         TEXT CHECK (completed_on IS NULL OR completed_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 完了日
   completed_time        TEXT CHECK (completed_time IS NULL OR completed_time GLOB '[0-9][0-9]:[0-9][0-9]')  -- 完了時刻（HH:MM）
-, created_by INTEGER REFERENCES users(id), alert_acknowledged_on TEXT CHECK (alert_acknowledged_on IS NULL OR alert_acknowledged_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), alert_acknowledged_by INTEGER REFERENCES users(id), alert_acknowledged_note TEXT);
+, created_by INTEGER REFERENCES users(id), alert_acknowledged_on TEXT CHECK (alert_acknowledged_on IS NULL OR alert_acknowledged_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), alert_acknowledged_by INTEGER REFERENCES users(id), alert_acknowledged_note TEXT, note TEXT);
 
 CREATE TABLE login_attempts (
   id         INTEGER PRIMARY KEY,

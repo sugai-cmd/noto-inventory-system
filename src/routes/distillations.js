@@ -128,4 +128,76 @@ router.post('/:id/details', validateRequest(addDetailSchema), (req, res, next) =
   }
 });
 
+/**
+ * 蒸留記録の本体を直す。
+ *
+ * **在庫に響く項目は受け付けない。** 出力量・度数・出力タンク・状態を変えると
+ * タンクの中身と瓶詰めの元が動くので、ここでは扱わない（別の口で扱う）。
+ * 送られてきても strict で400にして、黙って無視しない。
+ */
+const updateDistillationSchema = z
+  .object({
+    startedOn: dateOnly.optional(),
+    startedTime: timeOnly.optional(),
+    plannedDuration: z.string().nullish(),
+    inputSummary: z.string().nullish(),
+    note: z.string().nullish(),
+  })
+  .strict();
+
+const residueSchema = z.object({
+  collectedOn: dateOnly.optional(),
+  collectedTime: timeOnly,
+  quantity: z.number().nonnegative().nullish(),
+  abv: z.number().nullish(),
+  saltStatus: z.string().nullish(),
+  saltInputQty: z.number().nullish(),
+  saltConcentration: z.number().nullish(),
+  destination: z.string().nullish(),
+});
+
+// 残渣回収記録を足す（移行で漏れていたぶんを入れられるように）
+router.post('/:id/residues', validateRequest(residueSchema), (req, res, next) => {
+  try {
+    res.status(201).json(distillationService.addResidue(Number(req.params.id), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// 残渣回収記録を直す
+router.patch(
+  '/residues/:residueId',
+  validateRequest(residueSchema.partial().strict()),
+  (req, res, next) => {
+    try {
+      res.json(
+        distillationService.updateResidue(Number(req.params.residueId), req.body, req.user)
+      );
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// 残渣回収記録を消す
+router.delete('/residues/:residueId', (req, res, next) => {
+  try {
+    res.json(distillationService.deleteResidue(Number(req.params.residueId), req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+// **/:id は最後に置く。** Expressは書いた順に当てるので、これを先に置くと
+// PATCH /api/distillations/residues/5 が id="residues" として拾われる
+router.patch('/:id', validateRequest(updateDistillationSchema), (req, res, next) => {
+  try {
+    res.json(distillationService.updateDistillation(Number(req.params.id), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+
 module.exports = router;
