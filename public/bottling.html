@@ -114,6 +114,46 @@
   </section>
 
   <section class="panel">
+    <h2>仕掛品ロットの紐付け</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      どの瓶詰めロットを使ったか分からない箱詰めの一覧です。
+      移行した記録は、ロット番号がシートに<strong>文字でしか書かれていなかった</strong>ため、
+      ロットと結びついていません。ここで結び直すと、ロット追跡と取り消しが正しく効くようになります。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>履歴ID</th><th>日付</th><th>商品</th><th class="num">本数</th>
+            <th class="num">引当済み</th><th>シートのロット番号</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="unlinkedRows"></tbody>
+      </table>
+    </div>
+
+    <div id="relinkPanel" style="display:none;margin-top:1em;border-top:1px solid var(--line);padding-top:1em">
+      <h3 id="relinkTitle" style="margin-top:0"></h3>
+      <p class="muted" style="font-size:13px">
+        使った瓶詰めロットに本数を入れてください。合計が箱詰めの本数と同じになるようにします。
+      </p>
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr><th>ロット（履歴ID）</th><th>瓶詰め日</th><th class="num">残量</th><th class="num">この箱詰めに使う本数</th></tr>
+          </thead>
+          <tbody id="relinkRows"></tbody>
+        </table>
+      </div>
+      <div class="actions">
+        <span id="relinkTotal" class="hint"></span>
+        <button type="button" id="relinkSave">紐付けを保存</button>
+        <button type="button" id="relinkCancel">閉じる</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="panel">
     <h2>記録の一覧・取り消し</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
       瓶詰め・箱詰め・出荷・返品の記録です。見出しを押すと並べ替わります。
@@ -353,7 +393,7 @@ el('boxingForm').addEventListener('submit', async (e) => {
     xProduct.reset();
     el('xRecipe').innerHTML = '';
     el('xStockHint').textContent = '';
-    await Promise.all([loadLots(null), loadCancellable()]);
+    await Promise.all([loadLots(null), loadCancellable(), loadUnlinked()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {
@@ -377,6 +417,145 @@ async function loadLots(productId) {
       )
       .join('');
 }
+
+// --- 仕掛品ロットの紐付け ---------------------------------------------------
+
+let relinkTarget = null; // いま開いている箱詰め
+
+/** どの瓶詰めロットを使ったか分からない箱詰めの一覧 */
+async function loadUnlinked() {
+  const rows = await apiGet('/api/wip-lots/unlinked');
+
+  el('unlinkedRows').innerHTML = rows.length
+    ? rows.map((r) => {
+        // シートに書かれていた文字が、同じ商品の瓶詰めの履歴IDと一致したときだけ候補を出す。
+        // 一致しないものには何も出さない（機械で当てると別のロットに繋がるため）
+        const hint = r.hint_ledger_id
+          ? `<span class="badge ok">候補 ${escapeHtml(r.hint_history_code)}</span>`
+          : escapeHtml(r.counterparty ?? '');
+        return `<tr>
+          <td>${escapeHtml(r.history_code ?? '')}</td>
+          <td>${escapeHtml(r.txn_date)}</td>
+          <td>${escapeHtml(r.product_name)}</td>
+          <td class="num">${num(r.quantity)}</td>
+          <td class="num">${num(r.allocated)}</td>
+          <td>${hint}</td>
+          <td><button type="button" class="small" data-relink="${r.id}">紐付ける</button></td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="7" class="empty">紐付けが足りない箱詰めはありません</td></tr>';
+}
+
+/** 紐付けの画面を開く。候補があれば、その行に本数を入れた状態にする */
+async function openRelink(boxingLedgerId) {
+  const unlinked = await apiGet('/api/wip-lots/unlinked');
+  const boxing = unlinked.find((r) => r.id === boxingLedgerId);
+  if (!boxing) return loadUnlinked();
+
+  relinkTarget = boxing;
+
+  const [lots, current] = await Promise.all([
+    apiGet(`/api/wip-lots?productId=${boxing.product_id}`),
+    apiGet(`/api/wip-lots/allocations/${boxingLedgerId}`),
+  ]);
+  const already = new Map(current.map((a) => [a.bottling_ledger_id, a.quantity]));
+  relinkTarget.hadAllocations = current.length > 0;
+
+  // 残量が0でも、いまこの箱詰てが使っているロットは出す（外せなくなるため）
+  const shown = lots.filter((l) => l.remaining > 0 || already.has(l.id));
+
+  el('relinkTitle').textContent =
+    `${boxing.history_code}（${boxing.product_name} ${boxing.quantity}本）`;
+
+  el('relinkRows').innerHTML = shown.length
+    ? shown.map((l) => {
+        // 候補のロットには、足りない本数をあらかじめ入れておく（押すだけで済むように）
+        const suggested =
+          already.get(l.id) ??
+          (l.id === boxing.hint_ledger_id ? Math.min(boxing.unallocated, l.remaining) : 0);
+        return `<tr data-lot-id="${l.id}">
+          <td>${escapeHtml(l.history_code ?? '')}${
+            l.id === boxing.hint_ledger_id ? ' <span class="badge ok">候補</span>' : ''
+          }</td>
+          <td>${escapeHtml(l.txn_date)}</td>
+          <td class="num">${num(l.remaining)}</td>
+          <td class="num"><input type="number" min="0" step="1" style="width:7em" value="${suggested}"></td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="4" class="empty">この商品に、残っている瓶詰めロットがありません</td></tr>';
+
+  updateRelinkTotal();
+  el('relinkPanel').style.display = '';
+  el('relinkPanel').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+/** 入力した本数を {bottlingLedgerId, quantity} にする（0の行は送らない） */
+function relinkItems() {
+  return [...el('relinkRows').querySelectorAll('tr[data-lot-id]')]
+    .map((tr) => ({
+      bottlingLedgerId: Number(tr.dataset.lotId),
+      quantity: Number(tr.querySelector('input').value) || 0,
+    }))
+    .filter((i) => i.quantity > 0);
+}
+
+/** 合計と、箱詰めの本数との差を出す */
+function updateRelinkTotal() {
+  if (!relinkTarget) return;
+  const total = relinkItems().reduce((sum, i) => sum + i.quantity, 0);
+  const rest = relinkTarget.quantity - total;
+  el('relinkTotal').textContent =
+    rest === 0
+      ? `合計 ${total} 本（ちょうど）`
+      : `合計 ${total} 本 / 箱詰めは ${relinkTarget.quantity} 本（残り ${rest} 本）`;
+}
+
+el('relinkRows').addEventListener('input', updateRelinkTotal);
+
+el('unlinkedRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-relink]');
+  if (!btn) return;
+  clearMessage('messages');
+  try {
+    await openRelink(Number(btn.dataset.relink));
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
+
+el('relinkCancel').addEventListener('click', () => {
+  el('relinkPanel').style.display = 'none';
+  relinkTarget = null;
+});
+
+el('relinkSave').addEventListener('click', async () => {
+  if (!relinkTarget) return;
+  clearMessage('messages');
+
+  const items = relinkItems();
+  if (!items.length) {
+    // 何も入れずに押したときに「0ロットで保存しました」と返すと、
+    // 直したつもりで何も起きていないことに気づけない
+    if (!relinkTarget.hadAllocations) {
+      return showMessage('messages', 'error', '使った瓶詰めロットの本数を入れてください');
+    }
+    if (!confirm(`${relinkTarget.history_code} の紐付けをすべて外します。よろしいですか？`)) return;
+  }
+
+  el('relinkSave').disabled = true;
+  try {
+    const r = await apiPut(`/api/wip-lots/allocations/${relinkTarget.id}`, { items });
+    showMessage('messages', 'ok',
+      `${r.historyCode} の紐付けを保存しました（${r.allocations.length}ロット）`);
+    el('relinkPanel').style.display = 'none';
+    relinkTarget = null;
+    await Promise.all([loadUnlinked(), loadLots(xProduct.value?.id ?? null)]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('relinkSave').disabled = false;
+  }
+});
 
 // 一覧の状態。絞り込み・並べ替え・ページ位置をここにまとめて持つ。
 // window.history を隠さないよう、名前は historyView にしている
@@ -493,7 +672,7 @@ el('cancelRows').addEventListener('click', async (e) => {
       `${r.cancelled.history_code} を取り消しました` +
       `（資材${r.restoredMaterialRows}件・タンク${r.restoredTankRows}件を復元` +
       `${r.revertedOrderNo ? `・受注 ${r.revertedOrderNo} を未着手に戻しました` : ''}）`);
-    await Promise.all([loadCancellable(), loadLots(xProduct.value?.id ?? null)]);
+    await Promise.all([loadCancellable(), loadUnlinked(), loadLots(xProduct.value?.id ?? null)]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {
@@ -504,7 +683,7 @@ el('cancelRows').addEventListener('click', async (e) => {
 el('bDate').value = todayStr();
 el('xDate').value = todayStr();
 loadLots(null);
-Promise.all([loadTanks(), loadCancellable()])
+Promise.all([loadTanks(), loadCancellable(), loadUnlinked()])
   .catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>
