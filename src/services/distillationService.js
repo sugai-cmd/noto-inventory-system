@@ -596,6 +596,235 @@ function findById(id) {
 }
 
 
+
+// --- 記録の手直し（在庫に響かない項目だけ） --------------------------------
+//
+// 移行した過去の記録に誤りがあり、手で直したい。ここで扱うのは
+// **台帳を動かさない項目**だけ。投入量・出力量は在庫が動くので別に扱う。
+
+/** ヘッダで直せる項目。[APIのキー, 列名] */
+const EDITABLE_HEADER = [
+  ['startedOn', 'started_on'],
+  ['startedTime', 'started_time'],
+  ['plannedDuration', 'planned_duration'],
+  ['inputSummary', 'input_summary'],
+  ['note', 'note'],
+];
+
+/** 残渣で直せる項目 */
+const EDITABLE_RESIDUE = [
+  ['collectedOn', 'collected_on'],
+  ['collectedTime', 'collected_time'],
+  ['quantity', 'quantity'],
+  ['abv', 'abv'],
+  ['saltStatus', 'salt_status'],
+  ['saltInputQty', 'salt_input_qty'],
+  ['saltConcentration', 'salt_concentration'],
+  ['destination', 'destination'],
+];
+
+/** 送られてきた項目だけを UPDATE 文にする。前後の値も返す（監査ログに残すため） */
+function buildUpdate(fields, input, current) {
+  const sets = [];
+  const params = {};
+  const before = {};
+  const after = {};
+
+  for (const [key, column] of fields) {
+    if (!Object.hasOwn(input, key)) continue;
+    if (input[key] === current[column]) continue; // 変わっていない項目は触らない
+    sets.push(`${column} = @${key}`);
+    params[key] = input[key] ?? null;
+    before[column] = current[column];
+    after[column] = input[key] ?? null;
+  }
+  return { sets, params, before, after };
+}
+
+/** 残渣の合計を、ヘッダのサマリ列（residue_qty）へ書き戻す */
+function recalcResidueQty(db, distillationId) {
+  const { total } = db
+    .prepare(
+      'SELECT COALESCE(SUM(quantity), 0) AS total FROM distillation_residues WHERE distillation_id = ?'
+    )
+    .get(distillationId);
+  db.prepare('UPDATE distillations SET residue_qty = ? WHERE id = ?').run(total, distillationId);
+  return total;
+}
+
+/**
+ * 蒸留記録の本体を直す。
+ *
+ * **完了済みでも直せる。** 移行した過去の記録を手で直すのが目的なので、
+ * 状態では弾かない。ただしここで受け付けるのは在庫に響かない項目だけで、
+ * 出力量・出力タンク・状態は受け付けない（ルート側のスキーマでも弾いている）。
+ */
+function updateDistillation(id, input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const current = db.prepare('SELECT * FROM distillations WHERE id = ?').get(id);
+    if (!current) throw new NotFoundError(`蒸留記録が見つかりません (id=${id})`);
+
+    const { sets, params, before, after } = buildUpdate(EDITABLE_HEADER, input, current);
+    if (sets.length) {
+      db.prepare(`UPDATE distillations SET ${sets.join(', ')} WHERE id = @id`).run({ ...params, id });
+    }
+    return { code: current.distillation_code, before, after };
+  });
+
+  const { code, before, after } = run();
+
+  if (Object.keys(after).length) {
+    operationLogService.record({
+      user: actor,
+      action: 'distillation.update',
+      targetType: 'distillations',
+      targetId: id,
+      summary: `蒸留 ${code} を直しました（${Object.keys(after).join(', ')}）`,
+      // 直す前の値も残す。間違えたときに戻せるようにするため
+      detail: { before, after },
+    });
+  }
+
+  return findById(id);
+}
+
+/** 残渣回収記録を足す（移行で漏れていたぶんを入れられるように） */
+function addResidue(distillationId, input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const distillation = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+    if (!distillation) throw new NotFoundError(`蒸留記録が見つかりません (id=${distillationId})`);
+
+    const result = db
+      .prepare(
+        `INSERT INTO distillation_residues
+           (distillation_id, collected_on, collected_time, quantity, abv,
+            salt_status, salt_input_qty, salt_concentration, destination)
+         VALUES
+           (@distillationId, @collectedOn, @collectedTime, @quantity, @abv,
+            @saltStatus, @saltInputQty, @saltConcentration, @destination)`
+      )
+      .run({
+        distillationId,
+        collectedOn: input.collectedOn ?? today(),
+        collectedTime: input.collectedTime,
+        quantity: input.quantity ?? null,
+        abv: input.abv ?? null,
+        saltStatus: input.saltStatus ?? null,
+        saltInputQty: input.saltInputQty ?? null,
+        saltConcentration: input.saltConcentration ?? null,
+        destination: input.destination ?? null,
+      });
+
+    const residueQty = recalcResidueQty(db, distillationId);
+    return { residueId: Number(result.lastInsertRowid), code: distillation.distillation_code, residueQty };
+  });
+
+  const { residueId, code, residueQty } = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.residue.add',
+    targetType: 'distillation_residues',
+    targetId: residueId,
+    summary: `蒸留 ${code} に残渣回収を足しました（合計 ${residueQty}）`,
+    detail: { distillationId, ...input },
+  });
+
+  return findById(distillationId);
+}
+
+/** 残渣回収記録を直す */
+function updateResidue(residueId, input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT r.*, d.distillation_code FROM distillation_residues r
+          JOIN distillations d ON d.id = r.distillation_id WHERE r.id = ?`
+      )
+      .get(residueId);
+    if (!current) throw new NotFoundError(`残渣回収記録が見つかりません (id=${residueId})`);
+
+    const { sets, params, before, after } = buildUpdate(EDITABLE_RESIDUE, input, current);
+    if (sets.length) {
+      db.prepare(`UPDATE distillation_residues SET ${sets.join(', ')} WHERE id = @id`).run({
+        ...params,
+        id: residueId,
+      });
+      // 回収量を変えたら、ヘッダのサマリも合わせ直す
+      recalcResidueQty(db, current.distillation_id);
+    }
+    return { current, before, after };
+  });
+
+  const { current, before, after } = run();
+
+  if (Object.keys(after).length) {
+    operationLogService.record({
+      user: actor,
+      action: 'distillation.residue.update',
+      targetType: 'distillation_residues',
+      targetId: residueId,
+      summary: `蒸留 ${current.distillation_code} の残渣回収を直しました（${Object.keys(after).join(', ')}）`,
+      detail: { before, after },
+    });
+  }
+
+  return findById(current.distillation_id);
+}
+
+/**
+ * 残渣回収記録を消す。
+ *
+ * 台帳ではなく記録なので、取消フラグではなく物理削除にする
+ * （distillation_residues に is_cancelled は無い）。在庫には響かない。
+ */
+function deleteResidue(residueId, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const current = db
+      .prepare(
+        `SELECT r.*, d.distillation_code FROM distillation_residues r
+          JOIN distillations d ON d.id = r.distillation_id WHERE r.id = ?`
+      )
+      .get(residueId);
+    if (!current) throw new NotFoundError(`残渣回収記録が見つかりません (id=${residueId})`);
+
+    db.prepare('DELETE FROM distillation_residues WHERE id = ?').run(residueId);
+    recalcResidueQty(db, current.distillation_id);
+    return current;
+  });
+
+  const current = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.residue.delete',
+    targetType: 'distillation_residues',
+    targetId: residueId,
+    summary: `蒸留 ${current.distillation_code} の残渣回収を削除しました`,
+    // 消したものは戻せないので、中身をそのまま残す
+    detail: {
+      collected_on: current.collected_on,
+      collected_time: current.collected_time,
+      quantity: current.quantity,
+      abv: current.abv,
+      salt_status: current.salt_status,
+      salt_input_qty: current.salt_input_qty,
+      salt_concentration: current.salt_concentration,
+      destination: current.destination,
+    },
+  });
+
+  return findById(current.distillation_id);
+}
+
 /**
  * 未対応アラートの消込（GAS版 README 3章「未対応アラート：『処理済み』で消込」）。
  * 蒸留そのものの状態は変えず、アラート一覧から外すだけ。
@@ -723,6 +952,10 @@ module.exports = {
   acknowledgeStaleAlert,
   submitRawSakeReceipt,
   submitRawSakeReceipts,
+  updateDistillation,
+  addResidue,
+  updateResidue,
+  deleteResidue,
   submitDistillationStart,
   completeDistillation,
   cancelDistillationDetailItem,

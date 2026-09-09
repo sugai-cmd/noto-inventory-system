@@ -460,7 +460,10 @@ async function loadDistillations() {
     .join('');
 }
 
+let currentDetailId = null;
+
 async function showDetail(id) {
+  currentDetailId = id;
   const d = await apiGet(`/api/distillations/${id}`);
   el('detailPanel').style.display = '';
   el('detailCode').textContent = d.distillation_code;
@@ -479,16 +482,52 @@ async function showDetail(id) {
 
   const residues = d.residues.length
     ? d.residues.map((r) => `
-        <tr>
-          <td>${escapeHtml(r.collected_on)} ${escapeHtml(r.collected_time ?? '')}</td>
-          <td class="num">${num(r.quantity, 1)}</td>
-          <td class="num">${r.abv ?? ''}</td>
-          <td>${escapeHtml(r.salt_status ?? '')}</td>
-          <td>${escapeHtml(r.destination ?? '')}</td>
+        <tr data-residue-id="${r.id}">
+          <td><input type="date" data-field="collectedOn" value="${escapeHtml(r.collected_on ?? '')}"></td>
+          <td><input type="time" data-field="collectedTime" value="${escapeHtml(r.collected_time ?? '')}"></td>
+          <td class="num"><input type="number" step="0.1" style="width:6em" data-field="quantity" value="${r.quantity ?? ''}"></td>
+          <td class="num"><input type="number" step="0.1" style="width:5em" data-field="abv" value="${r.abv ?? ''}"></td>
+          <td><input type="text" style="width:8em" data-field="saltStatus" value="${escapeHtml(r.salt_status ?? '')}"></td>
+          <td><input type="text" style="width:9em" data-field="destination" value="${escapeHtml(r.destination ?? '')}"></td>
+          <td>
+            <button type="button" class="small" data-save-residue="${r.id}">保存</button>
+            <button type="button" class="danger small" data-delete-residue="${r.id}">削除</button>
+          </td>
         </tr>`).join('')
-    : '<tr><td colspan="5" class="empty">残渣回収記録はありません</td></tr>';
+    : '<tr><td colspan="7" class="empty">残渣回収記録はありません</td></tr>';
 
   el('detailBody').innerHTML = `
+    <h3>この蒸留の記録</h3>
+    <div class="grid">
+      <div>
+        <label for="edStartedOn">投入開始日</label>
+        <input type="date" id="edStartedOn" value="${escapeHtml(d.started_on ?? '')}">
+      </div>
+      <div>
+        <label for="edStartedTime">投入開始時刻</label>
+        <input type="time" id="edStartedTime" value="${escapeHtml(d.started_time ?? '')}">
+      </div>
+      <div>
+        <label for="edPlannedDuration">蒸留設定時間</label>
+        <input type="text" id="edPlannedDuration" value="${escapeHtml(d.planned_duration ?? '')}">
+      </div>
+      <div>
+        <label for="edInputSummary">使用原酒（表示用の文）</label>
+        <input type="text" id="edInputSummary" value="${escapeHtml(d.input_summary ?? '')}">
+      </div>
+    </div>
+    <div>
+      <label for="edNote">備考</label>
+      <input type="text" id="edNote" value="${escapeHtml(d.note ?? '')}"
+             placeholder="数字にならない事情を書き残せます">
+    </div>
+    <div class="actions">
+      <span class="hint">
+        投入量と蒸留量（出力）はここでは直せません。タンクの中身が動くため、別に扱います。
+      </span>
+      <button type="button" id="edSave">この内容で保存</button>
+    </div>
+
     <h3>投入明細</h3>
     <div class="table-scroll">
       <table>
@@ -496,19 +535,102 @@ async function showDetail(id) {
         <tbody>${details}</tbody>
       </table>
     </div>
+
     <h3>残渣回収</h3>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>回収日時</th><th class="num">回収量</th><th class="num">度数</th><th>食塩</th><th>払出先</th></tr></thead>
+        <thead>
+          <tr><th>回収日</th><th>回収時刻</th><th class="num">回収量</th><th class="num">度数</th>
+              <th>食塩</th><th>払出先</th><th></th></tr>
+        </thead>
         <tbody>${residues}</tbody>
       </table>
+    </div>
+    <div class="actions">
+      <button type="button" id="edAddResidue">残渣回収を足す</button>
+      <span class="hint">移行で漏れていた回収記録を、あとから入れられます</span>
     </div>`;
   el('detailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
 
-let currentDetailId = null;
+/** 蒸留記録の本体（在庫に響かない項目）を保存する */
+async function saveDistillationHeader() {
+  const payload = {
+    startedOn: el('edStartedOn').value,
+    startedTime: el('edStartedTime').value,
+    plannedDuration: el('edPlannedDuration').value || null,
+    inputSummary: el('edInputSummary').value || null,
+    note: el('edNote').value || null,
+  };
+
+  const d = await apiPatch(`/api/distillations/${currentDetailId}`, payload);
+  showMessage('messages', 'ok', `${d.distillation_code} を保存しました`);
+  await Promise.all([loadDistillations(), showDetail(currentDetailId)]);
+}
+
+/** 残渣の1行を保存する。変えた欄だけを送る */
+async function saveResidueRow(tr) {
+  const value = (name) => tr.querySelector(`[data-field="${name}"]`).value;
+  const number = (name) => (value(name) === '' ? null : Number(value(name)));
+
+  await apiPatch(`/api/distillations/residues/${tr.dataset.residueId}`, {
+    collectedOn: value('collectedOn'),
+    collectedTime: value('collectedTime'),
+    quantity: number('quantity'),
+    abv: number('abv'),
+    saltStatus: value('saltStatus') || null,
+    destination: value('destination') || null,
+  });
+  showMessage('messages', 'ok', '残渣回収を保存しました');
+  await showDetail(currentDetailId);
+}
 
 el('detailBody').addEventListener('click', async (e) => {
+  clearMessage('messages');
+
+  if (e.target.closest('#edSave')) {
+    try { await saveDistillationHeader(); }
+    catch (err) { showMessage('messages', 'error', err.message, err.details); }
+    return;
+  }
+
+  const saveResidue = e.target.closest('[data-save-residue]');
+  if (saveResidue) {
+    try { await saveResidueRow(saveResidue.closest('tr')); }
+    catch (err) { showMessage('messages', 'error', err.message, err.details); }
+    return;
+  }
+
+  const deleteResidue = e.target.closest('[data-delete-residue]');
+  if (deleteResidue) {
+    // 残渣は台帳ではなく記録なので物理削除になる。消したら戻せない
+    if (!confirm('この残渣回収記録を削除します。元に戻せません。よろしいですか？')) return;
+    try {
+      await api('DELETE', `/api/distillations/residues/${deleteResidue.dataset.deleteResidue}`);
+      showMessage('messages', 'ok', '残渣回収を削除しました');
+      await showDetail(currentDetailId);
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
+    return;
+  }
+
+  if (e.target.closest('#edAddResidue')) {
+    const time = prompt('回収時刻を入力してください（HH:MM）', nowTimeStr());
+    if (time == null) return;
+    try {
+      await apiPost(`/api/distillations/${currentDetailId}/residues`, {
+        collectedOn: todayStr(),
+        collectedTime: time.trim(),
+      });
+      showMessage('messages', 'ok', '残渣回収を足しました。日付や数量はその行で直せます');
+      await showDetail(currentDetailId);
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
+    return;
+  }
+
   const btn = e.target.closest('[data-cancel-detail]');
   if (!btn) return;
   const reason = prompt('取消理由を入力してください');
