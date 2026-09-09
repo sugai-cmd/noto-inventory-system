@@ -5,6 +5,7 @@ const { z } = require('zod');
 const distillationService = require('../services/distillationService');
 const { getConnection } = require('../db/connection');
 const { validateRequest } = require('../middlewares/validateRequest');
+const { RAW_SAKE_TANK_PREFIX } = require('../services/tankService');
 
 const router = express.Router();
 
@@ -45,7 +46,12 @@ const bulkReceiptSchema = z.object({
 });
 
 /**
- * 原酒タンクの残量一覧。v_tank_monitor（浄酎タンク）とは別集計になる点に注意（8-8）。
+ * 原酒タンクの残量一覧（蒸留の投入元に使う）。
+ * v_tank_monitor（浄酎タンク）とは別集計になる点に注意（8-8）。
+ *
+ * 以前は原酒タンクを container_type LIKE '%原酒%' で拾おうとしていたが、
+ * 移行した実データの種別は「PE」などの材質で入っており**1件も当たらなかった**。
+ * 容器IDの採番規則（SP-）で判定する。
  */
 router.get('/tanks', (req, res) => {
   const db = getConnection();
@@ -55,10 +61,33 @@ router.get('/tanks', (req, res) => {
         `SELECT v.*, t.container_type, t.status
          FROM v_raw_sake_tank_volume v
          JOIN tanks t ON t.id = v.tank_id
-         WHERE v.current_volume_l > 0 OR t.container_type LIKE '%原酒%'
+         WHERE v.current_volume_l > 0 OR t.code LIKE @prefix
          ORDER BY t.code`
       )
-      .all()
+      .all({ prefix: `${RAW_SAKE_TANK_PREFIX}-%` })
+  );
+});
+
+/**
+ * 原酒入荷の受入先の候補。**原酒タンクだけ**を、空かどうかを添えて返す。
+ *
+ * 空でないタンクも返して `is_empty: 0` を付ける。画面から消してしまうと
+ * 「原酒ポリ7が出てこないのはなぜか」が分からなくなるので、
+ * 使用中であることが見えるようにしておく（選ばせはしない）。
+ */
+router.get('/tanks/receivable', (req, res) => {
+  const db = getConnection();
+  res.json(
+    db
+      .prepare(
+        `SELECT v.*, t.container_type, t.status,
+                CASE WHEN v.current_volume_l > 0 THEN 0 ELSE 1 END AS is_empty
+         FROM v_raw_sake_tank_volume v
+         JOIN tanks t ON t.id = v.tank_id
+         WHERE t.code LIKE @prefix
+         ORDER BY t.code`
+      )
+      .all({ prefix: `${RAW_SAKE_TANK_PREFIX}-%` })
   );
 });
 

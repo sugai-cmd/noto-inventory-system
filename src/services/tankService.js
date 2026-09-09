@@ -310,6 +310,22 @@ const TANK_PREFIXES = {
   蒸留機: 'DISTL',
 };
 
+/** 原酒タンクの容器IDプレフィックス。原酒の受入・投入はこの容器だけを対象にする */
+const RAW_SAKE_TANK_PREFIX = TANK_PREFIXES['原酒ポリタンク'];
+
+/**
+ * 原酒タンクかどうかを容器IDで判定する。
+ *
+ * 容器種別（container_type）では判定できない。旧シートから移行した実データの
+ * 種別は「PE」「QBテナー」など**材質や通称**で入っており、「原酒」を含む行は
+ * 1件も無い。以前は container_type LIKE '%原酒%' で絞っていたため1件も当たらず、
+ * 原酒入荷の画面に出荷用ポリタンクやテナーまで並んでいた。
+ * 容器IDの採番規則（DATA_STRUCTURE.md タンクマスタ）は移行後も守られている。
+ */
+function isRawSakeTankCode(code) {
+  return typeof code === 'string' && code.startsWith(`${RAW_SAKE_TANK_PREFIX}-`);
+}
+
 function listTankPrefixes() {
   return Object.entries(TANK_PREFIXES).map(([containerType, prefix]) => ({ containerType, prefix }));
 }
@@ -392,6 +408,8 @@ function listTanks({ includeDiscarded = false } = {}) {
 }
 
 module.exports = {
+  RAW_SAKE_TANK_PREFIX,
+  isRawSakeTankCode,
   submitTankTransfer,
   submitTaxFreeTransfer,
   listLedger,

@@ -312,3 +312,7 @@ html {
   .stat-row { grid-template-columns: 1fr; }
   header.site h1 { font-size: 14px; }
 }
+
+/* 選べない行（原酒入荷で、前の原酒が残っているタンクなど）。
+   消さずに残して、選べないことが見て分かるようにする */
+tr.is-busy td { opacity: 0.55; }
