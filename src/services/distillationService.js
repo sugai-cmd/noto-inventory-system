@@ -13,6 +13,7 @@ const { generateCode } = require('../utils/codeGenerator');
 const { nextRawSakeLotCode, nextRawSakeLotCodes } = require('../utils/rawSakeCode');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
+const { isRawSakeTankCode, RAW_SAKE_TANK_PREFIX } = require('./tankService');
 const operationLogService = require('./operationLogService');
 
 // 蒸留IDのプレフィックスは Distill の 'D'（現行シート踏襲）。
@@ -50,6 +51,35 @@ function getRawSakeTankVolume(db, tankId) {
 }
 
 /**
+ * 原酒を受け入れてよいタンクかを確かめる。
+ *
+ *   ・原酒タンク（容器IDが SP- で始まる）であること
+ *   ・空であること
+ *
+ * 前の原酒が残っているタンクへ足すと、2つのロットが1つの容器で混ざり、
+ * どちらをどれだけ使ったのかを後から分けられなくなる。
+ * 蒸留明細は「どのロットをどのタンクから何L使ったか」で残す作りなので、
+ * 混ざった時点で追跡が切れる。空の容器にだけ受け入れる。
+ */
+function assertReceivableTank(db, tank) {
+  if (!isRawSakeTankCode(tank.code)) {
+    throw new BusinessRuleError(
+      `${tank.code} ${tank.name} は原酒タンクではありません。` +
+        `原酒入荷の受入先は容器IDが ${RAW_SAKE_TANK_PREFIX}- で始まるタンクだけです`
+    );
+  }
+
+  const volume = getRawSakeTankVolume(db, tank.id);
+  const remaining = volume?.current_volume_l ?? 0;
+  if (remaining > 0) {
+    throw new BusinessRuleError(
+      `${tank.name} には前の原酒が ${remaining}L 残っています。` +
+        '空のタンクにだけ受け入れられます（先に蒸留へ投入するか、棚卸で調整してください）'
+    );
+  }
+}
+
+/**
  * 原酒入荷（受入）。酒蔵から原酒タンクへ受け入れた分を原料受払記録に追加する。
  * 8-2の通り原酒マスタとの紐付けは任意（未登録なら spec_note に自由記述で残す）。
  */
@@ -61,6 +91,7 @@ function submitRawSakeReceipt(input, actor) {
 
     const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(input.toTankId);
     if (!tank) throw new NotFoundError(`受入先タンクが見つかりません (id=${input.toTankId})`);
+    assertReceivableTank(db, tank);
 
     if (input.rawSakeBrandId) {
       const brand = db
@@ -138,6 +169,7 @@ function submitRawSakeReceipts(input, actor) {
     const tanks = input.items.map((item) => {
       const tank = findTank.get(item.toTankId);
       if (!tank) throw new NotFoundError(`受入先タンクが見つかりません (id=${item.toTankId})`);
+      assertReceivableTank(db, tank);
       return tank;
     });
 

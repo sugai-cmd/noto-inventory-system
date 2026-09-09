@@ -22,6 +22,11 @@ test.before(async () => {
     `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
      VALUES (?, 'SP-02', '原酒ポリタンク2', '原酒ポリタンク', 200, 0)`
   ).run(generateUid(db, 'tanks'));
+  // 原酒は空のタンクにしか受け入れられないので、受入の試験用に空のまま1本残す
+  db.prepare(
+    `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
+     VALUES (?, 'SP-03', '原酒ポリタンク3', '原酒ポリタンク', 200, 0)`
+  ).run(generateUid(db, 'tanks'));
   db.prepare(
     `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
      VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 0)`
@@ -66,7 +71,7 @@ test('受入元は専用の列に入り、備考と同時に書いても消え�
   // 受入元と備考を両方書くと備考のほうが失われていた。
   const { status, body } = await api('POST', '/api/raw-sake-receipts', {
     txnDate: '2026-07-22',
-    toTankId: 2,
+    toTankId: 3,
     quantity: 10,
     supplier: '鳥屋原酒タンク',
     note: '容器を入れ替えて受入',

@@ -36,8 +36,10 @@
       </div>
 
       <div class="hint">
-        受け入れたタンクにチェックを入れてください。受入量は行ごとに直せます（既定 20L）。
-        日付・銘柄・受入元・スペックは、チェックした全部の行に同じものが付きます。
+        受け入れた<strong>原酒ポリタンク</strong>にチェックを入れてください。受入量は行ごとに直せます（既定 20L）。
+        日付・銘柄・受入元・スペックは、チェックした全部の行に同じものが付きます。<br>
+        前の原酒が残っているタンクは「使用中」と出て選べません。1つの容器で2つのロットが混ざると、
+        どちらをどれだけ使ったのかを後から分けられなくなるためです。
       </div>
       <div class="actions">
         <button type="button" id="rCheckAll">すべてチェック</button>
@@ -239,15 +241,18 @@ renderNav('distillation.html');
 
 let tanks = [];
 let rawSakeTanks = [];
+let receivableTanks = [];
 
 async function loadTanks() {
-  const [all, raw, brands] = await Promise.all([
+  const [all, raw, receivable, brands] = await Promise.all([
     apiGet('/api/tanks'),
     apiGet('/api/raw-sake-receipts/tanks'),
+    apiGet('/api/raw-sake-receipts/tanks/receivable'),
     apiGet('/api/raw-sake-brands'),
   ]);
   tanks = all;
   rawSakeTanks = raw;
+  receivableTanks = receivable;
 
   renderReceiptTankRows();
 
@@ -277,19 +282,33 @@ function renderReceiptTankRows() {
     ])
   );
 
-  body.innerHTML = rawSakeTanks
+  body.innerHTML = receivableTanks
     .map((t) => {
       const prev = kept.get(String(t.tank_id)) ?? {};
-      return `<tr data-tank-id="${t.tank_id}">
-        <td><input type="checkbox" ${prev.checked ? 'checked' : ''}></td>
+      // 空でないタンクは選べない。行は残して「使用中」と出す
+      // （消してしまうと「原酒ポリ7が出てこないのはなぜか」が分からなくなる）
+      const busy = !t.is_empty;
+      const state = busy
+        ? `<span class="badge warn">使用中 ${num(t.current_volume_l, 1)} L</span>`
+        : '空';
+      return `<tr data-tank-id="${t.tank_id}" class="${busy ? 'is-busy' : ''}">
+        <td><input type="checkbox" ${busy ? 'disabled' : ''} ${prev.checked && !busy ? 'checked' : ''}></td>
         <td>${escapeHtml(t.code)}</td>
         <td>${escapeHtml(t.name)}</td>
-        <td>${num(t.current_volume_l, 1)} L</td>
-        <td><input type="number" min="0.1" step="0.1" style="width:7em"
+        <td>${state}</td>
+        <td><input type="number" min="0.1" step="0.1" style="width:7em" ${busy ? 'disabled' : ''}
              value="${prev.quantity ?? DEFAULT_RECEIPT_L}"></td>
       </tr>`;
     })
     .join('');
+
+  if (!receivableTanks.some((t) => t.is_empty)) {
+    body.insertAdjacentHTML(
+      'beforeend',
+      '<tr><td colspan="5" class="hint">空の原酒タンクがありません。' +
+        '先に蒸留へ投入するか、棚卸で調整してください。</td></tr>'
+    );
+  }
 
   updateReceiptSelected();
 }
@@ -318,7 +337,10 @@ el('rTankRows').addEventListener('change', updateReceiptSelected);
 el('rTankRows').addEventListener('input', updateReceiptSelected);
 
 el('rCheckAll').addEventListener('click', () => {
-  for (const box of el('rTankRows').querySelectorAll('input[type=checkbox]')) box.checked = true;
+  // 使用中のタンクは disabled なので、ここでは触らない
+  for (const box of el('rTankRows').querySelectorAll('input[type=checkbox]:not(:disabled)')) {
+    box.checked = true;
+  }
   updateReceiptSelected();
 });
 
