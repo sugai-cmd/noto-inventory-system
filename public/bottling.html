@@ -114,19 +114,73 @@
   </section>
 
   <section class="panel">
-    <h2>記録の取り消し</h2>
+    <h2>記録の一覧・取り消し</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      直近30件の瓶詰め・箱詰め・出荷・返品を取り消します。
+      瓶詰め・箱詰め・出荷・返品の記録です。見出しを押すと並べ替わります。
       取り消すと、商品在庫・仕掛品・資材・タンク残量がまとめて元に戻ります（記録自体は残ります）。
       理由の入力は必須です。
     </p>
+
+    <div class="grid">
+      <div>
+        <label for="hType">区分</label>
+        <select id="hType">
+          <option value="">すべて</option>
+          <option value="瓶詰">瓶詰</option>
+          <option value="箱詰">箱詰</option>
+          <option value="出荷">出荷</option>
+          <option value="返品">返品</option>
+        </select>
+      </div>
+      <div>
+        <label for="hCancelled">状態</label>
+        <select id="hCancelled">
+          <option value="">すべて</option>
+          <option value="false">有効</option>
+          <option value="true">取消済</option>
+        </select>
+      </div>
+      <div>
+        <label for="hFrom">日付（開始）</label>
+        <input type="date" id="hFrom">
+      </div>
+      <div>
+        <label for="hTo">日付（終了）</label>
+        <input type="date" id="hTo">
+      </div>
+      <div>
+        <label for="hLimit">1ページの件数</label>
+        <select id="hLimit">
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
+    </div>
+
     <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>履歴ID</th><th>日付</th><th>区分</th><th>商品</th><th class="num">数量</th><th>受注/相手先</th><th>状態</th><th></th></tr>
+          <tr>
+            <th><button type="button" class="link" data-sort="history_code">履歴ID</button></th>
+            <th><button type="button" class="link" data-sort="txn_date">日付</button></th>
+            <th><button type="button" class="link" data-sort="txn_type">区分</button></th>
+            <th><button type="button" class="link" data-sort="product_name">商品</button></th>
+            <th class="num"><button type="button" class="link" data-sort="quantity">数量</button></th>
+            <th>受注/相手先</th>
+            <th><button type="button" class="link" data-sort="is_cancelled">状態</button></th>
+            <th></th>
+          </tr>
         </thead>
         <tbody id="cancelRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="hPrev">前へ</button>
+      <button type="button" id="hNext">次へ</button>
+      <span id="hRange" class="hint"></span>
     </div>
   </section>
 </main>
@@ -324,9 +378,50 @@ async function loadLots(productId) {
       .join('');
 }
 
-/** 取り消しできる直近の記録 */
+// 一覧の状態。絞り込み・並べ替え・ページ位置をここにまとめて持つ。
+// window.history を隠さないよう、名前は historyView にしている
+const historyView = { sort: 'txn_date', order: 'desc', offset: 0, total: 0 };
+
+/** いまの絞り込みをクエリ文字列にする */
+function historyQuery() {
+  const params = new URLSearchParams({
+    limit: el('hLimit').value,
+    offset: String(historyView.offset),
+    sort: historyView.sort,
+    order: historyView.order,
+  });
+  if (el('hType').value) params.set('txnType', el('hType').value);
+  if (el('hCancelled').value) params.set('cancelled', el('hCancelled').value);
+  if (el('hFrom').value) params.set('from', el('hFrom').value);
+  if (el('hTo').value) params.set('to', el('hTo').value);
+  return params.toString();
+}
+
+/** 並べ替えの向きを見出しに出す */
+function renderSortMarks() {
+  for (const btn of document.querySelectorAll('[data-sort]')) {
+    const mark = btn.dataset.sort === historyView.sort ? (historyView.order === 'asc' ? '▲' : '▼') : '';
+    btn.innerHTML = `${escapeHtml(btn.dataset.label)}<span class="dir">${mark}</span>`;
+  }
+}
+
+/** 「120件中 51〜100件」と、前へ／次への押せる・押せないを出す */
+function renderPager(shown) {
+  const limit = Number(el('hLimit').value);
+  const start = historyView.total ? historyView.offset + 1 : 0;
+  const end = historyView.offset + shown;
+  el('hRange').textContent = historyView.total
+    ? `${historyView.total}件中 ${start}〜${end}件`
+    : '該当する記録がありません';
+  el('hPrev').disabled = historyView.offset <= 0;
+  el('hNext').disabled = historyView.offset + limit >= historyView.total;
+}
+
+/** 瓶詰め・箱詰め・出荷・返品の記録 */
 async function loadCancellable() {
-  const rows = await apiGet('/api/ledger-cancel');
+  const { rows, total } = await apiGet(`/api/ledger-cancel?${historyQuery()}`);
+  historyView.total = total;
+
   el('cancelRows').innerHTML = rows.length
     ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
         <td>${escapeHtml(r.history_code ?? '')}</td>
@@ -342,8 +437,46 @@ async function loadCancellable() {
               ? escapeHtml(r.cancel_reason ?? '')
               : `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button>`}</td>
       </tr>`).join('')
-    : '<tr><td colspan="8" class="empty">取り消せる記録がありません</td></tr>';
+    : '<tr><td colspan="8" class="empty">該当する記録がありません</td></tr>';
+
+  renderSortMarks();
+  renderPager(rows.length);
 }
+
+// 見出しを押すと並べ替える。同じ見出しをもう一度押すと昇順・降順が入れ替わる
+document.querySelector('#cancelRows').closest('table').querySelector('thead')
+  .addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-sort]');
+    if (!btn) return;
+    if (historyView.sort === btn.dataset.sort) {
+      historyView.order = historyView.order === 'asc' ? 'desc' : 'asc';
+    } else {
+      historyView.sort = btn.dataset.sort;
+      historyView.order = 'desc';
+    }
+    historyView.offset = 0; // 並べ替えたら1ページ目に戻す
+    await loadCancellable();
+  });
+
+for (const id of ['hType', 'hCancelled', 'hFrom', 'hTo', 'hLimit']) {
+  el(id).addEventListener('change', async () => {
+    historyView.offset = 0;
+    await loadCancellable();
+  });
+}
+
+el('hPrev').addEventListener('click', async () => {
+  historyView.offset = Math.max(0, historyView.offset - Number(el('hLimit').value));
+  await loadCancellable();
+});
+
+el('hNext').addEventListener('click', async () => {
+  historyView.offset += Number(el('hLimit').value);
+  await loadCancellable();
+});
+
+// 見出しの文字は data-label に控えて、並べ替えの矢印だけを付け替える
+for (const btn of document.querySelectorAll('[data-sort]')) btn.dataset.label = btn.textContent;
 
 el('cancelRows').addEventListener('click', async (e) => {
   const btn = e.target.closest('[data-cancel]');

@@ -316,3 +316,17 @@ html {
 /* 選べない行（原酒入荷で、前の原酒が残っているタンクなど）。
    消さずに残して、選べないことが見て分かるようにする */
 tr.is-busy td { opacity: 0.55; }
+
+/* 表の見出しを押して並べ替えるボタン。見出しの文字のまま押せるように見せる */
+th button.link {
+  background: none;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  min-height: 0;
+}
+th button.link:hover { text-decoration: underline; }
+th button.link .dir { margin-left: 2px; opacity: 0.7; }
