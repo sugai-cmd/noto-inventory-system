@@ -159,7 +159,53 @@
       瓶詰め・箱詰め・出荷・返品の記録です。見出しを押すと並べ替わります。
       取り消すと、商品在庫・仕掛品・資材・タンク残量がまとめて元に戻ります（記録自体は残ります）。
       理由の入力は必須です。
+      日付や本数が違うだけなら、<strong>「編集」</strong>で書き換えられます（履歴IDは変わりません）。
     </p>
+
+    <div id="editPanel" style="display:none;margin-bottom:1em;border:1px solid var(--line);border-radius:6px;padding:1em">
+      <h3 id="editTitle" style="margin-top:0"></h3>
+      <p class="muted" style="font-size:13px;margin-top:0">
+        本数を直すと、この作業で消費した資材も同じ割合で直ります。
+        日付を直すと、資材とタンクの記録の日付も一緒に動きます。
+        <strong>履歴IDは変わりません</strong>（月をまたぐ日付に直しても、番号はそのままです）。
+        商品・区分・払出元タンクは直せません。それを変えるなら取り消して入れ直してください。
+      </p>
+      <p id="editWarn" class="muted" style="display:none;font-size:13px;color:var(--danger)"></p>
+
+      <div class="grid">
+        <div>
+          <label for="edDate">日付</label>
+          <input type="date" id="edDate">
+        </div>
+        <div>
+          <label for="edQuantity">本数</label>
+          <input type="number" id="edQuantity" min="1" step="1">
+        </div>
+        <div id="edVolumeBox">
+          <label for="edVolumeL">数量(L)</label>
+          <input type="number" id="edVolumeL" min="0" step="0.1">
+        </div>
+        <div id="edAbvBox">
+          <label for="edAbv">度数(%)</label>
+          <input type="number" id="edAbv" min="0" max="100" step="0.1">
+        </div>
+        <div>
+          <label for="edStorage">保管場所</label>
+          <input type="text" id="edStorage">
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label for="edNote">備考</label>
+        <input type="text" id="edNote">
+      </div>
+
+      <div class="actions">
+        <span id="edHint" class="hint"></span>
+        <button type="button" id="edSave">この内容で直す</button>
+        <button type="button" id="edCancel">閉じる</button>
+      </div>
+    </div>
 
     <div class="grid">
       <div>
@@ -242,11 +288,14 @@ async function loadTanks() {
   ]);
   tanks = monitor.status === 'fulfilled' ? monitor.value : [];
   tankLots = lots.status === 'fulfilled' ? lots.value : [];
+  // 残量を出し直すために読み直すので、選びかけのタンクを消さないよう控えておく
+  const selected = el('bTank').value;
   el('bTank').innerHTML =
     '<option value="">選択してください</option>' +
     tanks
       .map((t) => `<option value="${t.tank_id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`)
       .join('');
+  if (selected) el('bTank').value = selected;
 }
 
 el('bTank').addEventListener('change', () => {
@@ -561,6 +610,10 @@ el('relinkSave').addEventListener('click', async () => {
 // window.history を隠さないよう、名前は historyView にしている
 const historyView = { sort: 'txn_date', order: 'desc', offset: 0, total: 0 };
 
+// 直せるのは瓶詰めと箱詰めだけ（サーバ側の EDITABLE_TXN_TYPES と揃える）。
+// 出荷・返品は受注や送り状と繋がっているので、取り消して入れ直してもらう。
+const EDITABLE_TYPES = ['瓶詰', '箱詰'];
+
 /** いまの絞り込みをクエリ文字列にする */
 function historyQuery() {
   const params = new URLSearchParams({
@@ -612,9 +665,12 @@ async function loadCancellable() {
         <td>${r.is_cancelled
               ? `<span class="badge muted">取消済</span>`
               : '<span class="badge ok">有効</span>'}</td>
-        <td>${r.is_cancelled
+        <td${r.is_cancelled ? '' : ' class="row-actions"'}>${r.is_cancelled
               ? escapeHtml(r.cancel_reason ?? '')
-              : `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button>`}</td>
+              : `${EDITABLE_TYPES.includes(r.txn_type)
+                    ? `<button type="button" class="secondary small" data-edit="${r.id}">編集</button>`
+                    : ''}` +
+                `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button>`}</td>
       </tr>`).join('')
     : '<tr><td colspan="8" class="empty">該当する記録がありません</td></tr>';
 
@@ -657,7 +713,125 @@ el('hNext').addEventListener('click', async () => {
 // 見出しの文字は data-label に控えて、並べ替えの矢印だけを付け替える
 for (const btn of document.querySelectorAll('[data-sort]')) btn.dataset.label = btn.textContent;
 
+// いま直している記録。読み込んだときの値も持っておき、変わった項目だけを送る
+let editing = null;
+
+function closeEditPanel() {
+  editing = null;
+  el('editPanel').style.display = 'none';
+}
+
+/** 「直す」を押したときに、その記録の中身を出す */
+async function openEditPanel(ledgerId) {
+  const data = await apiGet(`/api/ledger-cancel/${ledgerId}`);
+  const row = data.row;
+  // タンクの行は、あれば1件だけ直せる。移行した瓶詰めの多くは行を持たない
+  const tank = data.tanks.filter((t) => !t.is_cancelled);
+  const editableTank = row.txn_type === '瓶詰' && tank.length === 1 ? tank[0] : null;
+
+  editing = { id: ledgerId, row, tank: editableTank };
+
+  el('editTitle').textContent =
+    `${row.txn_type}の編集 ${row.history_code}（${row.product_name}）`;
+
+  el('edDate').value = row.txn_date;
+  el('edQuantity').value = row.quantity;
+  el('edStorage').value = row.storage_place ?? '';
+  el('edNote').value = row.note ?? '';
+
+  el('edVolumeBox').style.display = editableTank ? '' : 'none';
+  el('edAbvBox').style.display = editableTank ? '' : 'none';
+  if (editableTank) {
+    el('edVolumeL').value = editableTank.quantity_l;
+    el('edAbv').value = editableTank.abv ?? '';
+  }
+
+  // 直す前に知っておいてほしいことを出す
+  const warnings = [];
+  if (data.allocated > 0) {
+    warnings.push(
+      row.txn_type === '瓶詰'
+        ? `このロットは ${num(data.allocated)} 本が箱詰めに使われています。それより少なくは減らせません。`
+        : `この箱詰めは瓶詰めロットから ${num(data.allocated)} 本を引き当てています。それより少なくは減らせません。`
+    );
+  }
+  if (row.txn_type === '瓶詰' && !editableTank) {
+    warnings.push('この記録にはタンクの記録がないため、数量(L)と度数は直せません。');
+  }
+  el('editWarn').innerHTML = warnings.map(escapeHtml).join('<br>');
+  el('editWarn').style.display = warnings.length ? '' : 'none';
+
+  const mats = data.materials.filter((m) => !m.is_cancelled).length;
+  el('edHint').textContent = mats
+    ? `本数を変えると、資材${mats}件も同じ割合で直ります`
+    : 'この記録に紐付く資材はありません';
+
+  el('editPanel').style.display = '';
+  el('editPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+el('edCancel').addEventListener('click', closeEditPanel);
+
+el('edSave').addEventListener('click', async () => {
+  if (!editing) return;
+  const { id, row, tank } = editing;
+
+  // 変わった項目だけを送る。送らなかった項目はサーバ側でそのまま残る
+  const payload = {};
+  if (el('edDate').value && el('edDate').value !== row.txn_date) payload.txnDate = el('edDate').value;
+
+  const quantity = Number(el('edQuantity').value);
+  if (Number.isFinite(quantity) && quantity !== row.quantity) payload.quantity = quantity;
+
+  if (el('edStorage').value !== (row.storage_place ?? '')) payload.storagePlace = el('edStorage').value;
+  if (el('edNote').value !== (row.note ?? '')) payload.note = el('edNote').value;
+
+  if (tank) {
+    const volumeL = Number(el('edVolumeL').value);
+    if (Number.isFinite(volumeL) && volumeL !== tank.quantity_l) payload.volumeL = volumeL;
+    const abv = el('edAbv').value === '' ? null : Number(el('edAbv').value);
+    if (abv !== null && abv !== tank.abv) payload.abv = abv;
+  }
+
+  if (Object.keys(payload).length === 0) {
+    return showMessage('messages', 'error', '直す項目がありません');
+  }
+
+  clearMessage('messages');
+  el('edSave').disabled = true;
+  try {
+    const r = await apiPatch(`/api/ledger-cancel/${id}`, payload);
+    const what = Object.keys(r.changes).length;
+    showMessage('messages', 'ok',
+      `${r.historyCode}（${r.txnType}）を直しました（${what}項目` +
+      `${r.materialRowsScaled ? `・資材${r.materialRowsScaled}件を調整` : ''}` +
+      `${r.materialsScaled ? '' : '・元の本数が0のため資材は調整せず'}）`);
+    closeEditPanel();
+    await Promise.all([
+      loadCancellable(),
+      loadUnlinked(),
+      loadTanks(),
+      loadLots(xProduct.value?.id ?? null),
+    ]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('edSave').disabled = false;
+  }
+});
+
 el('cancelRows').addEventListener('click', async (e) => {
+  const edit = e.target.closest('[data-edit]');
+  if (edit) {
+    clearMessage('messages');
+    try {
+      await openEditPanel(Number(edit.dataset.edit));
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
+    return;
+  }
+
   const btn = e.target.closest('[data-cancel]');
   if (!btn) return;
   const reason = prompt('取消理由を入力してください（必須）');
