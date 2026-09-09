@@ -12,10 +12,84 @@ const operationLogService = require('./operationLogService');
 
 const CANCELLABLE = ['瓶詰', '箱詰', '出荷', '返品'];
 
-/** 取消できる直近の記録を返す（GAS版は直近30件） */
-function listCancellable({ limit = 30 } = {}) {
+/**
+ * 並べ替えに使ってよい列。
+ *
+ * 画面から来た文字列をそのままSQLに入れると、何でも実行できてしまう。
+ * ここに載っている名前だけを通し、それ以外は既定に落とす。
+ */
+const SORTABLE = {
+  txn_date: 'l.txn_date',
+  history_code: 'l.history_code',
+  txn_type: 'l.txn_type',
+  product_name: 'p.name',
+  quantity: 'l.quantity',
+  is_cancelled: 'l.is_cancelled',
+};
+const DEFAULT_SORT = 'txn_date';
+
+/**
+ * 瓶詰め・箱詰め・出荷・返品の記録を返す。
+ *
+ * 以前は「直近30件」で、それより古い記録は画面から見えなかった
+ * （サービスの既定値・APIの既定値・画面がlimitを送っていないこと、の3つが重なっていた）。
+ * 全件を、絞り込み・並べ替え・ページングつきで見られるようにする。
+ *
+ * @returns {{rows: object[], total: number}} total は同じ条件での全件数（ページ送りに使う）
+ */
+function listLedgerRecords({
+  limit = 100,
+  offset = 0,
+  sort = DEFAULT_SORT,
+  order = 'desc',
+  txnType = null,
+  productId = null,
+  cancelled = null,
+  from = null,
+  to = null,
+} = {}) {
   const db = getConnection();
-  return db
+
+  const where = ["l.txn_type IN ('瓶詰', '箱詰', '出荷', '返品')"];
+  const params = {};
+
+  if (txnType) {
+    where.push('l.txn_type = @txnType');
+    params.txnType = txnType;
+  }
+  if (productId) {
+    where.push('l.product_id = @productId');
+    params.productId = productId;
+  }
+  if (cancelled !== null) {
+    where.push('l.is_cancelled = @cancelled');
+    params.cancelled = cancelled ? 1 : 0;
+  }
+  if (from) {
+    where.push('l.txn_date >= @from');
+    params.from = from;
+  }
+  if (to) {
+    where.push('l.txn_date <= @to');
+    params.to = to;
+  }
+  const whereSql = where.join(' AND ');
+
+  const column = SORTABLE[sort] ?? SORTABLE[DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 同じ値のときの並びが実行のたびに変わらないよう、idを第2キーにする
+  const orderSql = `${column} ${direction}, l.id ${direction}`;
+
+  const { total } = db
+    .prepare(
+      `SELECT COUNT(*) AS total
+       FROM product_stock_ledger l
+       JOIN products p ON p.id = l.product_id
+       WHERE ${whereSql}`
+    )
+    .get(params);
+
+  const rows = db
     .prepare(
       `SELECT l.id, l.history_code, l.txn_date, l.txn_type, l.quantity, l.counterparty,
               l.is_cancelled, l.cancel_reason, l.cancelled_at,
@@ -28,11 +102,18 @@ function listCancellable({ limit = 30 } = {}) {
        FROM product_stock_ledger l
        JOIN products p ON p.id = l.product_id
        LEFT JOIN orders o ON o.id = l.order_id
-       WHERE l.txn_type IN ('瓶詰', '箱詰', '出荷', '返品')
-       ORDER BY l.txn_date DESC, l.id DESC
-       LIMIT ?`
+       WHERE ${whereSql}
+       ORDER BY ${orderSql}
+       LIMIT @limit OFFSET @offset`
     )
-    .all(limit);
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
+}
+
+/** 取消できる直近の記録を返す（旧シグネチャ。行の配列をそのまま返す） */
+function listCancellable({ limit = 30 } = {}) {
+  return listLedgerRecords({ limit }).rows;
 }
 
 /**
@@ -136,4 +217,10 @@ function cancelProductLedger(ledgerId, { reason } = {}, actor = null) {
   return run();
 }
 
-module.exports = { listCancellable, cancelProductLedger, CANCELLABLE };
+module.exports = {
+  listLedgerRecords,
+  listCancellable,
+  cancelProductLedger,
+  CANCELLABLE,
+  SORTABLE,
+};
