@@ -825,6 +825,308 @@ function deleteResidue(residueId, actor = null) {
   return findById(current.distillation_id);
 }
 
+
+// --- 記録の手直し（台帳と在庫が動くもの） ----------------------------------
+//
+// 完了済みでも直せる。移行した過去の記録を手で直すのが目的。
+//
+// **台帳は書き換えない。**「取り消して入れ直す」を1トランザクションで行う。
+// このシステムは在庫を台帳の積み上げで出しており、取消も
+// 「論理削除＋戻し行の追加」で表している。編集だけUPDATEにすると、
+// 台帳を見ても何が起きたのか分からなくなる。
+
+/** 原酒タンクの残量が負になっていないか。書き込んだ**あと**に確かめる */
+function assertRawSakeTankNotNegative(db, tankIds) {
+  for (const tankId of new Set(tankIds.filter((id) => id != null))) {
+    const state = getRawSakeTankVolume(db, tankId);
+    if (state && state.current_volume_l < 0) {
+      throw new BusinessRuleError(
+        `${state.name} の残量が ${state.current_volume_l}L になります。` +
+          '投入量が、そのタンクに入っていた量を超えています'
+      );
+    }
+  }
+}
+
+/** 浄酎タンクの残量が負になっていないか（出力量を減らしたときに効く） */
+function assertTankMonitorNotNegative(db, tankIds) {
+  for (const tankId of new Set(tankIds.filter((id) => id != null))) {
+    const state = db
+      .prepare('SELECT name, current_volume_l FROM v_tank_monitor WHERE tank_id = ?')
+      .get(tankId);
+    if (state && state.current_volume_l < 0) {
+      throw new BusinessRuleError(
+        `${state.name} の残量が ${Math.round(state.current_volume_l * 100) / 100}L になります。` +
+          'この蒸留で入れた浄酎は、既に瓶詰めなどで使われています'
+      );
+    }
+  }
+}
+
+/**
+ * 投入明細を直す。
+ *
+ * 元の明細を取り消して（原酒を元のタンクへ戻し）、新しい内容で入れ直す。
+ * 元容器を変えたときも、この形なら自然に表せる（古いタンクへ戻し、新しいタンクから出す）。
+ *
+ * 残量の検査は**書き込んだあと**に行う。戻しを先に入れておかないと、
+ * 同じタンクの投入量を 30L→20L に直すだけでも「残量が足りない」と誤って断ってしまう。
+ */
+function updateDistillationDetail(detailId, input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const detail = db
+      .prepare(
+        `SELECT d.*, ds.distillation_code, ds.status AS distillation_status, ds.id AS dist_id
+           FROM distillation_details d
+           JOIN distillations ds ON ds.id = d.distillation_id
+          WHERE d.id = ?`
+      )
+      .get(detailId);
+    if (!detail) throw new NotFoundError(`蒸留明細が見つかりません (id=${detailId})`);
+    if (detail.is_cancelled) {
+      throw new ConflictError(`蒸留明細 (id=${detailId}) は取消済みです。直せません`);
+    }
+
+    const inputL = input.inputL ?? detail.input_l;
+    const sourceTankId = input.sourceTankId ?? detail.source_tank_id;
+    const note = Object.hasOwn(input, 'note') ? input.note : detail.note;
+
+    const newTank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(sourceTankId);
+    if (!newTank) throw new NotFoundError(`投入元タンクが見つかりません (id=${sourceTankId})`);
+
+    const txnDate = today();
+
+    // 1. 元の明細を取り消し、原酒を元のタンクへ戻す
+    db.prepare(
+      `UPDATE distillation_details
+          SET is_cancelled = 1,
+              note = TRIM(COALESCE(note, '') || ' 修正のため差し替え')
+        WHERE id = ?`
+    ).run(detailId);
+
+    db.prepare(
+      `INSERT INTO raw_sake_ledger
+         (lot_code, txn_date, txn_type, from_tank_id, source_ref, to_ref, to_tank_id,
+          distillation_id, quantity, note)
+       VALUES
+         (@lotCode, @txnDate, '受入', NULL, @sourceRef, NULL, @toTankId,
+          @distillationId, @quantity, @note)`
+    ).run({
+      lotCode: nextRawSakeLotCode(db, '受入', txnDate),
+      txnDate,
+      toTankId: detail.source_tank_id,
+      distillationId: detail.distillation_id,
+      quantity: detail.input_l,
+      sourceRef: `修正（${detail.detail_code ?? `明細id=${detailId}`}）`,
+      note: `蒸留 ${detail.distillation_code} の投入明細の修正による戻し`,
+    });
+
+    // 2. 新しい内容で入れ直す
+    const ledgerResult = db
+      .prepare(
+        `INSERT INTO raw_sake_ledger
+           (lot_code, txn_date, txn_type, from_tank_id, to_ref, to_tank_id, distillation_id,
+            quantity, note)
+         VALUES
+           (@lotCode, @txnDate, '払出', @fromTankId, @toRef, NULL, @distillationId,
+            @quantity, @note)`
+      )
+      .run({
+        lotCode: nextRawSakeLotCode(db, '払出', txnDate),
+        txnDate,
+        fromTankId: sourceTankId,
+        toRef: detail.distillation_code,
+        distillationId: detail.distillation_id,
+        quantity: inputL,
+        note,
+      });
+
+    const newDetailCode = nextDetailCode(db);
+    const detailResult = db
+      .prepare(
+        `INSERT INTO distillation_details
+           (detail_code, distillation_id, raw_sake_ledger_id, input_l, source_tank_id, note)
+         VALUES
+           (@detailCode, @distillationId, @rawSakeLedgerId, @inputL, @sourceTankId, @note)`
+      )
+      .run({
+        detailCode: newDetailCode,
+        distillationId: detail.distillation_id,
+        rawSakeLedgerId: ledgerResult.lastInsertRowid,
+        inputL,
+        sourceTankId,
+        note,
+      });
+
+    // 元の行から新しい行へたどれるようにしておく
+    db.prepare(
+      `UPDATE distillation_details SET note = TRIM(COALESCE(note, '') || ' → ' || @to) WHERE id = @id`
+    ).run({ id: detailId, to: newDetailCode });
+
+    // 3. 投入量合計を、取り消されていない明細で数え直す
+    const { total } = db
+      .prepare(
+        `SELECT COALESCE(SUM(input_l), 0) AS total FROM distillation_details
+          WHERE distillation_id = ? AND is_cancelled = 0`
+      )
+      .get(detail.distillation_id);
+    db.prepare('UPDATE distillations SET total_input_l = ? WHERE id = ?')
+      .run(total, detail.distillation_id);
+
+    // 4. 書き込んだあとで残量を確かめる。負なら全部やり直し（トランザクション）
+    assertRawSakeTankNotNegative(db, [detail.source_tank_id, sourceTankId]);
+
+    return {
+      distillationId: detail.distillation_id,
+      code: detail.distillation_code,
+      newDetailId: Number(detailResult.lastInsertRowid),
+      newDetailCode,
+      before: {
+        detail_code: detail.detail_code,
+        input_l: detail.input_l,
+        source_tank_id: detail.source_tank_id,
+        note: detail.note,
+      },
+      after: { detail_code: newDetailCode, input_l: inputL, source_tank_id: sourceTankId, note },
+      totalInputL: total,
+    };
+  });
+
+  const result = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.detail.update',
+    targetType: 'distillation_details',
+    targetId: result.newDetailId,
+    summary:
+      `蒸留 ${result.code} の投入明細 ${result.before.detail_code} を ` +
+      `${result.newDetailCode} として直しました（${result.before.input_l}L → ${result.after.input_l}L）`,
+    detail: { before: result.before, after: result.after, totalInputL: result.totalInputL },
+  });
+
+  return findById(result.distillationId);
+}
+
+/**
+ * 蒸留量（出力）を直す。
+ *
+ * 完了時に浄酎タンクへ入れた「継足」が出力量の実体。
+ * 投入明細と同じ考え方で、古い継足を取り消して、新しい量で入れ直す。
+ */
+function updateDistillationOutput(distillationId, input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const current = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+    if (!current) throw new NotFoundError(`蒸留記録が見つかりません (id=${distillationId})`);
+    if (current.status !== STATUS_COMPLETED) {
+      throw new ConflictError(
+        `蒸留 ${current.distillation_code} はまだ完了していません。完了報告から入力してください`
+      );
+    }
+
+    const outputL = input.outputL ?? current.output_l;
+    const outputAbv = Object.hasOwn(input, 'outputAbv') ? input.outputAbv : current.output_abv;
+    const outputTankId = input.outputTankId ?? current.output_tank_id;
+    const completedOn = input.completedOn ?? current.completed_on;
+    const completedTime = input.completedTime ?? current.completed_time;
+
+    const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(outputTankId);
+    if (!tank) throw new NotFoundError(`払出先タンクが見つかりません (id=${outputTankId})`);
+
+    // この蒸留の「継足」（有効なもの）を取り消す
+    const old = db
+      .prepare(
+        `SELECT * FROM tank_ledger
+          WHERE distillation_id = ? AND txn_type = '継足' AND is_cancelled = 0
+          ORDER BY id`
+      )
+      .all(distillationId);
+
+    for (const row of old) {
+      db.prepare(
+        `UPDATE tank_ledger
+            SET is_cancelled = 1,
+                cancel_reason = '蒸留量の修正による差し替え',
+                cancelled_at = datetime('now'),
+                cancelled_by = @by
+          WHERE id = @id`
+      ).run({ id: row.id, by: actor?.id ?? null });
+    }
+
+    db.prepare(
+      `INSERT INTO tank_ledger
+         (txn_date, from_tank_id, txn_type, product_id, to_tank_id, quantity_l, abv,
+          distillation_id, data_kind, note)
+       VALUES
+         (@txnDate, NULL, '継足', NULL, @toTankId, @quantityL, @abv,
+          @distillationId, '運用中（リアルタイム）', @note)`
+    ).run({
+      txnDate: completedOn ?? today(),
+      toTankId: outputTankId,
+      quantityL: outputL,
+      abv: outputAbv ?? null,
+      distillationId,
+      note: `蒸留 ${current.distillation_code} の蒸留量の修正`,
+    });
+
+    db.prepare(
+      `UPDATE distillations
+          SET output_l = @outputL, output_abv = @outputAbv, output_tank_id = @outputTankId,
+              completed_on = @completedOn, completed_time = @completedTime
+        WHERE id = @id`
+    ).run({
+      id: distillationId,
+      outputL,
+      outputAbv: outputAbv ?? null,
+      outputTankId,
+      completedOn,
+      completedTime,
+    });
+
+    // 書き込んだあとで残量を確かめる。減らした結果、既に瓶詰めに使われていて
+    // 足りなくなるなら断る（トランザクションごと戻る）
+    assertTankMonitorNotNegative(db, [current.output_tank_id, outputTankId]);
+
+    return {
+      code: current.distillation_code,
+      before: {
+        output_l: current.output_l,
+        output_abv: current.output_abv,
+        output_tank_id: current.output_tank_id,
+        completed_on: current.completed_on,
+        completed_time: current.completed_time,
+      },
+      after: {
+        output_l: outputL,
+        output_abv: outputAbv ?? null,
+        output_tank_id: outputTankId,
+        completed_on: completedOn,
+        completed_time: completedTime,
+      },
+      replacedLedgerRows: old.length,
+    };
+  });
+
+  const result = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.output.update',
+    targetType: 'distillations',
+    targetId: distillationId,
+    summary:
+      `蒸留 ${result.code} の蒸留量を直しました` +
+      `（${result.before.output_l}L → ${result.after.output_l}L）`,
+    detail: result,
+  });
+
+  return findById(distillationId);
+}
+
 /**
  * 未対応アラートの消込（GAS版 README 3章「未対応アラート：『処理済み』で消込」）。
  * 蒸留そのものの状態は変えず、アラート一覧から外すだけ。
@@ -953,6 +1255,8 @@ module.exports = {
   submitRawSakeReceipt,
   submitRawSakeReceipts,
   updateDistillation,
+  updateDistillationDetail,
+  updateDistillationOutput,
   addResidue,
   updateResidue,
   deleteResidue,
