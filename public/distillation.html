@@ -456,10 +456,10 @@ async function loadDistillations() {
         <td><span class="badge ${badge}">${escapeHtml(d.status)}</span></td>
         <td class="num">${d.output_l != null ? num(d.output_l, 1) : ''}</td>
         <td>${escapeHtml(d.output_tank_name ?? '')}</td>
-        <td class="row-actions">
+        <td><div class="row-actions">
           <button class="secondary small" data-detail="${d.id}">詳細</button>
           ${completeBtn}
-        </td>
+        </div></td>
       </tr>`;
     })
     .join('');
