@@ -159,7 +159,7 @@
       瓶詰め・箱詰め・出荷・返品の記録です。見出しを押すと並べ替わります。
       取り消すと、商品在庫・仕掛品・資材・タンク残量がまとめて元に戻ります（記録自体は残ります）。
       理由の入力は必須です。
-      日付や本数が違うだけなら、<strong>「直す」</strong>で書き換えられます（履歴IDは変わりません）。
+      日付や本数が違うだけなら、<strong>「編集」</strong>で書き換えられます（履歴IDは変わりません）。
     </p>
 
     <div id="editPanel" style="display:none;margin-bottom:1em;border:1px solid var(--line);border-radius:6px;padding:1em">
@@ -202,7 +202,7 @@
 
       <div class="actions">
         <span id="edHint" class="hint"></span>
-        <button type="button" id="edSave">この記録を直す</button>
+        <button type="button" id="edSave">この内容で直す</button>
         <button type="button" id="edCancel">閉じる</button>
       </div>
     </div>
@@ -665,10 +665,10 @@ async function loadCancellable() {
         <td>${r.is_cancelled
               ? `<span class="badge muted">取消済</span>`
               : '<span class="badge ok">有効</span>'}</td>
-        <td>${r.is_cancelled
+        <td${r.is_cancelled ? '' : ' class="row-actions"'}>${r.is_cancelled
               ? escapeHtml(r.cancel_reason ?? '')
               : `${EDITABLE_TYPES.includes(r.txn_type)
-                    ? `<button type="button" class="small" data-edit="${r.id}">直す</button> `
+                    ? `<button type="button" class="secondary small" data-edit="${r.id}">編集</button>`
                     : ''}` +
                 `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button>`}</td>
       </tr>`).join('')
@@ -731,7 +731,8 @@ async function openEditPanel(ledgerId) {
 
   editing = { id: ledgerId, row, tank: editableTank };
 
-  el('editTitle').textContent = `${row.history_code}（${row.txn_type}）${row.product_name} を直す`;
+  el('editTitle').textContent =
+    `${row.txn_type}の編集 ${row.history_code}（${row.product_name}）`;
 
   el('edDate').value = row.txn_date;
   el('edQuantity').value = row.quantity;
