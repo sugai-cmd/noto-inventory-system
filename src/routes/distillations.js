@@ -189,6 +189,54 @@ router.delete('/residues/:residueId', (req, res, next) => {
   }
 });
 
+// 投入明細を直す。取り消して入れ直すので、元の明細は取消済みとして残る
+const updateDetailSchema = z
+  .object({
+    inputL: z.number().positive('投入量は0より大きい値で入力してください').optional(),
+    sourceTankId: z.number().int().positive().optional(),
+    note: z.string().nullish(),
+  })
+  .strict();
+
+router.patch(
+  '/details/:detailId',
+  validateRequest(updateDetailSchema),
+  (req, res, next) => {
+    try {
+      res.json(
+        distillationService.updateDistillationDetail(
+          Number(req.params.detailId),
+          req.body,
+          req.user
+        )
+      );
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+// 蒸留量（出力）を直す。完了時に入れた「継足」を差し替える
+const updateOutputSchema = z
+  .object({
+    outputL: z.number().positive('蒸留量は0より大きい値で入力してください').optional(),
+    outputAbv: z.number().nullish(),
+    outputTankId: z.number().int().positive().optional(),
+    completedOn: dateOnly.optional(),
+    completedTime: timeOnly.optional(),
+  })
+  .strict();
+
+router.patch('/:id/output', validateRequest(updateOutputSchema), (req, res, next) => {
+  try {
+    res.json(
+      distillationService.updateDistillationOutput(Number(req.params.id), req.body, req.user)
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
 // **/:id は最後に置く。** Expressは書いた順に当てるので、これを先に置くと
 // PATCH /api/distillations/residues/5 が id="residues" として拾われる
 router.patch('/:id', validateRequest(updateDistillationSchema), (req, res, next) => {

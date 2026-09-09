@@ -162,7 +162,9 @@
         </div>
       </div>
 
-      <h3>残渣回収</h3>
+      ${outputForm}
+
+    <h3>残渣回収</h3>
       <p class="muted" style="margin-top:0;font-size:13px">
         回収量・払出先・食塩のいずれかを入力したときだけ、残渣回収記録に1行残ります。
       </p>
@@ -272,12 +274,15 @@ const DEFAULT_RECEIPT_L = 20;
  */
 function renderReceiptTankRows() {
   const body = el('rTankRows');
+
+  // タンクの行だけを控える。「空の原酒タンクがありません」の案内行には
+  // 入力欄が無いので、data-tank-id で絞らないと2回目の描画で例外になる
   const kept = new Map(
-    [...body.querySelectorAll('tr')].map((tr) => [
+    [...body.querySelectorAll('tr[data-tank-id]')].map((tr) => [
       tr.dataset.tankId,
       {
-        checked: tr.querySelector('input[type=checkbox]').checked,
-        quantity: tr.querySelector('input[type=number]').value,
+        checked: tr.querySelector('input[type=checkbox]')?.checked ?? false,
+        quantity: tr.querySelector('input[type=number]')?.value,
       },
     ])
   );
@@ -325,7 +330,7 @@ function updateReceiptSelected() {
 
 /** チェックの入った行だけを {toTankId, quantity} にして返す */
 function receiptSelectedRows() {
-  return [...el('rTankRows').querySelectorAll('tr')]
+  return [...el('rTankRows').querySelectorAll('tr[data-tank-id]')]
     .filter((tr) => tr.querySelector('input[type=checkbox]').checked)
     .map((tr) => ({
       toTankId: Number(tr.dataset.tankId),
@@ -351,7 +356,7 @@ el('rCheckNone').addEventListener('click', () => {
 
 el('rApplyQty').addEventListener('click', () => {
   const value = el('rDefaultQty').value;
-  for (const tr of el('rTankRows').querySelectorAll('tr')) {
+  for (const tr of el('rTankRows').querySelectorAll('tr[data-tank-id]')) {
     if (tr.querySelector('input[type=checkbox]').checked) {
       tr.querySelector('input[type=number]').value = value;
     }
@@ -468,17 +473,38 @@ async function showDetail(id) {
   el('detailPanel').style.display = '';
   el('detailCode').textContent = d.distillation_code;
 
-  const details = d.details.map((row) => `
-    <tr class="${row.is_cancelled ? 'muted' : ''}">
-      <td>${escapeHtml(row.lot_code ?? '')}</td>
-      <td>${escapeHtml(row.source_tank_name ?? '')}</td>
-      <td class="num">${num(row.input_l, 1)}</td>
-      <td>${row.is_cancelled ? '<span class="badge muted">取消済み</span>' : ''}</td>
-      <td>${escapeHtml(row.note ?? '')}</td>
-      <td>${row.is_cancelled || d.status === '完了'
-        ? ''
-        : `<button class="danger small" data-cancel-detail="${row.id}">取消</button>`}</td>
-    </tr>`).join('');
+  // 投入元に選べるのは原酒タンク。残量つきの一覧から出す
+  const tankOptions = (selectedId) =>
+    rawSakeTanks
+      .map((t) => `<option value="${t.tank_id}" ${t.tank_id === selectedId ? 'selected' : ''}>
+             ${escapeHtml(t.code)} ${escapeHtml(t.name)}（残 ${num(t.current_volume_l, 1)}L）</option>`)
+      .join('');
+
+  const details = d.details.map((row) => {
+    if (row.is_cancelled) {
+      return `<tr class="muted">
+        <td>${escapeHtml(row.detail_code ?? '')} ${escapeHtml(row.lot_code ?? '')}</td>
+        <td>${escapeHtml(row.source_tank_name ?? '')}</td>
+        <td class="num">${num(row.input_l, 1)}</td>
+        <td><span class="badge muted">取消済み</span></td>
+        <td>${escapeHtml(row.note ?? '')}</td>
+        <td></td>
+      </tr>`;
+    }
+    // 有効な明細は、その場で直せる
+    return `<tr data-detail-id="${row.id}">
+      <td>${escapeHtml(row.detail_code ?? '')} ${escapeHtml(row.lot_code ?? '')}</td>
+      <td><select data-field="sourceTankId">${tankOptions(row.source_tank_id)}</select></td>
+      <td class="num"><input type="number" min="0.1" step="0.1" style="width:7em"
+           data-field="inputL" value="${row.input_l ?? ''}"></td>
+      <td></td>
+      <td><input type="text" style="width:10em" data-field="note" value="${escapeHtml(row.note ?? '')}"></td>
+      <td>
+        <button type="button" class="small" data-save-detail="${row.id}">直す</button>
+        ${d.status === '完了' ? '' : `<button type="button" class="danger small" data-cancel-detail="${row.id}">取消</button>`}
+      </td>
+    </tr>`;
+  }).join('');
 
   const residues = d.residues.length
     ? d.residues.map((r) => `
@@ -496,7 +522,48 @@ async function showDetail(id) {
         </tr>`).join('')
     : '<tr><td colspan="7" class="empty">残渣回収記録はありません</td></tr>';
 
+  const completedWarning = d.status === '完了'
+    ? `<div class="msg error" style="margin-bottom:1em">
+         <strong>完了した記録を直しています。</strong>
+         投入量を変えると原酒タンクの残量が、蒸留量を変えると浄酎タンクの中身が、その場で変わります。
+       </div>`
+    : '';
+
+  const outputForm = d.status === '完了'
+    ? `<h3>蒸留量（出力）</h3>
+       <div class="grid">
+         <div>
+           <label for="edOutputL">蒸留量 (L)</label>
+           <input type="number" min="0.1" step="0.1" id="edOutputL" value="${d.output_l ?? ''}">
+         </div>
+         <div>
+           <label for="edOutputAbv">アルコール度数</label>
+           <input type="number" step="0.1" id="edOutputAbv" value="${d.output_abv ?? ''}">
+         </div>
+         <div>
+           <label for="edOutputTank">払出先タンク</label>
+           <select id="edOutputTank">${
+             tanks.map((t) => `<option value="${t.id}" ${t.id === d.output_tank_id ? 'selected' : ''}>
+                    ${escapeHtml(t.code)} ${escapeHtml(t.name)}</option>`).join('')
+           }</select>
+         </div>
+         <div>
+           <label for="edCompletedOn">完了日</label>
+           <input type="date" id="edCompletedOn" value="${escapeHtml(d.completed_on ?? '')}">
+         </div>
+         <div>
+           <label for="edCompletedTime">完了時刻</label>
+           <input type="time" id="edCompletedTime" value="${escapeHtml(d.completed_time ?? '')}">
+         </div>
+       </div>
+       <div class="actions">
+         <span class="hint">直すと、完了時に入れた継足を差し替えます（古い分は取消済みとして残ります）</span>
+         <button type="button" id="edSaveOutput">蒸留量を直す</button>
+       </div>`
+    : '';
+
   el('detailBody').innerHTML = `
+    ${completedWarning}
     <h3>この蒸留の記録</h3>
     <div class="grid">
       <div>
@@ -522,9 +589,6 @@ async function showDetail(id) {
              placeholder="数字にならない事情を書き残せます">
     </div>
     <div class="actions">
-      <span class="hint">
-        投入量と蒸留量（出力）はここでは直せません。タンクの中身が動くため、別に扱います。
-      </span>
       <button type="button" id="edSave">この内容で保存</button>
     </div>
 
@@ -535,6 +599,8 @@ async function showDetail(id) {
         <tbody>${details}</tbody>
       </table>
     </div>
+
+    ${outputForm}
 
     <h3>残渣回収</h3>
     <div class="table-scroll">
@@ -568,6 +634,47 @@ async function saveDistillationHeader() {
   await Promise.all([loadDistillations(), showDetail(currentDetailId)]);
 }
 
+/** 投入明細の1行を直す。取り消して入れ直すので、確認を出す */
+async function saveDetailRow(tr) {
+  const value = (name) => tr.querySelector(`[data-field="${name}"]`).value;
+
+  if (!confirm(
+    '投入明細を直します。元の明細は取消済みとして残り、新しい明細に差し替わります。\n' +
+    '原酒タンクの残量もその場で変わります。よろしいですか？'
+  )) return;
+
+  const d = await apiPatch(`/api/distillations/details/${tr.dataset.detailId}`, {
+    inputL: Number(value('inputL')),
+    sourceTankId: Number(value('sourceTankId')),
+    note: value('note') || null,
+  });
+  showMessage('messages', 'ok',
+    `投入明細を直しました（投入量合計 ${num(d.total_input_l, 1)}L）`);
+  await Promise.all([loadDistillations(), loadTanks()]);
+  await showDetail(currentDetailId);
+}
+
+/** 蒸留量（出力）を直す。完了時に入れた継足を差し替える */
+async function saveOutput() {
+  if (!confirm(
+    '蒸留量を直します。完了時に入れた継足を差し替えるので、\n' +
+    '浄酎タンクの中身がその場で変わります。よろしいですか？'
+  )) return;
+
+  const abv = el('edOutputAbv').value;
+  const d = await apiPatch(`/api/distillations/${currentDetailId}/output`, {
+    outputL: Number(el('edOutputL').value),
+    outputAbv: abv === '' ? null : Number(abv),
+    outputTankId: Number(el('edOutputTank').value),
+    completedOn: el('edCompletedOn').value || undefined,
+    completedTime: el('edCompletedTime').value || undefined,
+  });
+  showMessage('messages', 'ok',
+    `${d.distillation_code} の蒸留量を ${num(d.output_l, 1)}L に直しました`);
+  await Promise.all([loadDistillations(), loadTanks()]);
+  await showDetail(currentDetailId);
+}
+
 /** 残渣の1行を保存する。変えた欄だけを送る */
 async function saveResidueRow(tr) {
   const value = (name) => tr.querySelector(`[data-field="${name}"]`).value;
@@ -590,6 +697,19 @@ el('detailBody').addEventListener('click', async (e) => {
 
   if (e.target.closest('#edSave')) {
     try { await saveDistillationHeader(); }
+    catch (err) { showMessage('messages', 'error', err.message, err.details); }
+    return;
+  }
+
+  const saveDetail = e.target.closest('[data-save-detail]');
+  if (saveDetail) {
+    try { await saveDetailRow(saveDetail.closest('tr')); }
+    catch (err) { showMessage('messages', 'error', err.message, err.details); }
+    return;
+  }
+
+  if (e.target.closest('#edSaveOutput')) {
+    try { await saveOutput(); }
     catch (err) { showMessage('messages', 'error', err.message, err.details); }
     return;
   }
