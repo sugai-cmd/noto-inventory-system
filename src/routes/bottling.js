@@ -59,6 +59,22 @@ router.get('/recipe/:productId', (req, res) => {
   });
 });
 
+const allocationSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        bottlingLedgerId: z.number().int().positive(),
+        quantity: z.number().positive('本数は0より大きい値で入力してください'),
+      })
+    )
+    .max(50, '一度に割り当てられるのは50ロットまでです')
+    // 同じロットを2行に分けると、合計は合っていても内訳が読めない
+    .refine(
+      (items) => new Set(items.map((i) => i.bottlingLedgerId)).size === items.length,
+      { message: '同じ瓶詰めロットが2行以上あります。1つにまとめてください' }
+    ),
+});
+
 /** 箱詰め画面のロット一覧（残量つき、古い順） */
 router.get('/wip-lots', (req, res) => {
   res.json(wipLotService.listLots(req.query.productId ? Number(req.query.productId) : null));
@@ -69,5 +85,44 @@ router.get('/wip-lots/stale', (req, res) => {
   const thresholdDays = Number(req.query.days) || 7;
   res.json(wipLotService.listStaleLots({ thresholdDays }));
 });
+
+/**
+ * 引当が足りていない箱詰め（＝どの瓶詰めロットを使ったか分からない箱詰め）。
+ * 移行で入った箱詰めには引当行が1件も無く、ロット番号は文字でしか残っていない。
+ */
+router.get('/wip-lots/unlinked', (req, res) => {
+  res.json(
+    wipLotService.listUnlinkedBoxings({
+      productId: req.query.productId ? Number(req.query.productId) : null,
+    })
+  );
+});
+
+/** 箱詰め1件の引当内訳 */
+router.get('/wip-lots/allocations/:boxingLedgerId', (req, res) => {
+  res.json(wipLotService.listAllocations(Number(req.params.boxingLedgerId)));
+});
+
+/**
+ * 箱詰め1件の引当を置き換える。
+ * 足すのではなく置き換えなので、同じ内容で2回送っても二重にならない。
+ */
+router.put(
+  '/wip-lots/allocations/:boxingLedgerId',
+  validateRequest(allocationSchema),
+  (req, res, next) => {
+    try {
+      res.json(
+        wipLotService.replaceAllocations(
+          Number(req.params.boxingLedgerId),
+          req.body.items,
+          req.user
+        )
+      );
+    } catch (err) {
+      next(err);
+    }
+  }
+);
 
 module.exports = router;

@@ -39,6 +39,7 @@ async function api(method, path, body) {
 const apiGet = (path) => api('GET', path);
 const apiPost = (path, body) => api('POST', path, body);
 const apiPatch = (path, body) => api('PATCH', path, body);
+const apiPut = (path, body) => api('PUT', path, body);
 
 function el(id) {
   return document.getElementById(id);
