@@ -32,7 +32,22 @@
   </div>
 
   <section class="panel" id="salesPanel">
-    <h2>今月の売上進捗</h2>
+    <h2>売上進捗</h2>
+    <div class="grid">
+      <div>
+        <label for="spMonth">対象月</label>
+        <input type="month" id="spMonth">
+      </div>
+      <div>
+        <label for="spBasis">実績を数える日付</label>
+        <select id="spBasis">
+          <option value="delivered">納品日</option>
+          <option value="ordered">受注日</option>
+          <option value="payment_due">入金予定日</option>
+        </select>
+      </div>
+    </div>
+    <p class="muted" id="spBasisNote" style="font-size:13px"></p>
     <div id="salesProgress"></div>
   </section>
 
@@ -180,20 +195,10 @@ const LOW_STOCK_THRESHOLD = 20;
     }
     el('alerts').innerHTML = alertBlocks.join('');
 
-    // 売上目標に対する進捗（目標未設定なら設定を促す）
-    el('salesProgress').innerHTML = progress.targetAmount == null
-      ? `<p class="muted" style="margin:0;font-size:13px">
-           ${progress.targetMonth} の売上目標が未設定です。
-           <a href="sales-targets.html">売上目標を設定する</a>
-         </p>`
-      : `<div class="stat-row">
-           <div class="stat"><div class="label">目標</div><div class="value">${yen(progress.targetAmount)}</div></div>
-           <div class="stat"><div class="label">実績</div><div class="value">${yen(progress.actualAmount)}</div></div>
-           <div class="stat"><div class="label">達成率</div><div class="value">${progress.progressRate}<span class="unit">%</span></div></div>
-           <div class="stat"><div class="label">残り</div><div class="value">${yen(progress.remainingAmount)}</div></div>
-         </div>
-         <p class="hint">内訳: 買取 ${yen(progress.breakdown.purchase.amount)}（${progress.breakdown.purchase.count}件） /
-            委託 ${yen(progress.breakdown.consignment.amount)}（${progress.breakdown.consignment.count}件）</p>`;
+    // 売上目標に対する進捗
+    el('spMonth').value = progress.targetMonth;
+    el('spBasis').value = progress.basis;
+    renderSalesProgress(progress);
 
     el('pendingRows').innerHTML = orders.length
       ? orders.slice(0, 20).map((o) => `<tr>
@@ -263,6 +268,137 @@ const LOW_STOCK_THRESHOLD = 20;
     showMessage('messages', 'error', err.message);
   }
 })();
+
+/**
+ * 売上進捗。実績がどの日付で数えられているかを画面に書き、
+ * 内訳は折り畳みで開けるようにする。
+ *
+ * 「実績 ¥365,790（11件）」としか出ていなかったため、
+ * どの日付基準なのかも、中身が何なのかも画面から分からなかった。
+ */
+function renderSalesProgress(progress) {
+  const missing = progress.basis === 'delivered'
+    ? '納品日が未入力の受注は入りません。'
+    : progress.basis === 'payment_due'
+      ? '入金予定日が未入力の受注は入りません。'
+      : '';
+  el('spBasisNote').innerHTML =
+    `実績は<strong>${escapeHtml(progress.basisLabel)}</strong>がこの月にあるものを数えています。` +
+    `${escapeHtml(missing)}委託は基準にかかわらず<strong>報告月</strong>で数えます。`;
+
+  if (progress.targetAmount == null) {
+    el('salesProgress').innerHTML =
+      `<p class="muted" style="margin:0;font-size:13px">
+         ${escapeHtml(progress.targetMonth)} の売上目標が未設定です。
+         <a href="sales-targets.html">売上目標を設定する</a>
+       </p>` + breakdownHtml(progress);
+    return;
+  }
+
+  el('salesProgress').innerHTML =
+    `<div class="stat-row">
+       <div class="stat"><div class="label">目標</div><div class="value">${yen(progress.targetAmount)}</div></div>
+       <div class="stat"><div class="label">実績</div><div class="value">${yen(progress.actualAmount)}</div></div>
+       <div class="stat"><div class="label">達成率</div><div class="value">${progress.progressRate}<span class="unit">%</span></div></div>
+       <div class="stat"><div class="label">残り</div><div class="value">${yen(progress.remainingAmount)}</div></div>
+     </div>` + breakdownHtml(progress);
+}
+
+/** 回収の状態。請求日・入金日から出している */
+function statusBadge(status) {
+  const cls = status === '入金済' ? 'ok' : status === '未入金' ? 'warn' : 'muted';
+  return `<span class="badge ${cls}">${escapeHtml(status)}</span>`;
+}
+
+/** いま基準になっている日付の見出しに印を付ける */
+function basisMark(progress, column) {
+  return progress.basisColumn === column ? ' ●' : '';
+}
+
+function breakdownHtml(progress) {
+  const { purchase, consignment } = progress.breakdown;
+
+  const purchaseRows = purchase.rows.length
+    ? purchase.rows.map((r) => `<tr>
+        <td>${escapeHtml(r.order_no)}</td>
+        <td>${escapeHtml(r.ordered_on ?? '')}</td>
+        <td>${escapeHtml(r.delivered_on ?? '')}</td>
+        <td>${escapeHtml(r.customer_name)}</td>
+        <td>${escapeHtml(r.product_name)}</td>
+        <td class="num">${num(r.quantity)}</td>
+        <td class="num">${yen(r.sales_amount)}</td>
+        <td>${escapeHtml(r.invoiced_on ?? '')}</td>
+        <td>${escapeHtml(r.paid_on ?? '')}</td>
+        <td>${statusBadge(r.payment_status)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="10" class="empty">この月に数えた受注はありません</td></tr>';
+
+  const consignmentRows = consignment.rows.length
+    ? consignment.rows.map((r) => `<tr>
+        <td>${escapeHtml(r.report_no ?? '')}</td>
+        <td>${escapeHtml(r.report_month)}</td>
+        <td>${escapeHtml(r.customer_name)}</td>
+        <td>${escapeHtml(r.product_name)}</td>
+        <td class="num">${num(r.quantity)}</td>
+        <td class="num">${yen(r.sales_amount)}</td>
+        <td>${escapeHtml(r.invoiced_on ?? '')}</td>
+        <td>${escapeHtml(r.paid_on ?? '')}</td>
+        <td>${statusBadge(r.payment_status)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="9" class="empty">この月の委託の報告はありません</td></tr>';
+
+  return `
+    <details id="spBreakdown" style="margin-top:12px">
+      <summary style="cursor:pointer">
+        内訳: 買取 ${yen(purchase.amount)}（${purchase.count}件） /
+        委託 ${yen(consignment.amount)}（${consignment.count}件）
+      </summary>
+
+      <h3 style="margin-bottom:4px">買取</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>受注番号</th>
+            <th>受注日${basisMark(progress, 'ordered_on')}</th>
+            <th>納品日${basisMark(progress, 'delivered_on')}</th>
+            <th>得意先</th><th>商品</th><th class="num">本数</th><th class="num">金額</th>
+            <th>請求日</th><th>入金日</th><th>状態</th>
+          </tr></thead>
+          <tbody id="spPurchaseRows">${purchaseRows}</tbody>
+        </table>
+      </div>
+
+      <h3 style="margin-bottom:4px">委託（報告月で計上）</h3>
+      <div class="table-scroll">
+        <table>
+          <thead><tr>
+            <th>報告番号</th><th>報告月</th><th>得意先</th><th>商品</th>
+            <th class="num">本数</th><th class="num">金額</th>
+            <th>請求日</th><th>入金日</th><th>状態</th>
+          </tr></thead>
+          <tbody id="spConsignmentRows">${consignmentRows}</tbody>
+        </table>
+      </div>
+    </details>`;
+}
+
+/** 月や基準を変えたら、この欄だけ取り直す */
+async function reloadSalesProgress() {
+  const open = el('spBreakdown')?.open ?? false;
+  const params = new URLSearchParams({ basis: el('spBasis').value });
+  if (el('spMonth').value) params.set('month', el('spMonth').value);
+  try {
+    const progress = await apiGet(`/api/sales-targets/progress?${params}`);
+    renderSalesProgress(progress);
+    // 開いたまま月を切り替えても閉じないようにする
+    if (open && el('spBreakdown')) el('spBreakdown').open = true;
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
+
+el('spMonth').addEventListener('change', reloadSalesProgress);
+el('spBasis').addEventListener('change', reloadSalesProgress);
 </script>
 </body>
 </html>

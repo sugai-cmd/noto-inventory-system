@@ -46,6 +46,16 @@ function today() {
 }
 
 /**
+ * 今月を 'YYYY-MM' で返す（ローカルタイム基準）。
+ *
+ * new Date().toISOString().slice(0,7) を使ってはいけない。あれはUTCなので、
+ * 日本時間の1日 朝9時前に開くと**前月**になる（ダッシュボードが前月の目標を出していた）。
+ */
+function currentMonth() {
+  return today().slice(0, 7);
+}
+
+/**
  * 支払いサイトから入金予定日を計算する（DATA_STRUCTURE.md 4-1 M列
  * 「納品日＋得意先の支払いサイトから自動計算」の実装）。
  *
@@ -91,6 +101,7 @@ module.exports = {
   isDateOnly,
   assertDateOnly,
   today,
+  currentMonth,
   lastDayOfMonth,
   calcPaymentDueOn,
 };
