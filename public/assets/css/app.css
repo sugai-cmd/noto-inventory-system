@@ -158,7 +158,12 @@ tbody tr:hover { background: #f9fafc; }
 .muted { color: var(--muted); }
 .empty { padding: 24px; text-align: center; color: var(--muted); }
 .hint { font-size: 12px; color: var(--muted); margin-top: 4px; }
+/* 一覧の操作ボタンを横に並べる。
+   **必ず td の中の div に付けること。** td 自身に付けると display:flex で
+   セルが表のレイアウトから外れ、行の高さに合わせて伸びなくなる。
+   下罫線がその列だけ違う高さに引かれ、ボタンの文字も折り返される。 */
 .row-actions { display: flex; gap: 6px; }
+.row-actions button { white-space: nowrap; }
 
 /* ロット追跡：中身の内訳（積み上げバーと明細） */
 .lot-bar {
@@ -296,8 +301,6 @@ html {
 
   /* 一覧の操作ボタンは縦に積んで押しやすく */
   .row-actions { flex-direction: column; align-items: stretch; }
-  /* 「編集」が1文字ずつ折り返されないようにする */
-  .row-actions button { white-space: nowrap; }
 
   /* 検索候補は画面幅いっぱいに */
   .search-results { max-height: 50vh; }

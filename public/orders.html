@@ -404,10 +404,10 @@ async function loadOrders() {
         <td><span class="badge ${badge}">${escapeHtml(o.status)}</span></td>
         <td>${escapeHtml(o.delivered_on ?? '')}</td>
         <td>${escapeHtml(o.payment_due_on ?? '')}</td>
-        <td class="row-actions">
+        <td><div class="row-actions">
           <button class="secondary small" data-edit="${o.id}">編集</button>
           ${shipBtn}
-        </td>
+        </div></td>
       </tr>`;
     })
     .join('');

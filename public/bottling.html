@@ -665,12 +665,13 @@ async function loadCancellable() {
         <td>${r.is_cancelled
               ? `<span class="badge muted">取消済</span>`
               : '<span class="badge ok">有効</span>'}</td>
-        <td${r.is_cancelled ? '' : ' class="row-actions"'}>${r.is_cancelled
+        <td>${r.is_cancelled
               ? escapeHtml(r.cancel_reason ?? '')
-              : `${EDITABLE_TYPES.includes(r.txn_type)
+              : `<div class="row-actions">` +
+                `${EDITABLE_TYPES.includes(r.txn_type)
                     ? `<button type="button" class="secondary small" data-edit="${r.id}">編集</button>`
                     : ''}` +
-                `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button>`}</td>
+                `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button></div>`}</td>
       </tr>`).join('')
     : '<tr><td colspan="8" class="empty">該当する記録がありません</td></tr>';
 
