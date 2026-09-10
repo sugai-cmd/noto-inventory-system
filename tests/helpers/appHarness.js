@@ -12,6 +12,29 @@ const TEST_USER = { username: 'tester', password: 'test-password-123', role: 'ad
  * @param {string} dbName - db/ 配下に作るテスト用DBのファイル名
  * @returns {{setup: Function, teardown: Function}}
  */
+/**
+ * テストが本当にテスト用DBを掴んでいるかを確かめる。
+ *
+ * config.js は**読み込んだ時点で**DB_PATHを評価し、connection.js は接続を1つ持ち回る。
+ * そのため試験ファイルが createHarness より前に src/ のモジュールを require すると、
+ * まだ DB_PATH が差し替わっておらず、**運用中の db/database.sqlite を掴む**。
+ * 気づかずに走らせると、npm test が本番のデータに書き込んでしまう。
+ *
+ * 実際に一度やった（tests/services/tankKind.test.js で tankService を先に require し、
+ * 棚卸の欠減1行が db/database.sqlite に書かれた）。順番に気をつけるだけでは同じことが起きるので、
+ * ここで止める。
+ */
+function assertTestDatabase(actualPath, expectedPath) {
+  if (path.resolve(actualPath) === path.resolve(expectedPath)) return;
+  throw new Error(
+    'テストがテスト用DBを掴んでいません。\n' +
+      `  つかんでいるDB: ${actualPath}\n` +
+      `  つかむべきDB  : ${expectedPath}\n` +
+      '試験ファイルの先頭で、createHarness() より前に src/ のモジュールを require していませんか。\n' +
+      'createHarness() が DB_PATH を差し替えるので、src/ の require はそのあとに置いてください。'
+  );
+}
+
 function createHarness(dbName) {
   const dbPath = path.resolve(__dirname, '..', '..', 'db', dbName);
   removeDbFiles(dbPath);
@@ -26,6 +49,10 @@ function createHarness(dbName) {
     const { createApp } = require('../../src/app');
     const authService = require('../../src/services/authService');
     const { generateUid } = require('../../src/utils/uid');
+
+    // **DBを開く前に**確かめる。開いてしまうと、その時点で運用中のDBに
+    // ファイルが作られ、migrate() まで走ってしまう。
+    assertTestDatabase(require('../../src/config').dbPath, dbPath);
 
     migrate();
     const db = getConnection();

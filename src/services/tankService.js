@@ -326,6 +326,29 @@ function isRawSakeTankCode(code) {
   return typeof code === 'string' && code.startsWith(`${RAW_SAKE_TANK_PREFIX}-`);
 }
 
+/** 残渣タンクの容器IDプレフィックス */
+const RESIDUE_TANK_PREFIX = TANK_PREFIXES['残渣タンク'];
+
+/** 中身で分けた容器の種類。画面の見出しにもこの文字をそのまま使う */
+const TANK_KINDS = ['浄酎', '原酒', '残渣'];
+
+/**
+ * 容器を中身で3つに分ける。
+ *
+ * **容器IDの接頭辞で決める。容器種別では決められない。**
+ * 実データでは原酒ポリ（SP）も出荷用ポリ（JP）も container_type が 'PE' で、
+ * 一斗瓶10本は容器IDが G- ではなく T- で採番されている。
+ *
+ * 原酒（SP）と残渣（U）は tank_ledger に1行も持たない。
+ * 原酒の残量は raw_sake_ledger（v_raw_sake_tank_volume）から出るので、
+ * 浄酎のモニターに混ぜると必ず 0L で並ぶ。
+ */
+function tankKind(code) {
+  if (isRawSakeTankCode(code)) return '原酒';
+  if (typeof code === 'string' && code.startsWith(`${RESIDUE_TANK_PREFIX}-`)) return '残渣';
+  return '浄酎';
+}
+
 function listTankPrefixes() {
   return Object.entries(TANK_PREFIXES).map(([containerType, prefix]) => ({ containerType, prefix }));
 }
@@ -409,7 +432,10 @@ function listTanks({ includeDiscarded = false } = {}) {
 
 module.exports = {
   RAW_SAKE_TANK_PREFIX,
+  RESIDUE_TANK_PREFIX,
+  TANK_KINDS,
   isRawSakeTankCode,
+  tankKind,
   submitTankTransfer,
   submitTaxFreeTransfer,
   listLedger,

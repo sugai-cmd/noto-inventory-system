@@ -282,8 +282,10 @@ async function loadTanks() {
   // 中身の内訳（どの蒸留ロットの液体か）も一緒に取る。
   // 瓶詰めするときに「いま入れようとしているのはどのロットか」が見えないと、
   // 後からロットを追えなくなる。
+  // 瓶詰めは浄酎を抜く作業なので、払出元は浄酎の容器だけを出す。
+  // 以前は原酒ポリ26本と残渣タンク6本を含む全68本から選べた。
   const [monitor, lots] = await Promise.allSettled([
-    apiGet('/api/tanks/monitor'),
+    apiGet('/api/tanks/monitor?kind=' + encodeURIComponent('浄酎')),
     apiGet('/api/lots/tanks?includeEmpty=1'),
   ]);
   tanks = monitor.status === 'fulfilled' ? monitor.value : [];

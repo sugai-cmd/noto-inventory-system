@@ -53,6 +53,18 @@ const bulkReceiptSchema = z.object({
  * 移行した実データの種別は「PE」などの材質で入っており**1件も当たらなかった**。
  * 容器IDの採番規則（SP-）で判定する。
  */
+/**
+ * 原酒の入る容器と、その残量。
+ *
+ * **原酒ポリ（SP-）だけを返す。**
+ * 以前は「残量が0より大きい容器」も足していたが、v_raw_sake_tank_volume は
+ * tanks.initial_volume_l を起点にするため、移行時に浄酎が入っていた容器まで
+ * 原酒として並んでいた（実データで ステンレスタンク1 84L・2 211L・3 174L・
+ * 一斗瓶1 19.9L・出荷用ポリタンク3 3L の5本）。
+ *
+ * この口は在庫画面の「原酒タンク残量」と、蒸留の投入元の選択肢に使われている。
+ * 浄酎の容器が投入元に出ると、浄酎タンクから原酒を払い出したことになってしまう。
+ */
 router.get('/tanks', (req, res) => {
   const db = getConnection();
   res.json(
@@ -61,7 +73,7 @@ router.get('/tanks', (req, res) => {
         `SELECT v.*, t.container_type, t.status
          FROM v_raw_sake_tank_volume v
          JOIN tanks t ON t.id = v.tank_id
-         WHERE v.current_volume_l > 0 OR t.code LIKE @prefix
+         WHERE t.code LIKE @prefix
          ORDER BY t.code`
       )
       .all({ prefix: `${RAW_SAKE_TANK_PREFIX}-%` })

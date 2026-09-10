@@ -10,6 +10,7 @@ const { getConnection } = require('../db/connection');
 const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
+const { tankKind } = require('./tankService');
 
 /**
  * 商品・仕掛品の棚卸。
@@ -184,6 +185,24 @@ function submitTankStocktaking(input) {
 
     const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(input.tankId);
     if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${input.tankId})`);
+
+    // 原酒（SP）と残渣（U）はここで棚卸できない。
+    //
+    // 理論値に使う v_tank_monitor は tank_ledger しか見ないため、原酒タンクは
+    // 必ず 0L に見える（実データでは19本が 0L 表示で、実際には20Lなどが入っている）。
+    // そのまま保存すると tank_ledger に調整が書かれるが、原酒の残量は
+    // v_raw_sake_tank_volume から計算されるので**まったく直らず**、
+    // そのうえ浄酎のモニターにその原酒タンクが液体を持って現れる。
+    //
+    // 画面側でも選べないようにしてあるが、APIを直接叩いたり古い画面が
+    // 残っていたりしたときに通ってしまうので、ここでも断る。
+    const kind = tankKind(tank.code);
+    if (kind !== '浄酎') {
+      throw new BusinessRuleError(
+        `${tank.name}（${tank.code}）は${kind}タンクです。この棚卸は浄酎タンクだけが対象です` +
+          (kind === '原酒' ? '。原酒タンクは「原酒タンクの棚卸」から行ってください' : '')
+      );
+    }
 
     const before = db.prepare('SELECT * FROM v_tank_monitor WHERE tank_id = ?').get(input.tankId);
     const diff = Number((input.actualVolumeL - before.current_volume_l).toFixed(3));
