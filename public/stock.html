@@ -46,7 +46,9 @@
   <section class="panel">
     <h2>タンクモニター（浄酎）</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      浄酎容器変動履歴から再計算した現在液量です。原酒タンクの残量は下の表を参照してください。
+      浄酎容器変動履歴から再計算した現在液量です。浄酎を入れる容器だけを出しています。
+      原酒ポリタンクと残渣タンクは、この台帳に記録が無いため（別の台帳で管理しています）
+      ここには出しません。原酒の残量は下の表を参照してください。
     </p>
     <div class="table-scroll">
       <table>
@@ -85,7 +87,7 @@ renderNav('stock.html');
     const [products, materials, tanks, rawTanks] = await Promise.all([
       apiGet('/api/products/stock'),
       apiGet('/api/materials/stock'),
-      apiGet('/api/tanks/monitor'),
+      apiGet('/api/tanks/monitor?kind=' + encodeURIComponent('浄酎')),
       apiGet('/api/raw-sake-receipts/tanks'),
     ]);
 

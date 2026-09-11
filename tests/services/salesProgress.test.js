@@ -13,10 +13,12 @@ process.env.TZ = 'Asia/Tokyo';
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { createHarness } = require('../helpers/appHarness');
-const { currentMonth } = require('../../src/utils/dateUtil');
 
+// src/ の require は createHarness のあとに置く（DB_PATH の差し替えより前に読むと、
+// 運用中のDBを掴む。dateUtil は何も読み込まないので実害は無いが、並びを揃えておく）
 const harness = createHarness('test-sales-progress.sqlite');
 const api = harness.api;
+const { currentMonth } = require('../../src/utils/dateUtil');
 
 let db;
 

@@ -38,10 +38,19 @@ router.get('/monitor', (req, res) => {
        JOIN tanks t ON t.id = v.tank_id
        ORDER BY t.code`
     )
-    .all();
+    .all()
+    .map((r) => ({ ...r, kind: tankService.tankKind(r.code) }));
+
+  // kind=浄酎 で絞れる。**既定は今までどおり全件**。
+  // この口は在庫・タンク操作・瓶詰め・棚卸の4画面が叩いており、
+  // 既定を変えると呼んでいない画面が黙って壊れる。
+  const kind = req.query.kind;
+  const filtered = tankService.TANK_KINDS.includes(kind)
+    ? rows.filter((r) => r.kind === kind)
+    : rows;
 
   res.json(
-    rows.map((r) => ({
+    filtered.map((r) => ({
       ...r,
       bottles300ml: r.current_volume_l != null ? Math.floor((r.current_volume_l * 1000) / 300) : null,
       bottles700ml: r.current_volume_l != null ? Math.floor((r.current_volume_l * 1000) / 700) : null,

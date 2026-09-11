@@ -127,7 +127,9 @@ async function loadMaterials() {
 }
 
 async function loadTanks() {
-  const rows = await apiGet('/api/tanks/monitor');
+  // 浄酎タンクだけを出す。原酒・残渣はこの台帳に記録が無く、理論値が
+  // 必ず 0L になるうえ、保存すると浄酎の台帳に調整が書かれてしまう。
+  const rows = await apiGet('/api/tanks/monitor?kind=' + encodeURIComponent('浄酎'));
   el('tankRows').innerHTML = rows.length
     ? rows.map((t) => `<tr data-tank="${t.tank_id}">
         <td>${escapeHtml(t.code)}</td>
