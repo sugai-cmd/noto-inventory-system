@@ -240,7 +240,11 @@ function submitTankStocktaking(input) {
           (input.reason ? ` / ${input.reason}` : ''),
       });
 
-    // 実測度数が入力されていればタンクマスタ側の理論度数も更新する
+    // 実測度数が入力されていればタンクマスタ側の理論度数も更新する。
+    //
+    // ただし**表示はこの列を使わない**。度数は tankService.computeTankAbv() が
+    // 台帳から計算しており、いま入れた tank_ledger の行（棚卸調整／欠減）の abv を
+    // 「タンク全体を測った値」として拾う。この列は旧データとの互換のために残しているだけ。
     if (input.abv != null) {
       db.prepare('UPDATE tanks SET current_abv = ? WHERE id = ?').run(input.abv, input.tankId);
     }

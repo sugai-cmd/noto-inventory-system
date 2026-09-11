@@ -4,6 +4,7 @@
 // 在庫系（商品／資材／タンク）のCSVはこちらで追加したもの。
 
 const { getConnection } = require('../db/connection');
+const tankService = require('./tankService');
 const { parseShippingAddress } = require('../utils/shippingAddress');
 
 /** CSV1セル分のエスケープ */
@@ -344,12 +345,15 @@ function exportTankMonitor() {
   const db = getConnection();
   const rows = db
     .prepare(
-      `SELECT t.code, v.name, v.current_volume_l, v.max_volume_l, v.fill_rate, t.current_abv
+      `SELECT t.id, t.code, v.name, v.current_volume_l, v.max_volume_l, v.fill_rate
        FROM v_tank_monitor v
        JOIN tanks t ON t.id = v.tank_id
        ORDER BY t.code`
     )
     .all();
+
+  // 度数は台帳から計算する。tanks.current_abv は割合と％が混ざっている
+  const abvByTank = tankService.computeTankAbv(db);
 
   return {
     csv: toCsv(
@@ -360,7 +364,7 @@ function exportTankMonitor() {
         r.current_volume_l,
         r.max_volume_l ?? '',
         r.fill_rate != null ? (r.fill_rate * 100).toFixed(1) + '%' : '',
-        r.current_abv ?? '',
+        abvByTank.get(r.id) ?? '',
         '',
       ])
     ),

@@ -69,6 +69,17 @@ function escapeHtml(value) {
     .replace(/"/g, '&quot;');
 }
 
+/**
+ * 度数の表示。34.47% の形（小数2桁）。
+ *
+ * 台帳から計算できなかったタンクは「—」。以前は 0 と出していたが、
+ * それは 0%（＝水）という意味になってしまう。
+ * 棚卸で実測の度数を入れれば、それ以降はその値が出る。
+ */
+function abvText(value) {
+  return value == null ? '—' : `${Number(value).toFixed(2)}%`;
+}
+
 function yen(value) {
   if (value == null || value === '') return '';
   return `¥${Number(value).toLocaleString('ja-JP')}`;

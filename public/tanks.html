@@ -159,7 +159,7 @@ function showTankHint(selectId, hintId) {
     : '';
   el(hintId).innerHTML =
     `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・` +
-    `度数 ${tank.current_abv ?? '-'}%${breakdown}`;
+    `度数 ${abvText(tank.abv)}${breakdown}`;
 }
 
 el('tFrom').addEventListener('change', () => showTankHint('tFrom', 'tFromHint'));

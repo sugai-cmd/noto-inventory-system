@@ -136,7 +136,7 @@ async function loadTanks() {
         <td>${escapeHtml(t.name)}</td>
         <td class="num theoretical">${num(t.current_volume_l, 1)}</td>
         <td><input type="number" class="actual" step="0.1" min="0" placeholder="未入力"></td>
-        <td><input type="number" class="actual-abv" step="0.1" placeholder="${t.current_abv ?? ''}"></td>
+        <td><input type="number" class="actual-abv" step="0.1" placeholder="${t.abv ?? ''}"></td>
         <td><button class="small" data-save-tank="${t.tank_id}">保存</button></td>
       </tr>`).join('')
     : '<tr><td colspan="6" class="empty">タンクが登録されていません</td></tr>';

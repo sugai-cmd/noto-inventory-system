@@ -33,21 +33,28 @@ router.get('/monitor', (req, res) => {
   const rows = db
     .prepare(
       `SELECT v.tank_id, v.name, v.current_volume_l, v.max_volume_l, v.fill_rate,
-              t.code, t.container_type, t.location, t.status, t.current_abv
+              t.code, t.container_type, t.location, t.status
        FROM v_tank_monitor v
        JOIN tanks t ON t.id = v.tank_id
        ORDER BY t.code`
     )
-    .all()
-    .map((r) => ({ ...r, kind: tankService.tankKind(r.code) }));
+    .all();
+
+  // 度数は台帳から計算する。tanks.current_abv は単位が混ざっているので使わない
+  const abvByTank = tankService.computeTankAbv(db);
+  const withKind = rows.map((r) => ({
+    ...r,
+    kind: tankService.tankKind(r.code),
+    abv: abvByTank.get(r.tank_id) ?? null,
+  }));
 
   // kind=浄酎 で絞れる。**既定は今までどおり全件**。
   // この口は在庫・タンク操作・瓶詰め・棚卸の4画面が叩いており、
   // 既定を変えると呼んでいない画面が黙って壊れる。
   const kind = req.query.kind;
   const filtered = tankService.TANK_KINDS.includes(kind)
-    ? rows.filter((r) => r.kind === kind)
-    : rows;
+    ? withKind.filter((r) => r.kind === kind)
+    : withKind;
 
   res.json(
     filtered.map((r) => ({
