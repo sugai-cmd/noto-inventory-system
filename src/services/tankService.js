@@ -9,6 +9,9 @@
 //   瓶詰       : from のみ（bottlingService側で記録）
 
 const { getConnection } = require('../db/connection');
+
+/** 棚卸で入れた度数は「タンク全体を測った値」として扱う区分 */
+const MEASURED_TXN_TYPES = new Set(['棚卸調整', '欠減']);
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const { generateUid } = require('../utils/uid');
@@ -71,8 +74,10 @@ function submitTankTransfer(input) {
     assertEnoughVolume(db, fromTank, input.quantityL);
     assertCapacity(db, toTank, input.quantityL);
 
-    // 度数の指定がなければ移動元の理論度数を引き継ぐ
-    const abv = input.abv ?? fromTank.current_abv ?? null;
+    // 度数の指定がなければ移動元の度数を引き継ぐ。
+    // **tanks.current_abv は使わない。** あの列は割合（0.34）と％（35）が混ざっており、
+    // そのまま台帳へ書くと、％で揃っている tank_ledger.abv に 0.34 が1行混ざる
+    const abv = input.abv ?? tankAbv(db, fromTank.id);
 
     const result = db
       .prepare(
@@ -134,7 +139,7 @@ function submitTaxFreeTransfer(input) {
         txnDate,
         fromTankId: input.fromTankId,
         quantityL: input.quantityL,
-        abv: input.abv ?? fromTank.current_abv ?? null,
+        abv: input.abv ?? tankAbv(db, fromTank.id),
         note: noteParts.join(' / '),
       });
 
@@ -146,6 +151,89 @@ function submitTaxFreeTransfer(input) {
   });
 
   return run();
+}
+
+/**
+ * タンクごとの度数を、浄酎容器変動履歴から計算する。
+ *
+ * **tanks.current_abv は使わない。** あの列は旧シートの「理論アルコール度数」を
+ * そのまま取り込んだもので、単位が混ざっている（実データで
+ * ステンレスタンク1=0.34・2=0.35 は割合、出荷用ポリタンク3=35 は％）。
+ * 一律に100倍すると出荷用ポリタンク3が 3500% になる。
+ * 一方 tank_ledger.abv は全件％（30.22〜39.8）で揃っているので、そちらから出す。
+ *
+ * 数え方は **v_tank_monitor の CASE と揃える**。受け側（to_tank_id）を先に見て加算し、
+ * 払出（from_tank_id）は受け側と同じタンクでないときだけ減算する。
+ * 実データに from_tank_id = to_tank_id の行が1件あり、ビューはそれを加算としてだけ
+ * 数えている。ここがずれると、液量が画面の表示と食い違う。
+ *
+ * @returns {Map<number, {volume: number, abv: number|null}>}
+ */
+function computeTankState(db) {
+  const state = new Map(
+    db
+      .prepare('SELECT id, initial_volume_l FROM tanks')
+      .all()
+      .map((t) => [t.id, { volume: t.initial_volume_l ?? 0, abv: null }])
+  );
+
+  const rows = db
+    .prepare(
+      `SELECT txn_type, from_tank_id, to_tank_id, quantity_l, abv
+         FROM tank_ledger
+        WHERE is_cancelled = 0
+        ORDER BY txn_date, id`
+    )
+    .all();
+
+  for (const row of rows) {
+    const source = row.from_tank_id != null ? state.get(row.from_tank_id) : null;
+    // 度数を持たない容器移動は、出す側のその時点の度数を引き継ぐ（実データで12件中11件）
+    const incomingAbv = row.abv ?? (source ? source.abv : null);
+    // 棚卸はタンク全体を測った値なので、混ぜずに置き換える。
+    // 度数が分からないタンクを直す手段は、いまのところこれだけ
+    const measured = MEASURED_TXN_TYPES.has(row.txn_type) && row.abv != null;
+
+    const target = row.to_tank_id != null ? state.get(row.to_tank_id) : null;
+    if (target) {
+      if (measured) {
+        target.abv = row.abv;
+      } else if (incomingAbv != null && row.quantity_l > 0) {
+        const after = target.volume + row.quantity_l;
+        target.abv =
+          target.volume <= 0 || target.abv == null
+            ? incomingAbv
+            : (target.volume * target.abv + row.quantity_l * incomingAbv) / after;
+      }
+      target.volume += row.quantity_l;
+    }
+
+    if (row.from_tank_id != null && row.from_tank_id !== row.to_tank_id && source) {
+      // 払出は度数を変えない（薄まりも濃くもならない）。棚卸だけは測定値で置き換える
+      if (measured) source.abv = row.abv;
+      source.volume -= row.quantity_l;
+    }
+  }
+
+  return state;
+}
+
+/**
+ * タンクID → 度数(％)。分からなければ null。
+ * 液量も一緒に要るときは computeTankState を使う。
+ */
+function computeTankAbv(db) {
+  return new Map(
+    [...computeTankState(db)].map(([id, s]) => [
+      id,
+      s.abv == null ? null : Math.round(s.abv * 100) / 100,
+    ])
+  );
+}
+
+/** 1本ぶんの度数。台帳から計算した値を返す（分からなければ null） */
+function tankAbv(db, tankId) {
+  return computeTankAbv(db).get(tankId) ?? null;
 }
 
 /**
@@ -431,6 +519,9 @@ function listTanks({ includeDiscarded = false } = {}) {
 }
 
 module.exports = {
+  computeTankState,
+  computeTankAbv,
+  tankAbv,
   RAW_SAKE_TANK_PREFIX,
   RESIDUE_TANK_PREFIX,
   TANK_KINDS,

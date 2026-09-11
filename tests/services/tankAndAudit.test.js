@@ -23,12 +23,20 @@ test.before(async () => {
               VALUES (1, 1, 1, '瓶詰')`).run();
 
   // T-01: 度数40が500L / T-02: 空（容量100Lと小さめ） / T-03: 度数30が100L
-  db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l, current_abv)
-              VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 500, 40)`).run(generateUid(db, 'tanks'));
+  //
+  // 度数は**台帳（継足）で持たせる**。tanks.current_abv は旧シート由来で
+  // 割合と％が混ざっており、表示にも既定値にも使わなくなったため
+  // （src/services/tankService.js の computeTankAbv を参照）。
+  db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
+              VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 0)`).run(generateUid(db, 'tanks'));
   db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
               VALUES (?, 'T-02', '浄酎タンク2', 'ステンレスタンク', 100, 0)`).run(generateUid(db, 'tanks'));
-  db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l, current_abv)
-              VALUES (?, 'T-03', '浄酎タンク3', 'ステンレスタンク', 1000, 100, 30)`).run(generateUid(db, 'tanks'));
+  db.prepare(`INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
+              VALUES (?, 'T-03', '浄酎タンク3', 'ステンレスタンク', 1000, 0)`).run(generateUid(db, 'tanks'));
+  const fill = db.prepare(`INSERT INTO tank_ledger (txn_date, txn_type, to_tank_id, quantity_l, abv)
+                           VALUES (?, '継足', ?, ?, ?)`);
+  fill.run('2026-08-01', 1, 500, 40);
+  fill.run('2026-08-01', 3, 100, 30);
   }));
 });
 
@@ -48,10 +56,11 @@ test('容器移動: 移動元が減り移動先が増える', async () => {
   assert.equal(body.to.after.current_volume_l, 200);   // 100 + 100
 });
 
-test('容器移動: 移動先の理論度数が加重平均で更新される', async () => {
-  // 直前のテストで T-03 は「度数30が100L」に「度数40が100L」が入った状態
-  const abv = db.prepare('SELECT current_abv FROM tanks WHERE id = 3').get().current_abv;
-  assert.equal(abv, 35); // (100*30 + 100*40) / 200
+test('容器移動: 移動先の度数が加重平均になる', async () => {
+  // 直前のテストで T-03 は「度数30が100L」に「度数40が100L」が入った状態。
+  // 度数は tanks.current_abv ではなく、台帳から計算した値で確かめる
+  const { computeTankAbv } = require('../../src/services/tankService');
+  assert.equal(computeTankAbv(db).get(3), 35); // (100*30 + 100*40) / 200
 });
 
 test('容器移動: 残量を超える移動は422で拒否される', async () => {

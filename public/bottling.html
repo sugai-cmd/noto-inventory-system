@@ -314,8 +314,10 @@ el('bTank').addEventListener('change', () => {
     : '';
   el('bTankHint').innerHTML =
     `現在液量 ${num(tank.current_volume_l, 1)}L / 最大 ${num(tank.max_volume_l, 1)}L・` +
-    `度数 ${tank.current_abv ?? '-'}%${breakdown}`;
-  if (tank.current_abv != null && !el('bAbv').value) el('bAbv').value = tank.current_abv;
+    `度数 ${abvText(tank.abv)}${breakdown}`;
+  // 台帳から計算した度数を先に入れる。マスタの current_abv は割合と％が混ざっており、
+  // そのまま送ると 0.34 が台帳に載ってしまう
+  if (tank.abv != null && !el('bAbv').value) el('bAbv').value = tank.abv;
 });
 
 /** 選択した商品のレシピ（消費される資材）を事前に見せる */

@@ -8,6 +8,7 @@
 
 const { getConnection } = require('../db/connection');
 const wipLotService = require('./wipLotService');
+const tankService = require('./tankService');
 const operationLogService = require('./operationLogService');
 const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
@@ -133,7 +134,8 @@ function submitBottling(input) {
         fromTankId: input.tankId,
         productId: input.productId,
         quantityL: input.volumeL,
-        abv: input.abv ?? tank.current_abv ?? null,
+        // tanks.current_abv は単位が混ざっているので使わない（台帳から計算する）
+        abv: input.abv ?? tankService.tankAbv(db, tank.id),
         productLedgerId,
         note: input.note ?? null,
       });

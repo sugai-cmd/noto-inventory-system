@@ -118,7 +118,7 @@ renderNav('stock.html');
           <td class="num">${num(t.current_volume_l, 1)}</td>
           <td class="num">${num(t.max_volume_l, 1)}</td>
           <td class="num">${t.fill_rate != null ? `${(t.fill_rate * 100).toFixed(1)}%` : ''}</td>
-          <td class="num">${t.current_abv ?? ''}</td>
+          <td class="num">${abvText(t.abv)}</td>
           <td class="num">${num(t.bottles300ml)}</td>
           <td class="num">${num(t.bottles700ml)}</td>
         </tr>`).join('')
