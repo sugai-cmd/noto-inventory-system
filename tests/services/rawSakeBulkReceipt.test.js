@@ -81,7 +81,9 @@ test('原酒ポリ1〜25に各20Lを、1回の送信でまとめて登録でき�
   // 伝票番号は連番で、重複しない
   const codes = res.body.rows.map((r) => r.lotCode);
   assert.equal(new Set(codes).size, 25);
-  assert.deepEqual(codes.slice(0, 3), ['R2609-1000', 'R2609-1001', 'R2609-1002']);
+  // 25本まとめて入れても**1回の移入**なので、1帯の続き番号になる
+  assert.deepEqual(codes.slice(0, 3), ['R2609-1001', 'R2609-1002', 'R2609-1003']);
+  assert.equal(codes.at(-1), 'R2609-1025', '1回の移入が1つの帯に収まる')
 
   // 各タンクの残量が、それぞれの受入量ぶん増える
   for (let id = 1; id <= BULK_COUNT; id++) assert.equal(tankVolume(id), 20);
