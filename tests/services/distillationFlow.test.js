@@ -58,12 +58,16 @@ test('原酒入荷でタンク残量が増える', async () => {
   assert.equal(second.body.tankVolume.current_volume_l, 80);
 });
 
-test('原酒受払IDは受入が1000番台、払出が0001番台で採番される（4-9）', async () => {
+test('原酒受払IDは、千の位に移入の回数が出る（4-9）', async () => {
+  // 直前の2件は 07-20 と 07-21。**日付が違えば別の回**なので、
+  // 1回目が 1001、2回目が 2001 になる。
+  // 以前は受入を 1000 から1ずつ連番にしており、2回目が 1001 になっていた
+  // （要件の「回数ごとに千の位を+1」が仕様書に落ちていなかったため）。
   const codes = db
     .prepare("SELECT lot_code FROM raw_sake_ledger WHERE txn_type = '受入' ORDER BY id")
     .all()
     .map((r) => r.lot_code);
-  assert.deepEqual(codes, ['R2607-1000', 'R2607-1001']);
+  assert.deepEqual(codes, ['R2607-1001', 'R2607-2001']);
 });
 
 test('受入元は専用の列に入り、備考と同時に書いても消えない', async () => {
