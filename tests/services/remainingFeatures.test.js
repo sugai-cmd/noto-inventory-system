@@ -45,17 +45,42 @@ test('資材入荷で在庫が増え、単価はマスタから補完される',
   assert.equal(row.counterparty, 'ガラス商事', '発注先が補完されること');
 });
 
-test('ロット数の倍数でない入荷は422で拒否される', async () => {
-  // 300ml瓶は500本単位
+// かつてはロット数の倍数でない入荷を422で断っていたが、その縛りは外した。
+// 移行した入荷38件のうち8件が倍数から外れており（正規の発注先である酒井硝子からの分も）、
+// 運用実態と最初から合っていなかった。正規ルート以外からの仕入れも入る。
+test('ロット数が設定されていても、倍数でない数で入荷できる', async () => {
+  // 300ml瓶は1ロット500本だが、300本だけ仕入れることもある
   const { status, body } = await api('POST', '/api/materials/receipts', {
     materialId: 1,
     quantity: 300,
+    txnDate: '2026-08-02',
   });
-  assert.equal(status, 422);
-  assert.match(body.message, /500本単位/);
+  assert.equal(status, 201);
+  assert.equal(body.after.current_stock, 1000, '700 + 300');
+
+  const material = db.prepare('SELECT lot_size FROM materials WHERE id = 1').get();
+  assert.equal(material.lot_size, 500, 'ロット数はマスタに残る（発注の目安として表示に使う）');
 });
 
-test('ロット数が未設定の資材は任意の数で入荷できる', async () => {
+test('実データで倍数から外れていた入荷が、そのまま登録できる', async () => {
+  // 2026-08-07 コルクキャップ 135個／ロット1000、2025-08-18 ガラス栓 267個／ロット48。
+  // どちらも移行データに実在する。ここでは 300ml瓶（ロット500）で同じ形を確かめる
+  for (const quantity of [135, 267, 1]) {
+    const { status } = await api('POST', '/api/materials/receipts', {
+      materialId: 1,
+      quantity,
+      txnDate: '2026-08-07',
+      supplier: 'ナオライ神石高原',
+    });
+    assert.equal(status, 201, `${quantity}個の入荷が通ること`);
+  }
+
+  const row = db.prepare('SELECT * FROM material_stock_ledger ORDER BY id DESC LIMIT 1').get();
+  assert.equal(row.quantity, 1);
+  assert.equal(row.counterparty, 'ナオライ神石高原', '正規の発注先でない仕入先も記録できる');
+});
+
+test('ロット数が未設定の資材も任意の数で入荷できる', async () => {
   const { status, body } = await api('POST', '/api/materials/receipts', {
     materialId: 2,
     quantity: 137,
@@ -64,25 +89,59 @@ test('ロット数が未設定の資材は任意の数で入荷できる', async
   assert.equal(body.after.current_stock, 637);
 });
 
-test('入荷画面の初期値が取得できる', async () => {
+test('入荷画面の初期値が取得できる（ロット数は目安として返し続ける）', async () => {
   const { status, body } = await api('GET', '/api/materials/1/receipt-defaults');
   assert.equal(status, 200);
   assert.equal(body.unitPrice, 100);
-  assert.equal(body.lotSize, 500);
-  assert.equal(body.currentStock, 700);
+  assert.equal(body.lotSize, 500, '縛りは無くなったが、発注の目安として画面に出すので返す');
+  // 初期200 + 500 + 300 + 135 + 267 + 1
+  assert.equal(body.currentStock, 1403);
 });
 
+// マスタ画面の「資材」タブがこの口を使う（PR H で資材タブから移した）
 test('資材マスタを登録・編集できる', async () => {
   const created = await api('POST', '/api/materials', {
     name: '化粧箱',
+    code: 'MAT-901',
+    category: '外箱',
     unit: '枚',
     unitPrice: 50,
+    lotSize: 1000,
     properStockQty: 200,
+    initialStock: 30,
+    supplierName: '丸信',
+    supplierAddress: '石川県',
+    supplierContact: '担当A',
+    leadTimeDays: 14,
+    note: 'はじめの備考',
   });
   assert.equal(created.status, 201);
+  assert.equal(created.body.lot_size, 1000);
+  assert.equal(created.body.initial_stock, 30);
 
-  const updated = await api('PUT', `/api/materials/${created.body.id}`, { unitPrice: 60 });
+  // 画面の編集欄にある項目が、ひととおり保存できること
+  const updated = await api('PUT', `/api/materials/${created.body.id}`, {
+    unitPrice: 60,
+    lotSize: 1200,
+    properStockQty: 250,
+    category: '箱',
+    supplierName: '丸信（金沢）',
+    supplierContact: '担当B',
+    leadTimeDays: 21,
+    note: 'あとの備考',
+  });
+  assert.equal(updated.status, 200);
   assert.equal(updated.body.unit_price, 60);
+  assert.equal(updated.body.lot_size, 1200);
+  assert.equal(updated.body.proper_stock_qty, 250);
+  assert.equal(updated.body.category, '箱');
+  assert.equal(updated.body.supplier_name, '丸信（金沢）');
+  assert.equal(updated.body.supplier_contact, '担当B');
+  assert.equal(updated.body.lead_time_days, 21);
+  assert.equal(updated.body.note, 'あとの備考');
+
+  // 初期在庫数は在庫再計算の起点。画面でも編集できないようにしてある
+  assert.equal(updated.body.initial_stock, 30, '編集では動かないこと');
 
   // 同名は登録できない
   const dup = await api('POST', '/api/materials', { name: '化粧箱' });

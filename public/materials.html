@@ -14,7 +14,8 @@
   <section class="panel">
     <h2>資材入荷</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      仕入れた資材を在庫に加えます。ロット数が設定されている資材は、その倍数でのみ入荷できます。
+      仕入れた資材を在庫に加えます。数量はいくつでも登録できます
+      （発注ロットは目安として資材を選んだときに出ます）。
     </p>
     <form id="receiptForm">
       <div class="grid">
@@ -51,49 +52,10 @@
   </section>
 
   <section class="panel">
-    <h2>資材マスタ</h2>
-    <form id="materialForm">
-      <div class="grid">
-        <div>
-          <label for="mCode">資材ID</label>
-          <input type="text" id="mCode">
-          <div class="hint" id="mCodeHint"></div>
-        </div>
-        <div><label for="mName">資材名</label><input type="text" id="mName" required></div>
-        <div>
-          <label for="mCategory">資材種別</label>
-          <select id="mCategory">
-            <option value="">（未設定）</option>
-            <option>容器</option><option>キャップ</option><option>紙垂</option><option>ラベル</option>
-            <option>箱</option><option>フィルム</option><option>外箱</option><option>その他</option>
-          </select>
-        </div>
-        <div>
-          <label for="mUnit">単位</label>
-          <input type="text" id="mUnit" list="dlUnit" placeholder="本・枚・個">
-          <datalist id="dlUnit">
-            <option value="本"><option value="個"><option value="枚"><option value="巻"><option value="セット">
-          </datalist>
-        </div>
-        <div><label for="mUnitPrice">単価(円)</label><input type="number" id="mUnitPrice" min="0" step="1"></div>
-        <div><label for="mLotSize">ロット数</label><input type="number" id="mLotSize" min="1" step="1"></div>
-        <div><label for="mProper">適正在庫数</label><input type="number" id="mProper" min="0" step="1"></div>
-        <div><label for="mInitial">初期在庫数</label><input type="number" id="mInitial" min="0" step="1" value="0"></div>
-        <div>
-          <label for="mSupplier">発注先会社名</label>
-          <input type="text" id="mSupplier" list="dlSupplier">
-          <datalist id="dlSupplier"></datalist>
-        </div>
-        <div><label for="mLead">リードタイム(日)</label><input type="number" id="mLead" min="0" step="1"></div>
-      </div>
-      <div class="actions">
-        <button type="submit" id="mSubmit">資材を登録</button>
-      </div>
-    </form>
-  </section>
-
-  <section class="panel">
     <h2>資材在庫</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      資材の登録・編集は<a href="masters.html">マスタタブの「資材」</a>です。
+    </p>
     <div class="table-scroll">
       <table>
         <thead>
@@ -134,9 +96,6 @@ let materials = [];
 
 async function loadMaterials() {
   materials = await apiGet('/api/materials');
-  // すでに登録されている発注先を候補に出す（打ち直しでの表記ゆれを減らす）
-  const suppliers = [...new Set(materials.map((m) => m.supplier_name).filter(Boolean))].sort();
-  el('dlSupplier').innerHTML = suppliers.map((s) => `<option value="${escapeHtml(s)}">`).join('');
   const options = '<option value="">選択してください</option>' +
     materials.map((m) => `<option value="${m.id}">${escapeHtml(m.name)}</option>`).join('');
   const keep = el('rMaterial').value;
@@ -152,9 +111,10 @@ el('rMaterial').addEventListener('change', async () => {
   const d = await apiGet(`/api/materials/${id}/receipt-defaults`);
   el('rHint').textContent =
     `現在庫 ${num(d.currentStock, 2)}${d.unit ?? ''}` +
-    (d.lotSize ? ` / ${d.lotSize}${d.unit ?? ''}単位で入荷` : '') +
+    (d.lotSize ? ` / 発注ロット ${num(d.lotSize)}${d.unit ?? ''}` : '') +
     (d.unitPrice != null ? ` / 単価 ${yen(d.unitPrice)}` : '');
-  if (d.lotSize && !el('rQuantity').value) el('rQuantity').value = d.lotSize;
+  // 入荷数にロット数を先入れしていたが、やめた。倍数の縛りが無くなったので、
+  // 入ったままの数（コルクキャップなら1000）を消し忘れると台帳に誤った数が載る。
   if (d.supplierName && !el('rSupplier').value) el('rSupplier').value = d.supplierName;
 });
 
@@ -222,51 +182,8 @@ el('receiptForm').addEventListener('submit', async (e) => {
   }
 });
 
-el('materialForm').addEventListener('submit', async (e) => {
-  e.preventDefault();
-  clearMessage('messages');
-  const payload = { name: el('mName').value.trim() };
-  if (el('mCode').value.trim()) payload.code = el('mCode').value.trim();
-  const numeric = { mUnitPrice: 'unitPrice', mLotSize: 'lotSize', mProper: 'properStockQty', mInitial: 'initialStock', mLead: 'leadTimeDays' };
-  for (const [id, key] of Object.entries(numeric)) {
-    if (el(id).value !== '') payload[key] = Number(el(id).value);
-  }
-  if (el('mUnit').value.trim()) payload.unit = el('mUnit').value.trim();
-  if (el('mCategory').value) payload.category = el('mCategory').value;
-  if (el('mSupplier').value.trim()) payload.supplierName = el('mSupplier').value.trim();
-
-  el('mSubmit').disabled = true;
-  try {
-    const m = await apiPost('/api/materials', payload);
-    showMessage('messages', 'ok', `資材「${m.name}」を登録しました`);
-    el('materialForm').reset();
-    el('mInitial').value = 0;
-    await Promise.all([loadMaterials(), loadStock(), fillNextMaterialCode()]);
-  } catch (err) {
-    showMessage('messages', 'error', err.message, err.details);
-  } finally {
-    el('mSubmit').disabled = false;
-  }
-});
-
-/**
- * 資材IDの自動採番。既存データの採番の続きを初期値として入れる
- * （GAS版の「IDはすべて自動採番」に相当）。手で書き換えてもよい。
- */
-async function fillNextMaterialCode() {
-  try {
-    const next = await apiGet('/api/materials/next-code');
-    el('mCode').value = next.code;
-    el('mCodeHint').textContent = next.basedOn
-      ? `${next.basedOn} の次の番号です。変更もできます`
-      : '最初の番号です。変更もできます';
-  } catch {
-    // 採番できなくても手入力で登録できる
-  }
-}
-
 el('rDate').value = todayStr();
-Promise.all([loadMaterials(), loadStock(), loadLedger(), fillNextMaterialCode()])
+Promise.all([loadMaterials(), loadStock(), loadLedger()])
   .catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

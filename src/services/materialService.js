@@ -13,8 +13,22 @@ const operationLogService = require('./operationLogService');
 /**
  * 資材入荷。仕入れた資材を在庫に加える。
  *
- * 資材マスタに「ロット数」が設定されている場合、その倍数でのみ受け入れる
- * （DATA_STRUCTURE.md 4-18 F列「この数の倍数でのみ入荷登録できる」）。
+ * かつては資材マスタの「ロット数」の倍数でないと 422 で断っていた
+ * （DATA_STRUCTURE.md 4-18 F列「この数の倍数でのみ入荷登録できる」）。**この縛りは外した。**
+ *
+ * 理由は、縛りが運用実態と最初から合っていなかったこと。
+ * 移行した入荷38件のうち8件がロット数の倍数から外れており、
+ * 正規の発注先である酒井硝子からの分も含まれている
+ * （700mlガラス瓶 36本／ロット15、ガラス栓 267個／ロット48）。
+ * 取り込みは台帳へ直接入れるためサービスを通らず、この8件は縛りをすり抜けていた。
+ * 実際には正規ルート以外（ナオライ神石高原など）からの仕入れも入る。
+ *
+ * ロット数そのものも厳密な発注単位ではない。シートのセルには「500（3000）」のような
+ * 注記付きの値があり（scripts/loaders/materials.js の parseNumberLoose）、
+ * シートN列「単価×ロット数(円)」＝1ロットあたりの金額の計算に使う「1ロットの入り数」に近い。
+ *
+ * そのため lot_size は残し、**発注の目安として画面に出すだけ**にしている
+ * （getReceiptDefaults が返す）。入荷数は縛らないし、警告も出さない。
  */
 function submitMaterialReceipt(input, actor = null) {
   const db = getConnection();
@@ -24,12 +38,6 @@ function submitMaterialReceipt(input, actor = null) {
 
     const material = db.prepare('SELECT * FROM materials WHERE id = ?').get(input.materialId);
     if (!material) throw new NotFoundError(`資材が見つかりません (id=${input.materialId})`);
-
-    if (material.lot_size && input.quantity % material.lot_size !== 0) {
-      throw new BusinessRuleError(
-        `${material.name} は${material.lot_size}${material.unit ?? ''}単位でのみ入荷できます（指定: ${input.quantity}）`
-      );
-    }
 
     // 単価の指定がなければ資材マスタの基準単価を使う
     const unitPrice = input.unitPrice ?? material.unit_price ?? null;
