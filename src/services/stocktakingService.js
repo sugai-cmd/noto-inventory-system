@@ -11,6 +11,7 @@ const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/co
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
 const { tankKind } = require('./tankService');
+const operationLogService = require('./operationLogService');
 
 /**
  * 商品・仕掛品の棚卸。
@@ -21,8 +22,9 @@ const { tankKind } = require('./tankService');
  * @param {number} [input.actualWipStock]     - 仕掛品の実測本数（省略時は調整しない）
  * @param {string} [input.txnDate]
  * @param {string} [input.reason] - 差異の理由（備考に残す）
+ * @param {object|null} [actor] - 操作した利用者（操作ログと created_by に残す）
  */
-function submitProductStocktaking(input) {
+function submitProductStocktaking(input, actor = null) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -38,10 +40,11 @@ function submitProductStocktaking(input) {
     const adjustments = [];
     const insert = db.prepare(
       `INSERT INTO product_stock_ledger
-         (history_code, txn_date, product_id, txn_type, quantity, storage_place, data_kind, note)
+         (history_code, txn_date, product_id, txn_type, quantity, storage_place, data_kind,
+          note, created_by)
        VALUES
          (@historyCode, @txnDate, @productId, @txnType, @quantity, @storagePlace,
-          '運用中（リアルタイム）', @note)`
+          '運用中（リアルタイム）', @note, @createdBy)`
     );
 
     const targets = [
@@ -79,6 +82,7 @@ function submitProductStocktaking(input) {
         storagePlace: input.storagePlace ?? '浄溜所',
         note: `棚卸: 理論${target.theoretical} → 実測${target.actual}` +
           (input.reason ? ` / ${input.reason}` : ''),
+        createdBy: actor?.id ?? null,
       });
 
       adjustments.push({
@@ -94,11 +98,35 @@ function submitProductStocktaking(input) {
       throw new BusinessRuleError('実測値（商品または仕掛品）を1つ以上入力してください');
     }
 
+    const after = db
+      .prepare('SELECT * FROM v_product_stock WHERE product_id = ?')
+      .get(input.productId);
+
+    // 棚卸は在庫を動かす操作なので、差が0で1行も書かなかったときも残す
+    // （「数えて合っていた」ことも記録として意味がある）
+    operationLogService.record({
+      user: actor,
+      action: 'stocktaking.product',
+      targetType: 'product_stock_ledger',
+      targetId: adjustments.find((a) => !a.skipped)?.ledgerId ?? null,
+      summary:
+        `${product.name}を棚卸／` +
+        adjustments
+          .map(
+            (a) =>
+              `${a.target} 理論${a.theoretical} → 実測${a.actual}` +
+              (a.skipped ? '（差なし）' : `（${a.diff > 0 ? '+' : ''}${a.diff}）`)
+          )
+          .join('／') +
+        (input.reason ? `／理由: ${input.reason}` : ''),
+      detail: { productId: product.id, txnDate, adjustments, reason: input.reason ?? null },
+    });
+
     return {
       product: { id: product.id, name: product.name },
       before: { productStock: before.product_stock, wipStock: before.wip_stock },
       adjustments,
-      after: db.prepare('SELECT * FROM v_product_stock WHERE product_id = ?').get(input.productId),
+      after,
     };
   });
 
@@ -113,7 +141,7 @@ function submitProductStocktaking(input) {
  * 資材の棚卸。
  * 資材台帳は 0003 のマイグレーションで '棚卸調整' / '欠損' を扱えるようにしてある。
  */
-function submitMaterialStocktaking(input) {
+function submitMaterialStocktaking(input, actor = null) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -128,6 +156,7 @@ function submitMaterialStocktaking(input) {
 
     const diff = input.actualStock - before.current_stock;
     if (diff === 0) {
+      logMaterial({ material, before, input, diff: 0, txnType: null, ledgerId: null, txnDate, actor });
       return {
         material: { id: material.id, name: material.name },
         theoretical: before.current_stock,
@@ -142,10 +171,10 @@ function submitMaterialStocktaking(input) {
     const result = db
       .prepare(
         `INSERT INTO material_stock_ledger
-           (history_code, txn_date, material_id, txn_type, quantity, data_kind, note)
+           (history_code, txn_date, material_id, txn_type, quantity, data_kind, note, created_by)
          VALUES
            (@historyCode, @txnDate, @materialId, @txnType, @quantity,
-            '運用中（リアルタイム）', @note)`
+            '運用中（リアルタイム）', @note, @createdBy)`
       )
       .run({
         historyCode: nextMaterialHistoryCode(db, txnDate),
@@ -155,14 +184,20 @@ function submitMaterialStocktaking(input) {
         quantity: Math.abs(diff),
         note: `棚卸: 理論${before.current_stock} → 実測${input.actualStock}` +
           (input.reason ? ` / ${input.reason}` : ''),
+        createdBy: actor?.id ?? null,
       });
+
+    const txnType = diff > 0 ? '棚卸調整' : '欠損';
+    logMaterial({
+      material, before, input, diff, txnType, ledgerId: result.lastInsertRowid, txnDate, actor,
+    });
 
     return {
       material: { id: material.id, name: material.name },
       theoretical: before.current_stock,
       actual: input.actualStock,
       diff,
-      txnType: diff > 0 ? '棚卸調整' : '欠損',
+      txnType,
       ledgerId: result.lastInsertRowid,
       skipped: false,
       after: db.prepare('SELECT * FROM v_material_stock WHERE material_id = ?').get(input.materialId),
@@ -177,7 +212,7 @@ function submitMaterialStocktaking(input) {
  * tank_ledger は to_tank_id を加算・from_tank_id を減算として集計するため、
  * 増減方向によって埋める列を変える。
  */
-function submitTankStocktaking(input) {
+function submitTankStocktaking(input, actor = null) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -208,6 +243,7 @@ function submitTankStocktaking(input) {
     const diff = Number((input.actualVolumeL - before.current_volume_l).toFixed(3));
 
     if (diff === 0) {
+      logTank({ tank, before, input, diff: 0, txnType: null, ledgerId: null, txnDate, actor });
       return {
         tank: { id: tank.id, name: tank.name },
         theoretical: before.current_volume_l,
@@ -224,10 +260,10 @@ function submitTankStocktaking(input) {
       .prepare(
         `INSERT INTO tank_ledger
            (txn_date, from_tank_id, txn_type, product_id, to_tank_id, quantity_l, abv,
-            data_kind, note)
+            data_kind, note, created_by)
          VALUES
            (@txnDate, @fromTankId, @txnType, NULL, @toTankId, @quantityL, @abv,
-            '運用中（リアルタイム）', @note)`
+            '運用中（リアルタイム）', @note, @createdBy)`
       )
       .run({
         txnDate,
@@ -238,6 +274,7 @@ function submitTankStocktaking(input) {
         abv: input.abv ?? null,
         note: `棚卸: 理論${before.current_volume_l}L → 実測${input.actualVolumeL}L` +
           (input.reason ? ` / ${input.reason}` : ''),
+        createdBy: actor?.id ?? null,
       });
 
     // 実測度数が入力されていればタンクマスタ側の理論度数も更新する。
@@ -249,12 +286,15 @@ function submitTankStocktaking(input) {
       db.prepare('UPDATE tanks SET current_abv = ? WHERE id = ?').run(input.abv, input.tankId);
     }
 
+    const txnType = isIncrease ? '棚卸調整' : '欠減';
+    logTank({ tank, before, input, diff, txnType, ledgerId: result.lastInsertRowid, txnDate, actor });
+
     return {
       tank: { id: tank.id, name: tank.name },
       theoretical: before.current_volume_l,
       actual: input.actualVolumeL,
       diff,
-      txnType: isIncrease ? '棚卸調整' : '欠減',
+      txnType,
       ledgerId: result.lastInsertRowid,
       skipped: false,
       after: db.prepare('SELECT * FROM v_tank_monitor WHERE tank_id = ?').get(input.tankId),
@@ -262,6 +302,55 @@ function submitTankStocktaking(input) {
   });
 
   return run();
+}
+
+/** タンクの棚卸の操作ログ。差が0で1行も書かなかったときも残す */
+function logTank({ tank, before, input, diff, txnType, ledgerId, txnDate, actor }) {
+  operationLogService.record({
+    user: actor,
+    action: 'stocktaking.tank',
+    targetType: 'tank_ledger',
+    targetId: ledgerId,
+    summary:
+      `${tank.name}（${tank.code}）を棚卸／理論${before.current_volume_l}L → 実測${input.actualVolumeL}L` +
+      (diff === 0 ? '（差なし）' : `（${diff > 0 ? '+' : ''}${diff}L / ${txnType}）`) +
+      (input.abv != null ? `／実測度数 ${input.abv}%` : '') +
+      (input.reason ? `／理由: ${input.reason}` : ''),
+    detail: {
+      tankId: tank.id,
+      tankCode: tank.code,
+      txnDate,
+      theoretical: before.current_volume_l,
+      actual: input.actualVolumeL,
+      diff,
+      txnType,
+      abv: input.abv ?? null,
+      reason: input.reason ?? null,
+    },
+  });
+}
+
+/** 資材の棚卸の操作ログ。差が0で1行も書かなかったときも残す */
+function logMaterial({ material, before, input, diff, txnType, ledgerId, txnDate, actor }) {
+  operationLogService.record({
+    user: actor,
+    action: 'stocktaking.material',
+    targetType: 'material_stock_ledger',
+    targetId: ledgerId,
+    summary:
+      `${material.name}を棚卸／理論${before.current_stock} → 実測${input.actualStock}` +
+      (diff === 0 ? '（差なし）' : `（${diff > 0 ? '+' : ''}${diff} / ${txnType}）`) +
+      (input.reason ? `／理由: ${input.reason}` : ''),
+    detail: {
+      materialId: material.id,
+      txnDate,
+      theoretical: before.current_stock,
+      actual: input.actualStock,
+      diff,
+      txnType,
+      reason: input.reason ?? null,
+    },
+  });
 }
 
 module.exports = {

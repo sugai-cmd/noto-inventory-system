@@ -88,6 +88,57 @@ router.get('/ledger', (req, res) => {
   );
 });
 
+/**
+ * 入出庫履歴の1行を直すときの入力。
+ *
+ * .strict() にしているのは、知らないキーを黙って捨てないため。
+ * 資材と区分はここに無く、送れば400になる（別の記録になるので、取り消して入れ直してもらう）。
+ */
+const ledgerUpdateSchema = z
+  .object({
+    txnDate: dateOnly.optional(),
+    quantity: z.number().positive('数量は0より大きい値で入力してください').optional(),
+    unitPrice: z.number().nonnegative().nullable().optional(),
+    counterparty: z.string().optional(),
+    note: z.string().optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: '直す項目がひとつもありません' });
+
+const ledgerCancelSchema = z.object({
+  reason: z.string().min(1, '取消理由は必須です'),
+});
+
+/** 直す画面に出す1件ぶんの中身 */
+router.get('/ledger/:ledgerId', (req, res, next) => {
+  try {
+    res.json(materialService.getLedgerRecord(Number(req.params.ledgerId)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/**
+ * 入出庫履歴の1行を直す。台帳の行を書き換える。履歴IDは変わらない。
+ * 変更前の値は操作ログに残る。
+ */
+router.patch('/ledger/:ledgerId', validateRequest(ledgerUpdateSchema), (req, res, next) => {
+  try {
+    res.json(materialService.updateLedgerRecord(Number(req.params.ledgerId), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 入出庫履歴の1行を取り消す。行は残り、在庫だけが戻る */
+router.post('/ledger/:ledgerId/cancel', validateRequest(ledgerCancelSchema), (req, res, next) => {
+  try {
+    res.json(materialService.cancelLedgerRecord(Number(req.params.ledgerId), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/', (req, res) => {
   const db = getConnection();
   res.json(db.prepare('SELECT * FROM materials ORDER BY name').all());

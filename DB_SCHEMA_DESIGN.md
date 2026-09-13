@@ -1397,6 +1397,9 @@ Cookieは`HttpOnly`（JavaScriptから読めない）・`SameSite=Lax`・HTTPS�
 |---|---|---|
 | POST | `/api/materials/receipts` | 資材入荷 |
 | GET | `/api/materials/:id/receipt-defaults` | 入荷画面の初期値（旧`getMaterialDefaultPrice`） |
+| GET | `/api/materials/ledger/:ledgerId` | 入出庫履歴の1件（編集画面用） |
+| PATCH | `/api/materials/ledger/:ledgerId` | 入出庫履歴の編集（日付・数量・単価・相手先・備考） |
+| POST | `/api/materials/ledger/:ledgerId/cancel` | 入出庫履歴の取り消し（理由必須） |
 | POST/PUT | `/api/materials` | 資材マスタの登録・編集 |
 | POST | `/api/shipments/returns` | 返品 |
 | POST/GET | `/api/shipments/samples` | サンプル送付 |
@@ -1417,6 +1420,17 @@ Cookieは`HttpOnly`（JavaScriptから読めない）・`SameSite=Lax`・HTTPS�
   だったが、移行した入荷38件のうち8件がその倍数から外れており（正規の発注先である
   酒井硝子からの分も含む）、運用実態と合っていなかった。正規ルート以外からの仕入れもある。
   ロット数は発注の目安として `receipt-defaults` が返し、画面に出すだけにしている。
+- **資材の入出庫履歴の取り消し・編集**：取り消しは `is_cancelled` を立てるだけで、
+  数量は書き戻さない（`v_material_stock` が取消済みの行を0として数えるため、
+  フラグだけで在庫が戻る。二重に戻す事故が起きない）。編集は台帳の行を書き換え、
+  **履歴IDは変えない**（番号はロットの名前で外から参照される）。
+  金額は「単価×数量」で引き直す。**瓶詰め・箱詰めに紐付く消費は422で断る**
+  （`bottlingService.updateRecord` が本数の比で引き直すため、こちらで直しても
+  あちらを直したときに上書きされる。実データでは消費167件のうち153件がこれ）。
+  変更前後の値は操作ログ（`material.ledger.update` / `.cancel`）に残す。
+- **棚卸**：商品・資材・タンクのいずれも操作ログ（`stocktaking.product` / `.material` /
+  `.tank`）を残し、台帳の行に `created_by` を入れる。
+  **差が0で1行も書かないときもログは残す**（数えて合っていたことも記録として意味がある）。
 - **返品**：受注を指定した場合、商品の一致と「返品数 ≤ 受注数」を検証する。
 - **サンプル送付**：送付記録と出荷履歴を同一トランザクションで作り、
   `sample_shipment_id`で確実に紐付ける。8-1で設計した通り、**新規データでは推測マッチングが不要**になる。

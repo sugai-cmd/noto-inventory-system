@@ -13,6 +13,7 @@ const operationLogService = require('./operationLogService');
 const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
+const { round6, assertNotWorseNegative } = require('../utils/stockGuard');
 
 /**
  * 指定商品・工程のレシピを取得する（旧 getRecipeForProduct_）
@@ -234,11 +235,6 @@ function submitBoxing(input) {
 /** 直せるのは瓶詰めと箱詰めだけ。出荷・返品は受注や送り状と繋がっているので対象外 */
 const EDITABLE_TXN_TYPES = ['瓶詰', '箱詰'];
 
-/** 浮動小数のごみ（45 * (50/45) が 50.00000000000001 になるような）を落とす */
-function round6(n) {
-  return Math.round(n * 1e6) / 1e6;
-}
-
 function productStockOf(db, productId) {
   return (
     db
@@ -250,22 +246,6 @@ function productStockOf(db, productId) {
 function tankVolumeOf(db, tankId) {
   if (tankId == null) return null;
   return db.prepare('SELECT name, current_volume_l FROM v_tank_monitor WHERE tank_id = ?').get(tankId);
-}
-
-/**
- * 直した結果、在庫が**前より悪化して**マイナスになっていないか。書き込んだあとに確かめる。
- *
- * 「0以上であること」を条件にしていないのは、移行した実データに既にマイナスの
- * ものがあるため（出荷用ポリタンク3 が -13.2L、出荷用ポリ13 が -10L）。
- * そこに触る修正まで断ってしまうと、移行データを直すための機能なのに直せなくなる。
- * 前より悪くしないことだけを条件にする。
- */
-function assertNotWorseNegative(label, before, after) {
-  if (after < 0 && after < before) {
-    throw new BusinessRuleError(
-      `${label}が ${round6(after)} になります（いまは ${round6(before)}）。この直し方はできません`
-    );
-  }
 }
 
 /** 直すときに画面へ出す1件ぶんの中身（本体＋資材消費＋タンク移動＋引当済み本数） */
