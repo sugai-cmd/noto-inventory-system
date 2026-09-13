@@ -76,6 +76,25 @@
       </table>
     </div>
   </section>
+
+  <section class="panel">
+    <h2>残渣タンク（回収累計）</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      蒸留の残渣回収記録を、行き先のタンクごとに合計したものです。
+      <strong>残渣の払出（廃棄）は記録していないため、この数字は増えるだけで減りません。</strong>
+      いま入っている量ではなく、これまでに入れた量の累計です。
+    </p>
+    <div id="residueUnlinked"></div>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr><th>容器ID</th><th>容器名称</th><th class="num">回収累計(L)</th><th class="num">回収件数</th>
+              <th>最終回収日</th><th class="num">最大(L)</th><th class="num">最大に対する割合</th></tr>
+        </thead>
+        <tbody id="residueTankRows"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
 <script src="assets/js/app.js"></script>
@@ -84,11 +103,12 @@ renderNav('stock.html');
 
 (async () => {
   try {
-    const [products, materials, tanks, rawTanks] = await Promise.all([
+    const [products, materials, tanks, rawTanks, residue] = await Promise.all([
       apiGet('/api/products/stock'),
       apiGet('/api/materials/stock'),
       apiGet('/api/tanks/monitor?kind=' + encodeURIComponent('浄酎')),
       apiGet('/api/raw-sake-receipts/tanks'),
+      apiGet('/api/tanks/residue-collection'),
     ]);
 
     el('productRows').innerHTML = products.length
@@ -132,6 +152,29 @@ renderNav('stock.html');
           <td class="num">${num(t.max_volume_l, 1)}</td>
         </tr>`).join('')
       : '<tr><td colspan="4" class="empty">原酒の入っているタンクがありません</td></tr>';
+
+    el('residueTankRows').innerHTML = residue.tanks.length
+      ? residue.tanks.map((t) => `<tr>
+          <td>${escapeHtml(t.code)}</td>
+          <td>${escapeHtml(t.name)}</td>
+          <td class="num">${num(t.collected_l, 1)}</td>
+          <td class="num">${num(t.collection_count)}</td>
+          <td>${escapeHtml(t.last_collected_on ?? '')}</td>
+          <td class="num">${num(t.max_volume_l, 1)}</td>
+          <td class="num">${t.fill_rate != null ? `${(t.fill_rate * 100).toFixed(1)}%` : ''}</td>
+        </tr>`).join('')
+      : '<tr><td colspan="7" class="empty">残渣タンクが登録されていません</td></tr>';
+
+    // 行き先が決まっていない残渣。移行の自由文がタンクに結び付かなかったときにここへ出る
+    el('residueUnlinked').innerHTML = residue.unlinked.length
+      ? `<div class="msg error" style="margin-bottom:1em">
+           <strong>タンク未設定の残渣が ${residue.unlinked.length} 件あります。</strong>
+           この分は上の回収累計に入っていません。蒸留タブでその記録を開くと払出先を選べます
+           （${residue.unlinked.slice(0, 5).map((r) =>
+               escapeHtml(`${r.distillation_code}${r.destination ? `「${r.destination}」` : ''}`)).join('・')}${
+             residue.unlinked.length > 5 ? ' ほか' : ''}）。
+         </div>`
+      : '';
   } catch (err) {
     showMessage('messages', 'error', err.message);
   }

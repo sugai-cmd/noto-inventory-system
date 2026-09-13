@@ -27,6 +27,11 @@ test.before(async () => {
       `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
        VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 0)`
     ).run(generateUid(db, 'tanks'));
+    // 残渣の行き先（id=3）
+    db.prepare(
+      `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
+       VALUES (?, 'U-001', '残渣保管タンク1', 'PP', 514, 0)`
+    ).run(generateUid(db, 'tanks'));
   }));
 
   // 原酒を入れて、蒸留を1件、完了まで進めておく
@@ -47,7 +52,7 @@ test.before(async () => {
     outputTankId: 2,
     outputL: 20,
     outputAbv: 41,
-    residue: { collectedOn: '2026-07-02', collectedTime: '19:00', quantity: 30, abv: 5 },
+    residue: { collectedOn: '2026-07-02', collectedTime: '19:00', quantity: 30, abv: 5, destinationTankId: 3 },
   });
 });
 
@@ -149,7 +154,7 @@ test('残渣を足せる（移行で漏れていたぶんを入れられる）',
     collectedTime: '08:00',
     quantity: 12,
     saltStatus: '食塩添加済',
-    destination: '残渣タンク1',
+    destinationTankId: 3,
   });
 
   assert.equal(res.status, 201);

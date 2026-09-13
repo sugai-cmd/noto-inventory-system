@@ -111,7 +111,7 @@ CREATE TABLE distillation_residues (
   salt_input_qty   REAL,                         -- 投入量（食塩等）
   salt_concentration REAL,                       -- 塩分濃度
   destination      TEXT                          -- 払出先（廃棄先/保管先）
-);
+, destination_tank_id INTEGER REFERENCES tanks(id));
 
 CREATE TABLE distillations (                     -- 蒸留記録（ヘッダ）
   id                  INTEGER PRIMARY KEY,
@@ -594,6 +594,20 @@ SELECT
         WHERE l.from_tank_id = t.id AND l.txn_type = '払出'
       ), 0) AS current_volume_l
 FROM tanks t;
+
+CREATE VIEW v_residue_tank_collected AS
+SELECT
+  t.id   AS tank_id,
+  t.code,
+  t.name,
+  t.max_volume_l,
+  t.discarded_on,
+  COALESCE(SUM(r.quantity), 0) AS collected_l,
+  COUNT(r.id)                  AS collection_count,
+  MAX(r.collected_on)          AS last_collected_on
+FROM tanks t
+LEFT JOIN distillation_residues r ON r.destination_tank_id = t.id
+GROUP BY t.id;
 
 CREATE VIEW v_tank_monitor AS
 SELECT

@@ -167,6 +167,8 @@
     <h3>残渣回収</h3>
       <p class="muted" style="margin-top:0;font-size:13px">
         回収量・払出先・食塩のいずれかを入力したときだけ、残渣回収記録に1行残ります。
+        <strong>記録を作るときは払出先タンクが必要です</strong>（残渣が無い蒸留は、
+        どれも入れずにそのまま完了できます）。
       </p>
       <div class="grid">
         <div>
@@ -178,8 +180,9 @@
           <input type="number" id="cResidueAbv" step="0.01">
         </div>
         <div>
-          <label for="cResidueDest">払出先</label>
-          <input type="text" id="cResidueDest" placeholder="例: 黒タンク6">
+          <label for="cResidueDest">払出先タンク</label>
+          <select id="cResidueDest"></select>
+          <div class="hint">残渣を記録するときは必ず選んでください</div>
         </div>
         <div>
           <label for="cSaltStatus">食塩ステータス</label>
@@ -244,17 +247,32 @@ renderNav('distillation.html');
 let tanks = [];
 let rawSakeTanks = [];
 let receivableTanks = [];
+// 残渣の行き先。容器IDの接頭辞で決まる（容器種別では判別できない）
+let residueTanks = [];
+
+/** 残渣タンクの選択肢。選ばれている値は保つ */
+function residueTankOptions(selectedId) {
+  return '<option value="">選択してください</option>' +
+    residueTanks.map((t) =>
+      `<option value="${t.tank_id}"${String(t.tank_id) === String(selectedId ?? '') ? ' selected' : ''}>` +
+      `${escapeHtml(t.name)}（${escapeHtml(t.code)}）</option>`).join('');
+}
 
 async function loadTanks() {
-  const [all, raw, receivable, brands] = await Promise.all([
+  const [all, raw, receivable, brands, residue] = await Promise.all([
     apiGet('/api/tanks'),
     apiGet('/api/raw-sake-receipts/tanks'),
     apiGet('/api/raw-sake-receipts/tanks/receivable'),
     apiGet('/api/raw-sake-brands'),
+    apiGet('/api/tanks/monitor?kind=' + encodeURIComponent('残渣')),
   ]);
   tanks = all;
   rawSakeTanks = raw;
   receivableTanks = receivable;
+  residueTanks = residue;
+
+  const keepResidue = el('cResidueDest').value;
+  el('cResidueDest').innerHTML = residueTankOptions(keepResidue);
 
   renderReceiptTankRows();
 
@@ -514,7 +532,12 @@ async function showDetail(id) {
           <td class="num"><input type="number" step="0.1" style="width:6em" data-field="quantity" value="${r.quantity ?? ''}"></td>
           <td class="num"><input type="number" step="0.1" style="width:5em" data-field="abv" value="${r.abv ?? ''}"></td>
           <td><input type="text" style="width:8em" data-field="saltStatus" value="${escapeHtml(r.salt_status ?? '')}"></td>
-          <td><input type="text" style="width:9em" data-field="destination" value="${escapeHtml(r.destination ?? '')}"></td>
+          <td>
+            <select data-field="destinationTankId">${residueTankOptions(r.destination_tank_id)}</select>
+            ${r.destination_tank_id == null && r.destination
+                ? `<div class="hint">元の記載: ${escapeHtml(r.destination)}</div>`
+                : ''}
+          </td>
           <td>
             <button type="button" class="small" data-save-residue="${r.id}">保存</button>
             <button type="button" class="danger small" data-delete-residue="${r.id}">削除</button>
@@ -613,8 +636,10 @@ async function showDetail(id) {
       </table>
     </div>
     <div class="actions">
+      <select id="edResidueTank">${residueTankOptions(null)}</select>
       <button type="button" id="edAddResidue">残渣回収を足す</button>
-      <span class="hint">移行で漏れていた回収記録を、あとから入れられます</span>
+      <span class="hint">移行で漏れていた回収記録を、あとから入れられます。
+        払出先タンクを選んでから押してください</span>
     </div>`;
   el('detailPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -680,13 +705,18 @@ async function saveResidueRow(tr) {
   const value = (name) => tr.querySelector(`[data-field="${name}"]`).value;
   const number = (name) => (value(name) === '' ? null : Number(value(name)));
 
+  // 払出先は必須。空のまま送ると400になるので、先に日本語で止める
+  if (!value('destinationTankId')) {
+    throw new Error('残渣の払出先タンクを選んでください');
+  }
+
   await apiPatch(`/api/distillations/residues/${tr.dataset.residueId}`, {
     collectedOn: value('collectedOn'),
     collectedTime: value('collectedTime'),
     quantity: number('quantity'),
     abv: number('abv'),
     saltStatus: value('saltStatus') || null,
-    destination: value('destination') || null,
+    destinationTankId: Number(value('destinationTankId')),
   });
   showMessage('messages', 'ok', '残渣回収を保存しました');
   await showDetail(currentDetailId);
@@ -736,12 +766,17 @@ el('detailBody').addEventListener('click', async (e) => {
   }
 
   if (e.target.closest('#edAddResidue')) {
+    const tankId = el('edResidueTank').value;
+    if (!tankId) {
+      return showMessage('messages', 'error', '残渣の払出先タンクを選んでください');
+    }
     const time = prompt('回収時刻を入力してください（HH:MM）', nowTimeStr());
     if (time == null) return;
     try {
       await apiPost(`/api/distillations/${currentDetailId}/residues`, {
         collectedOn: todayStr(),
         collectedTime: time.trim(),
+        destinationTankId: Number(tankId),
       });
       showMessage('messages', 'ok', '残渣回収を足しました。日付や数量はその行で直せます');
       await showDetail(currentDetailId);
@@ -826,10 +861,15 @@ el('completeForm').addEventListener('submit', async (e) => {
 
   const saltStatus = el('cSaltStatus').value;
   const residueQty = el('cResidueQty').value;
-  const destination = el('cResidueDest').value.trim();
+  const destination = el('cResidueDest').value;
 
   // 残渣について何か入力があったときだけ残渣回収記録を作る
   if (residueQty !== '' || destination || saltStatus === '有') {
+    // 行き先が無いと、その残渣がどこにあるか分からなくなる。400を見せる前にここで止める
+    if (!destination) {
+      return showMessage('messages', 'error',
+        '残渣の払出先タンクを選んでください（残渣を記録しないなら、回収量と食塩の欄を空にしてください）');
+    }
     payload.residue = {
       collectedOn: el('cDate').value,
       collectedTime: el('cTime').value,
@@ -840,7 +880,7 @@ el('completeForm').addEventListener('submit', async (e) => {
     if (residueQty !== '') payload.residue.quantity = Number(residueQty);
     if (el('cResidueAbv').value !== '') payload.residue.abv = Number(el('cResidueAbv').value);
     if (el('cSaltConc').value !== '') payload.residue.saltConcentration = Number(el('cSaltConc').value);
-    if (destination) payload.residue.destination = destination;
+    payload.residue.destinationTankId = Number(destination);
   }
 
   el('cSubmit').disabled = true;
