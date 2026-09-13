@@ -37,7 +37,7 @@ const tankSchema = z.object({
 
 router.post('/products', validateRequest(productSchema), (req, res, next) => {
   try {
-    res.status(201).json(stocktakingService.submitProductStocktaking(req.body));
+    res.status(201).json(stocktakingService.submitProductStocktaking(req.body, req.user));
   } catch (err) {
     next(err);
   }
@@ -45,7 +45,7 @@ router.post('/products', validateRequest(productSchema), (req, res, next) => {
 
 router.post('/materials', validateRequest(materialSchema), (req, res, next) => {
   try {
-    res.status(201).json(stocktakingService.submitMaterialStocktaking(req.body));
+    res.status(201).json(stocktakingService.submitMaterialStocktaking(req.body, req.user));
   } catch (err) {
     next(err);
   }
@@ -53,7 +53,7 @@ router.post('/materials', validateRequest(materialSchema), (req, res, next) => {
 
 router.post('/tanks', validateRequest(tankSchema), (req, res, next) => {
   try {
-    res.status(201).json(stocktakingService.submitTankStocktaking(req.body));
+    res.status(201).json(stocktakingService.submitTankStocktaking(req.body, req.user));
   } catch (err) {
     next(err);
   }

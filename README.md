@@ -43,7 +43,7 @@ node scripts/create-user.js --list  # ユーザー一覧
 | `/lots.html` | ロット追跡（どのタンクにどの蒸留ロットが入っているか・蒸留ロットの行方・原酒の銘柄・仕掛品ロット） |
 | `/stocktaking.html` | 棚卸 |
 | `/shipments.html` | 返品・サンプル送付・委託販売実績報告 |
-| `/materials.html` | 資材入荷・資材在庫・入出庫履歴 |
+| `/materials.html` | 資材入荷・資材在庫・入出庫履歴（取り消し・編集つき） |
 | `/audit.html` | 在庫監査レポート・修正履歴 |
 | `/sales-targets.html` | 売上目標と進捗 |
 | `/quotations.html` | 見積管理（売価・利益・確度をかけた見込み） |
@@ -51,7 +51,7 @@ node scripts/create-user.js --list  # ユーザー一覧
 | `/shipping.html` | 送料設定（都道府県の地帯・料金表・段ボール対応表） |
 | `/settings.html` | 2要素認証・パスワード変更・利用者管理・操作ログ |
 
-資材マスタは `/masters.html` の「資材」タブです（`/materials.html` は入荷と在庫だけ）。
+資材マスタは `/masters.html` の「資材」タブです（`/materials.html` は入荷・在庫・履歴だけ）。
 
 ## ログイン
 

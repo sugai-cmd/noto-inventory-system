@@ -70,7 +70,55 @@
   </section>
 
   <section class="panel">
-    <h2>入出庫履歴</h2>
+    <h2>入出庫履歴の一覧・取り消し</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      取り消すと資材の在庫が元に戻ります（記録自体は残ります）。理由の入力は必須です。
+      日付や数量が違うだけなら、<strong>「編集」</strong>で書き換えられます（履歴IDは変わりません）。
+      <strong>瓶詰め・箱詰めで消費した行はここから直せません</strong>。
+      その作業の記録を瓶詰め・箱詰めタブで直してください。
+    </p>
+
+    <div id="editPanel" style="display:none;margin-bottom:1em;border:1px solid var(--line);border-radius:6px;padding:1em">
+      <h3 id="editTitle" style="margin-top:0"></h3>
+      <p class="muted" style="font-size:13px;margin-top:0">
+        金額は「単価 × 数量」で引き直します。
+        <strong>履歴IDは変わりません</strong>（月をまたぐ日付に直しても、番号はそのままです）。
+        資材と受払区分は直せません。それを変えるなら取り消して入れ直してください。
+        直した内容は設定タブの操作ログに残ります。
+      </p>
+      <p id="editWarn" class="muted" style="display:none;font-size:13px;color:var(--danger)"></p>
+
+      <div class="grid">
+        <div>
+          <label for="edDate">日付</label>
+          <input type="date" id="edDate">
+        </div>
+        <div>
+          <label for="edQuantity">数量</label>
+          <input type="number" id="edQuantity" min="0.01" step="0.01">
+        </div>
+        <div>
+          <label for="edUnitPrice">単価(円)</label>
+          <input type="number" id="edUnitPrice" min="0" step="0.01">
+        </div>
+        <div>
+          <label for="edCounterparty">相手先</label>
+          <input type="text" id="edCounterparty">
+        </div>
+      </div>
+
+      <div style="margin-top:12px">
+        <label for="edNote">備考</label>
+        <input type="text" id="edNote">
+      </div>
+
+      <div class="actions">
+        <span id="edHint" class="hint"></span>
+        <button type="button" id="edSave">この内容で直す</button>
+        <button type="button" id="edClose" class="secondary">閉じる</button>
+      </div>
+    </div>
+
     <div class="grid" style="margin-bottom:12px">
       <div>
         <label for="filterMaterial">資材で絞り込む</label>
@@ -80,7 +128,7 @@
     <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>日付</th><th>資材</th><th>受払</th><th class="num">数量</th><th class="num">単価</th><th class="num">金額</th><th>相手先</th><th>備考</th></tr>
+          <tr><th>履歴ID</th><th>日付</th><th>資材</th><th>受払</th><th class="num">数量</th><th class="num">単価</th><th class="num">金額</th><th>相手先</th><th>備考</th><th>状態</th><th></th></tr>
         </thead>
         <tbody id="ledgerRows"></tbody>
       </table>
@@ -134,12 +182,30 @@ async function loadStock() {
     : '<tr><td colspan="8" class="empty">資材が登録されていません</td></tr>';
 }
 
+/**
+ * 操作の列。押せないボタンを出すより、行き先を示したほうが分かる。
+ *
+ * 瓶詰め・箱詰めで消費した行は、こちらで直してもあちらを直したときに上書きされるので、
+ * ボタンを出さずに紐付き先の履歴IDを出す。
+ */
+function ledgerActions(r) {
+  if (r.is_cancelled) return escapeHtml(r.cancel_reason ?? '');
+  if (r.product_ledger_id != null) {
+    return `<span class="hint">${escapeHtml(r.product_txn_type ?? '瓶詰め')} ` +
+           `${escapeHtml(r.product_history_code ?? '')}</span>`;
+  }
+  return '<div class="row-actions">' +
+    `<button type="button" class="secondary small" data-edit="${r.id}">編集</button>` +
+    `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button></div>`;
+}
+
 async function loadLedger() {
   const params = new URLSearchParams();
   if (el('filterMaterial').value) params.set('materialId', el('filterMaterial').value);
   const rows = await apiGet(`/api/materials/ledger?${params}`);
   el('ledgerRows').innerHTML = rows.length
     ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
+        <td>${escapeHtml(r.history_code ?? '')}</td>
         <td>${escapeHtml(r.txn_date)}</td>
         <td>${escapeHtml(r.material_name)}</td>
         <td>${escapeHtml(r.txn_type)}</td>
@@ -148,11 +214,130 @@ async function loadLedger() {
         <td class="num">${r.total_price != null ? yen(r.total_price) : ''}</td>
         <td>${escapeHtml(r.counterparty ?? '')}</td>
         <td>${escapeHtml(r.note ?? '')}</td>
+        <td>${r.is_cancelled
+              ? '<span class="badge muted">取消済</span>'
+              : '<span class="badge ok">有効</span>'}</td>
+        <td>${ledgerActions(r)}</td>
       </tr>`).join('')
-    : '<tr><td colspan="8" class="empty">履歴がありません</td></tr>';
+    : '<tr><td colspan="11" class="empty">履歴がありません</td></tr>';
 }
 
 el('filterMaterial').addEventListener('change', loadLedger);
+
+// --- 入出庫履歴の編集・取り消し -------------------------------------------
+
+// いま直している記録。読み込んだときの値も持っておき、変わった項目だけを送る
+let editingLedger = null;
+
+function closeEditPanel() {
+  editingLedger = null;
+  el('editPanel').style.display = 'none';
+}
+
+async function openEditPanel(ledgerId) {
+  const { row, currentStock } = await apiGet(`/api/materials/ledger/${ledgerId}`);
+  editingLedger = { id: ledgerId, row };
+
+  el('editTitle').textContent =
+    `${row.txn_type}の編集 ${row.history_code ?? ''}（${row.material_name}）`;
+  el('edDate').value = row.txn_date;
+  el('edQuantity').value = row.quantity;
+  el('edUnitPrice').value = row.unit_price ?? '';
+  el('edCounterparty').value = row.counterparty ?? '';
+  el('edNote').value = row.note ?? '';
+
+  // 棚卸の行は備考が「棚卸: 理論→実測」。数量を直したら、直した跡が備考に足される
+  const warnings = [];
+  if (['棚卸調整', '欠損'].includes(row.txn_type)) {
+    warnings.push(
+      '棚卸で入った行です。数量を直すと、備考の「理論 → 実測」と食い違わないように' +
+      '「（編集: 数量 X → Y）」が備考に足されます。'
+    );
+  }
+  el('editWarn').innerHTML = warnings.map(escapeHtml).join('<br>');
+  el('editWarn').style.display = warnings.length ? '' : 'none';
+
+  el('edHint').textContent =
+    `${row.material_name} のいまの在庫 ${num(currentStock, 2)}${row.unit ?? ''}`;
+
+  el('editPanel').style.display = '';
+  el('editPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+el('edClose').addEventListener('click', closeEditPanel);
+
+el('edSave').addEventListener('click', async () => {
+  if (!editingLedger) return;
+  const { id, row } = editingLedger;
+
+  // 変わった項目だけを送る。送らなかった項目はサーバ側でそのまま残る
+  const payload = {};
+  if (el('edDate').value && el('edDate').value !== row.txn_date) payload.txnDate = el('edDate').value;
+
+  const quantity = Number(el('edQuantity').value);
+  if (Number.isFinite(quantity) && quantity !== row.quantity) payload.quantity = quantity;
+
+  const unitPrice = el('edUnitPrice').value === '' ? null : Number(el('edUnitPrice').value);
+  if (unitPrice !== (row.unit_price ?? null)) payload.unitPrice = unitPrice;
+
+  if (el('edCounterparty').value !== (row.counterparty ?? '')) {
+    payload.counterparty = el('edCounterparty').value;
+  }
+  if (el('edNote').value !== (row.note ?? '')) payload.note = el('edNote').value;
+
+  if (Object.keys(payload).length === 0) {
+    return showMessage('messages', 'error', '直す項目がありません');
+  }
+
+  clearMessage('messages');
+  el('edSave').disabled = true;
+  try {
+    const r = await apiPatch(`/api/materials/ledger/${id}`, payload);
+    showMessage('messages', 'ok',
+      `${r.historyCode}（${r.txnType}）を直しました` +
+      `（${Object.keys(r.changes).length}項目 / 在庫 ${num(r.stock.current_stock, 2)}${row.unit ?? ''}）`);
+    closeEditPanel();
+    await Promise.all([loadStock(), loadLedger()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('edSave').disabled = false;
+  }
+});
+
+el('ledgerRows').addEventListener('click', async (e) => {
+  const edit = e.target.closest('[data-edit]');
+  if (edit) {
+    clearMessage('messages');
+    try {
+      await openEditPanel(Number(edit.dataset.edit));
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
+    return;
+  }
+
+  const btn = e.target.closest('[data-cancel]');
+  if (!btn) return;
+  const reason = prompt('取消理由を入力してください（必須）');
+  if (reason == null) return;
+  if (!reason.trim()) return showMessage('messages', 'error', '取消理由は必須です');
+
+  clearMessage('messages');
+  btn.disabled = true;
+  try {
+    const r = await apiPost(`/api/materials/ledger/${btn.dataset.cancel}/cancel`, { reason: reason.trim() });
+    showMessage('messages', 'ok',
+      `${r.cancelled.history_code} を取り消しました` +
+      `（${r.material.name} の在庫 ${num(r.stock.current_stock, 2)}${r.material.unit ?? ''}）`);
+    closeEditPanel();
+    await Promise.all([loadStock(), loadLedger()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    btn.disabled = false;
+  }
+});
 
 el('receiptForm').addEventListener('submit', async (e) => {
   e.preventDefault();
