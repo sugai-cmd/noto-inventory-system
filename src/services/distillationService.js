@@ -13,7 +13,7 @@ const { generateCode } = require('../utils/codeGenerator');
 const { nextRawSakeLotCode, nextRawSakeLotCodes } = require('../utils/rawSakeCode');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
-const { isRawSakeTankCode, RAW_SAKE_TANK_PREFIX } = require('./tankService');
+const { isRawSakeTankCode, tankKind, RAW_SAKE_TANK_PREFIX } = require('./tankService');
 const operationLogService = require('./operationLogService');
 
 // 蒸留IDのプレフィックスは Distill の 'D'（現行シート踏襲）。
@@ -409,17 +409,18 @@ function completeDistillation(distillationId, input) {
         note: `蒸留 ${distillation.distillation_code} の完了による充填`,
       });
 
-    // 残渣回収記録（任意）
+    // 残渣回収記録（任意）。記録を作るなら行き先のタンクは必須（ルート側のスキーマでも必須）
     let residueId = null;
     if (input.residue) {
+      assertResidueTank(db, input.residue.destinationTankId);
       const residueResult = db
         .prepare(
           `INSERT INTO distillation_residues
              (distillation_id, collected_on, collected_time, quantity, abv,
-              salt_status, salt_input_qty, salt_concentration, destination)
+              salt_status, salt_input_qty, salt_concentration, destination, destination_tank_id)
            VALUES
              (@distillationId, @collectedOn, @collectedTime, @quantity, @abv,
-              @saltStatus, @saltInputQty, @saltConcentration, @destination)`
+              @saltStatus, @saltInputQty, @saltConcentration, @destination, @destinationTankId)`
         )
         .run({
           distillationId,
@@ -430,7 +431,9 @@ function completeDistillation(distillationId, input) {
           saltStatus: input.residue.saltStatus ?? null,
           saltInputQty: input.residue.saltInputQty ?? null,
           saltConcentration: input.residue.saltConcentration ?? null,
-          destination: input.residue.destination ?? null,
+          // 自由文の払出先は移行データの記録用。新しい記録はタンクIDだけを持つ
+          destination: null,
+          destinationTankId: input.residue.destinationTankId,
         });
       residueId = residueResult.lastInsertRowid;
     }
@@ -589,7 +592,12 @@ function findById(id) {
     )
     .all(id);
   distillation.residues = db
-    .prepare('SELECT * FROM distillation_residues WHERE distillation_id = ? ORDER BY id')
+    .prepare(
+      `SELECT r.*, t.code AS destination_tank_code, t.name AS destination_tank_name
+         FROM distillation_residues r
+         LEFT JOIN tanks t ON t.id = r.destination_tank_id
+        WHERE r.distillation_id = ? ORDER BY r.id`
+    )
     .all(id);
 
   return distillation;
@@ -611,6 +619,34 @@ const EDITABLE_HEADER = [
   ['note', 'note'],
 ];
 
+/**
+ * 残渣の行き先が残渣タンクであることを確かめる。
+ *
+ * **容器種別（container_type）では判定できない。** 残渣タンクは 'PP' だが、
+ * 種別は他の容器とも重なりうる。容器IDの接頭辞で決める tankKind を使う
+ * （stocktakingService.submitTankStocktaking が浄酎だけに絞っているのと同じ作法）。
+ *
+ * 浄酎や原酒のタンクを残渣の行き先にできてしまうと、そのタンクに残渣が
+ * 溜まっているように見えて記録の意味が壊れる。
+ */
+function assertResidueTank(db, tankId) {
+  const tank = db.prepare('SELECT id, code, name, discarded_on FROM tanks WHERE id = ?').get(tankId);
+  if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${tankId})`);
+
+  const kind = tankKind(tank.code);
+  if (kind !== '残渣') {
+    throw new BusinessRuleError(
+      `${tank.name}（${tank.code}）は${kind}タンクです。残渣の行き先は残渣タンクだけです`
+    );
+  }
+  if (tank.discarded_on) {
+    throw new BusinessRuleError(
+      `${tank.name}（${tank.code}）は ${tank.discarded_on} に廃棄されています。行き先にできません`
+    );
+  }
+  return tank;
+}
+
 /** 残渣で直せる項目 */
 const EDITABLE_RESIDUE = [
   ['collectedOn', 'collected_on'],
@@ -621,6 +657,7 @@ const EDITABLE_RESIDUE = [
   ['saltInputQty', 'salt_input_qty'],
   ['saltConcentration', 'salt_concentration'],
   ['destination', 'destination'],
+  ['destinationTankId', 'destination_tank_id'],
 ];
 
 /** 送られてきた項目だけを UPDATE 文にする。前後の値も返す（監査ログに残すため） */
@@ -698,14 +735,16 @@ function addResidue(distillationId, input, actor = null) {
     const distillation = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
     if (!distillation) throw new NotFoundError(`蒸留記録が見つかりません (id=${distillationId})`);
 
+    assertResidueTank(db, input.destinationTankId);
+
     const result = db
       .prepare(
         `INSERT INTO distillation_residues
            (distillation_id, collected_on, collected_time, quantity, abv,
-            salt_status, salt_input_qty, salt_concentration, destination)
+            salt_status, salt_input_qty, salt_concentration, destination, destination_tank_id)
          VALUES
            (@distillationId, @collectedOn, @collectedTime, @quantity, @abv,
-            @saltStatus, @saltInputQty, @saltConcentration, @destination)`
+            @saltStatus, @saltInputQty, @saltConcentration, @destination, @destinationTankId)`
       )
       .run({
         distillationId,
@@ -716,7 +755,8 @@ function addResidue(distillationId, input, actor = null) {
         saltStatus: input.saltStatus ?? null,
         saltInputQty: input.saltInputQty ?? null,
         saltConcentration: input.saltConcentration ?? null,
-        destination: input.destination ?? null,
+        destination: null, // 新しい記録はタンクIDだけを持つ
+        destinationTankId: input.destinationTankId,
       });
 
     const residueQty = recalcResidueQty(db, distillationId);
@@ -749,6 +789,11 @@ function updateResidue(residueId, input, actor = null) {
       )
       .get(residueId);
     if (!current) throw new NotFoundError(`残渣回収記録が見つかりません (id=${residueId})`);
+
+    // 行き先を変えるなら、変えた先も残渣タンクであること
+    if (input.destinationTankId != null && input.destinationTankId !== current.destination_tank_id) {
+      assertResidueTank(db, input.destinationTankId);
+    }
 
     const { sets, params, before, after } = buildUpdate(EDITABLE_RESIDUE, input, current);
     if (sets.length) {

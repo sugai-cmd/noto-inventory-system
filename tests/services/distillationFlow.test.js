@@ -31,6 +31,11 @@ test.before(async () => {
     `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
      VALUES (?, 'T-01', '浄酎タンク1', 'ステンレスタンク', 1000, 0)`
   ).run(generateUid(db, 'tanks'));
+  // 残渣の行き先（id=5）。容器IDの接頭辞 U- が残渣タンクの目印
+  db.prepare(
+    `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
+     VALUES (?, 'U-001', '残渣保管タンク1', 'PP', 514, 0)`
+  ).run(generateUid(db, 'tanks'));
   }));
 });
 
@@ -172,7 +177,7 @@ test('蒸留完了で浄酎タンクへ継足され、残渣も記録される',
       quantity: 30,
       abv: 5,
       saltStatus: '添加済',
-      destination: '残渣タンク',
+      destinationTankId: 5, // 残渣保管タンク1
     },
   });
   assert.equal(status, 200);
@@ -189,6 +194,8 @@ test('蒸留完了で浄酎タンクへ継足され、残渣も記録される',
   const detail = await api('GET', '/api/distillations/1');
   assert.equal(detail.body.residues.length, 1);
   assert.equal(detail.body.residues[0].collected_time, '18:30');
+  assert.equal(detail.body.residues[0].destination_tank_id, 5, '行き先のタンクが残ること');
+  assert.equal(detail.body.residues[0].destination_tank_name, '残渣保管タンク1');
 });
 
 test('完了済みの蒸留は二重完了・明細取消ができない', async () => {

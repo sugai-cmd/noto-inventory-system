@@ -28,6 +28,47 @@ const router = express.Router();
  * 注意: このビューは tank_ledger（浄酎容器変動履歴）のみを集計するため、
  * 原酒タンクの残量（raw_sake_ledger 側）は含まれない。8-8の既知の注意点を参照。
  */
+/**
+ * 残渣タンクの回収累計。
+ *
+ * **残量ではない。** 残渣には払出（廃棄）の記録がどこにも無いので、この数字は
+ * 増えるだけで減らない。画面にもその断り書きを出す。
+ *
+ * unlinked は行き先のタンクが決まっていない残渣。移行データの自由文が
+ * タンクに結び付かなかった場合にここへ出る（黙って別のタンクへ入れないため）。
+ *
+ * '/:id' より前に置く（後ろだと id として拾われてしまう）。
+ */
+router.get('/residue-collection', (req, res) => {
+  const db = getConnection();
+
+  const tanks = db
+    .prepare(
+      `SELECT * FROM v_residue_tank_collected
+        WHERE code LIKE @prefix AND discarded_on IS NULL
+        ORDER BY code`
+    )
+    .all({ prefix: `${tankService.RESIDUE_TANK_PREFIX}-%` });
+
+  const unlinked = db
+    .prepare(
+      `SELECT r.id, r.collected_on, r.quantity, r.destination, d.distillation_code
+         FROM distillation_residues r
+         JOIN distillations d ON d.id = r.distillation_id
+        WHERE r.destination_tank_id IS NULL
+        ORDER BY r.collected_on DESC, r.id DESC`
+    )
+    .all();
+
+  res.json({
+    tanks: tanks.map((t) => ({
+      ...t,
+      fill_rate: t.max_volume_l ? t.collected_l / t.max_volume_l : null,
+    })),
+    unlinked,
+  });
+});
+
 router.get('/monitor', (req, res) => {
   const db = getConnection();
   const rows = db

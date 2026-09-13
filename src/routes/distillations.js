@@ -40,7 +40,12 @@ const completeSchema = z.object({
       saltStatus: z.string().optional(),
       saltInputQty: z.number().optional(),
       saltConcentration: z.number().optional(),
-      destination: z.string().optional(),
+      // 行き先のタンクは必須（利用者の判断）。自由文の destination はもう受け付けない。
+      // 残渣そのものが無い蒸留は residue を送らなければよく、そちらは今までどおり完了できる
+      destinationTankId: z
+        .number({ required_error: '残渣の払出先タンクを選んでください' })
+        .int()
+        .positive('残渣の払出先タンクを選んでください'),
     })
     .optional(),
 });
@@ -153,7 +158,11 @@ const residueSchema = z.object({
   saltStatus: z.string().nullish(),
   saltInputQty: z.number().nullish(),
   saltConcentration: z.number().nullish(),
-  destination: z.string().nullish(),
+  // 必須。nullish() にしないので、PATCH（.partial()）でも空には戻せない
+  destinationTankId: z
+    .number({ required_error: '残渣の払出先タンクを選んでください' })
+    .int()
+    .positive('残渣の払出先タンクを選んでください'),
 });
 
 // 残渣回収記録を足す（移行で漏れていたぶんを入れられるように）

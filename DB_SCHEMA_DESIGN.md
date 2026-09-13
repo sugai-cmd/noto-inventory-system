@@ -426,7 +426,8 @@ CREATE TABLE distillation_residues (
   salt_status      TEXT,                         -- 食塩ステータス
   salt_input_qty   REAL,                         -- 投入量（食塩等）
   salt_concentration REAL,                       -- 塩分濃度
-  destination      TEXT                          -- 払出先（廃棄先/保管先）
+  destination      TEXT,                         -- 払出先の自由文（移行データの記録。新しい記録では書かない）
+  destination_tank_id INTEGER REFERENCES tanks(id) -- 払出先タンク（残渣タンクのみ。記録を作るなら必須）
 );
 
 -- ============================================================
@@ -1079,6 +1080,17 @@ DATA_STRUCTURE.md 4-7〜4-10、5章の「蒸留の開始・完了」に対応す
 | GET | `/api/distillations/alerts` | `getStaleDistillationAlerts()`（24時間超過アラート） |
 
 **蒸留開始**は蒸留記録（ヘッダ）＋蒸留明細記録＋原料受払記録（払出）を、
+**残渣の行き先**は `destination_tank_id` でタンクマスタを参照する。
+シートの払出先（`destination`）は自由文で、実データは「黒タンク6」1種類だけだった。
+タンクマスタに同名の容器が無く、残渣タンクがどこにも結び付いていなかった
+（「黒タンク6」＝残渣保管タンク6は利用者に確認して 0018 で紐付けた）。
+残渣タンクかどうかは**容器IDの接頭辞**で判定する（`tankService.tankKind`）。
+`container_type` では判定できない。
+
+`v_residue_tank_collected` はタンク別の**回収累計**。**残量ではない。**
+残渣には払出（廃棄）の記録がどこにも無いので、この数字は増えるだけで減らない。
+画面（在庫タブ）にもその断り書きを出している。
+
 **蒸留完了**は蒸留記録の更新＋浄酎容器変動履歴（継足）＋残渣回収記録を、
 それぞれ1トランザクションで書き込む。
 
