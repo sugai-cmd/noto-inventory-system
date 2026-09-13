@@ -297,6 +297,51 @@ const MASTERS = {
     extraActions: [{ action: 'duplicate', label: '複製' }],
   },
 
+  // 資材は製品レシピが参照するので、レシピタブの隣に置く。
+  // もとは資材タブ（materials.html）の中に登録専用のフォームがあり、編集ができなかった。
+  // この枠組みに乗せるだけで、登録・編集・一覧・絞り込みが揃う。
+  materials: {
+    label: '資材',
+    endpoint: '/api/materials',
+    nameKey: 'name',
+    hint: '資材入荷・製品レシピで選べる資材の一覧です。'
+        + '数値の欄は空欄にしても前の値が残ります（消す仕組みは次の改修で入れます）。',
+    // 欄の名前は資材マスタシートの列名のまま（取り込み定義 masterImportService.js と揃える）
+    fields: [
+      { key: 'code', label: '資材ID', type: 'text', omitIfEmpty: true, autoCode: true },
+      { key: 'name', label: '資材名', type: 'text', required: true },
+      { key: 'category', label: '資材種別', type: 'select',
+        choices: ['容器', 'キャップ', '紙垂', 'ラベル', '箱', 'フィルム', '外箱', 'その他'] },
+      // 実データの単位は 本・個・枚 のほかにもありうるので、候補を出すだけにする
+      { key: 'unit', label: '単位', type: 'suggest', choices: ['本', '個', '枚', '巻', 'セット'] },
+      // 実データに 13.93 / 17.7 のような小数の単価がある
+      { key: 'unitPrice', label: '単価(円)', type: 'number', step: '0.01' },
+      { key: 'lotSize', label: 'ロット数', type: 'int',
+        hint: '1ロットの入り数（発注の目安）です。入荷数は縛りません' },
+      { key: 'properStockQty', label: '適正在庫数', type: 'int',
+        hint: '現在庫がこれを下回ると、資材タブの在庫一覧で「要発注」になります' },
+      { key: 'initialStock', label: '初期在庫数', type: 'int', createOnly: true,
+        hint: '在庫は入出庫履歴から再計算されます。ここは その起点 なので、運用開始後は基本さわらないでください' },
+      { key: 'supplierName', label: '発注先会社名', type: 'text' },
+      { key: 'supplierAddress', label: '発注先住所', type: 'text' },
+      { key: 'supplierContact', label: '発注先担当者名', type: 'text' },
+      { key: 'leadTimeDays', label: 'リードタイム(日)', type: 'int' },
+      { key: 'note', label: '備考', type: 'text' },
+    ],
+    columns: [
+      { key: 'code', label: '資材ID' },
+      { key: 'name', label: '資材名' },
+      { key: 'category', label: '資材種別' },
+      { key: 'unit_price', label: '単価', num: true, yen: true },
+      { key: 'lot_size', label: 'ロット数', num: true },
+      { key: 'proper_stock_qty', label: '適正在庫数', num: true },
+      { key: 'supplier_name', label: '発注先' },
+      { key: 'lead_time_days', label: 'リードタイム',
+        format: (r) => (r.lead_time_days != null ? `${r.lead_time_days}日` : '') },
+    ],
+    // 削除は付けない。DELETE の口が無く、資材は製品レシピと資材台帳から参照されている
+  },
+
   tanks: {
     label: 'タンク',
     endpoint: '/api/tanks',
@@ -388,7 +433,7 @@ const MASTERS = {
   },
 };
 
-const TAB_ORDER = ['customers', 'products', 'recipes', 'tanks', 'breweries', 'raw-sake-brands'];
+const TAB_ORDER = ['customers', 'products', 'recipes', 'materials', 'tanks', 'breweries', 'raw-sake-brands'];
 
 // レシピは「商品×資材×工程」で1行なので、他のマスタと同じ作りにできない。
 // タブだけ並べて、専用のパネルに切り替える。
@@ -867,6 +912,9 @@ async function loadList() {
     customersForParent = records;
     refreshParentOptions();
   }
+  // 製品レシピタブの資材プルダウンは materials のキャッシュを見ている。
+  // 資材タブで登録・編集したら、ここで入れ直しておく
+  if (currentTab === 'materials') materials = records;
   renderRows();
 }
 
