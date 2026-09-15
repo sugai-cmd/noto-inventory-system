@@ -44,6 +44,18 @@ function list({ targetCode, limit = 200 } = {}) {
 
          UNION ALL
 
+         -- 原料受払記録の取消（原酒入荷・棚卸）
+         SELECT l.cancelled_at, u.display_name, '原料受払記録', l.lot_code,
+                l.txn_type || ' ' || l.quantity || 'L を取消', l.cancel_reason,
+                COALESCE(tt.name, ft.name)
+         FROM raw_sake_ledger l
+         LEFT JOIN users u  ON u.id = l.cancelled_by
+         LEFT JOIN tanks tt ON tt.id = l.to_tank_id
+         LEFT JOIN tanks ft ON ft.id = l.from_tank_id
+         WHERE l.is_cancelled = 1 AND l.cancelled_at IS NOT NULL
+
+         UNION ALL
+
          -- 浄酎容器変動履歴の取消
          SELECT l.cancelled_at, u.display_name, '浄酎容器変動履歴',
                 COALESCE(ft.name, tt.name),

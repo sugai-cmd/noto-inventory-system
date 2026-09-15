@@ -371,7 +371,7 @@ CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
   id              INTEGER PRIMARY KEY,
   lot_code        TEXT UNIQUE,                   -- 原酒受払ID
   txn_date        TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  txn_type        TEXT NOT NULL CHECK (txn_type IN ('受入','払出')),
+  txn_type        TEXT NOT NULL CHECK (txn_type IN ('受入','払出','棚卸調整','欠減')), -- 0019で棚卸の2区分を追加
   from_tank_id    INTEGER REFERENCES tanks(id),         -- 受入元（払出の場合：投入元タンク）
   to_ref          TEXT,                          -- 払出先（受入先タンクID or 蒸留ID。用途混在のため文字列＋下2列で正規化）
   to_tank_id      INTEGER REFERENCES tanks(id),
@@ -382,7 +382,22 @@ CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
   is_fifo_estimated INTEGER DEFAULT 0,           -- 過去データ一括変換時のFIFO推定フラグ
   note            TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 0020で追加。他3台帳（商品・資材・浄酎）は0006までに同じ4列を持っていた
+  is_cancelled    INTEGER NOT NULL DEFAULT 0,
+  cancel_reason   TEXT,
+  cancelled_at    TEXT,
+  cancelled_by    INTEGER REFERENCES users(id)
+);
+
+-- 原酒の受入ロットと、蒸留への払出の紐付け（0021で追加）。
+-- wip_lot_allocations（瓶詰め→箱詰め）とまったく同じ形。
+CREATE TABLE raw_sake_lot_allocations (
+  id                INTEGER PRIMARY KEY,
+  payout_ledger_id  INTEGER NOT NULL REFERENCES raw_sake_ledger(id),  -- 払出・欠減の行
+  receipt_ledger_id INTEGER NOT NULL REFERENCES raw_sake_ledger(id),  -- 引当元の受入ロット
+  quantity          REAL NOT NULL,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 -- ============================================================
@@ -2807,3 +2822,102 @@ ALTER TABLE customers ADD COLUMN parent_id INTEGER REFERENCES customers(id);
 
 実データのカナカン（本店＋6支店）を入れてPlaywrightで通し、
 検索・入金予定日・マスタ画面の引き継ぎ表示まで確認した。
+
+---
+
+## 27. 原料受払記録の取消・編集と、原酒ロット↔蒸留の引き当て（0020・0021）
+
+### 27-1. なぜ必要か
+
+0019 で原酒タンクの棚卸を作ったが、**入った行を見る画面がどこにも無かった**。
+一覧のAPI（`GET /api/raw-sake-receipts`）は前からあったのに、`public/*.html` の
+どこからも呼ばれていなかった。打ち間違えても直す手段が無い。
+
+さらに `raw_sake_ledger` は**4つの台帳で唯一、取消の列を持っていなかった**。
+
+| 台帳 | is_cancelled / cancel_reason / cancelled_at / cancelled_by |
+|---|---|
+| product_stock_ledger | 有（0006まで） |
+| material_stock_ledger | 有 |
+| tank_ledger | 有 |
+| **raw_sake_ledger** | **無 → 0020で追加** |
+
+### 27-2. 蒸留が作った行は触らせない
+
+実データを数えると、**1つの条件で仕分けできる**:
+
+| 区分 | 件数 | `distillation_id` あり |
+|---|---|---|
+| 受入 | 79 | 0 |
+| 払出 | 79 | **79（全件）** |
+
+`cancelDistillationDetailItem()` が作る「取消の戻し」受入も `distillation_id` を入れている。
+→ **`distillation_id IS NOT NULL` の行は422で蒸留タブへ送る**。
+`product_ledger_id` で判定した資材台帳（#42）とまったく同じ構図。
+残るのは原酒入荷の受入と棚卸調整・欠減で、どちらもここでしか直せない。
+
+### 27-3. 取消済みを数えない側／数える側
+
+| 場所 | どうしたか | なぜ |
+|---|---|---|
+| `v_raw_sake_tank_volume` | **絞る** | 他3つの在庫ビューはすべて取消済みを0として数える |
+| `lotTraceService.listRawSakeTankLots` | **絞る** | 内訳の合計が残量とずれないように |
+| `receipt-check` の直近受入 | **絞る** | 取消済みを「直近の受入」と言わない |
+| 一覧（`GET /`） | 絞らない | 取消済みも状態つきで出す |
+| **`rawSakeCode.monthRows`** | **絞らない** | `lot_code` は UNIQUE。取り消しても番号は占有され続けるので、外すと採番が衝突してINSERTが落ちる |
+
+### 27-4. 引き当て（0021）
+
+`wip_lot_allocations`（瓶詰め→箱詰め）をそのまま写した `raw_sake_lot_allocations`。
+**新しい設計は要らない。**
+
+実データ79件の払出を古い順に引き当てた結果:
+
+| 結果 | 件数 |
+|---|---|
+| 受入ロット1件で決まる | 73 |
+| 複数ロットにまたがる | 2 |
+| 引き当てられない | 4 |
+
+引き当てられない4件の内訳:
+- `R2606-1001` `R2606-1002` … **投入元タンクが空欄**。#40 で「払出なのに移入の帯にいる」と
+  見つけたのと同じ2件で、移行の乱れがここにも出ている
+- `R2607-0027` `R2607-0028` … SP-002（原酒ポリ2）が**受入60Lに対し払出80L**で、
+  そもそも20L足りない。**残量が−20Lのタンク**として前から分かっているもの
+
+**黙って埋めない。** 引き当てられなかった行は未紐付けとして画面に残し、理由を出す。
+
+**過去分の埋め込みはマイグレーションでやらない。** FIFOの巻き戻しはループが要り、
+`.sql` に書くと読めなくなる。画面のボタンから、実際の引き当てと同じ関数を呼ぶ
+（提案が画面に出てから確定できるほうが、黙って当てるより安全）。
+
+### 27-5. 取消・編集との噛み合わせ
+
+- **引き当てられている受入は取り消せない**（409）。その液体はもう蒸留に使われている
+- **引当量より少ない数量には減らせない**（422）。減らすと引当の合計が受入量を超える
+- **払出を取り消すと引当行も外れる**。受入ロットの残りが戻り、次の引き当てに使える
+- **蒸留明細の取消はそのまま**。`cancelDistillationDetailItem` は払出を消さず「戻し」の
+  受入を足す作りなので、引当行は残り、戻しの受入が新しいロットとして次に使える。
+  液体の動きと記録が一致する
+
+### 27-6. テスト
+
+`npm test` は601件（全てpass）。
+`tests/services/rawSakeLedgerEdit.test.js` 20件と
+`tests/services/rawSakeLotAllocation.test.js` 17件を追加。
+
+**直しを外すと落ちることを8か所で確かめた**（古い順の並び／蒸留の行の関門／
+引き当て済みの受入の取消／引当量より減らせない／`availableReceipts` の取消済み除外／
+ロット追跡の取消済み除外／残量ビューの取消済み除外／一覧の引当列の取消済み除外）。
+
+うち2つは**最初の書き方では空振りした**ので試験のほうを直している:
+
+- 古い順の並びを反転しても通ってしまった。払出量を両ロットの合計にしていたため、
+  どちらから引いても内訳が同じだった → 12L(古)＋18L から**15L**引く形にした
+- 取消済みの払出を数える／数えないの差が出なかった。払出を取り消すと引当行も消えるので、
+  画面からはその状態を作れない → 引当行を直に入れて、**残り全部を要求する払出**で確かめた
+
+`db/rehearsal.sqlite` の写しで 0020・0021 を適用し、158行が変わらないこと、
+`PRAGMA foreign_key_check` が0件、全タンクの残量が不変であることを確認。
+Chromium で蒸留タブを開き、折り畳み・絞り込み・編集・取消・まとめて引き当て
+（79件中75件）まで通し、JSエラーが無いことを確認した。

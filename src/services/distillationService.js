@@ -15,6 +15,7 @@ const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const { isRawSakeTankCode, tankKind, RAW_SAKE_TANK_PREFIX } = require('./tankService');
 const operationLogService = require('./operationLogService');
+const rawSakeLotService = require('./rawSakeLotService');
 
 // 蒸留IDのプレフィックスは Distill の 'D'（現行シート踏襲）。
 // 受注番号は同じ 'D' だと区別できないため 'O'（Order）に整理した（codeGenerator.js参照）。
@@ -315,6 +316,14 @@ function submitDistillationStart(input) {
         quantity: item.volumeL,
         specNote: item.specNote ?? null,
         note: item.note ?? null,
+      });
+
+      // どの受入ロットから引いたかを、古い順で記録する（瓶詰め→箱詰めと同じ作法）。
+      // 引き当てられなくても蒸留は止めない。移行データには投入元タンクが空欄の
+      // 払出が実在し、ここで止めると蒸留そのものを登録できなくなる
+      rawSakeLotService.allocateForPayout(db, ledgerResult.lastInsertRowid, {
+        tankId: item.tankId,
+        quantity: item.volumeL,
       });
 
       const detailResult = insertDetail.run({
@@ -1249,6 +1258,11 @@ function addDistillationDetailItem(distillationId, { tankId, volumeL, note, spec
         specNote: specNote ?? null,
         note: note ?? null,
       });
+
+    rawSakeLotService.allocateForPayout(db, ledgerResult.lastInsertRowid, {
+      tankId,
+      quantity: volumeL,
+    });
 
     const detailResult = db
       .prepare(

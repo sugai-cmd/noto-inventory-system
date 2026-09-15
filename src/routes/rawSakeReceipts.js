@@ -6,6 +6,8 @@ const distillationService = require('../services/distillationService');
 const { getConnection } = require('../db/connection');
 const { validateRequest } = require('../middlewares/validateRequest');
 const { RAW_SAKE_TANK_PREFIX } = require('../services/tankService');
+const rawSakeLedgerService = require('../services/rawSakeLedgerService');
+const rawSakeLotService = require('../services/rawSakeLotService');
 
 const router = express.Router();
 
@@ -121,7 +123,7 @@ router.get('/tanks/:id/receipt-check', (req, res) => {
       `SELECT l.txn_date, l.quantity, l.lot_code, l.spec_note, b.name AS brand_name
        FROM raw_sake_ledger l
        LEFT JOIN raw_sake_brands b ON b.id = l.raw_sake_brand_id
-       WHERE l.to_tank_id = ?
+       WHERE l.to_tank_id = ? AND l.is_cancelled = 0
        ORDER BY l.txn_date DESC, l.id DESC LIMIT 1`
     )
     .get(tankId);
@@ -145,24 +147,124 @@ router.get('/tanks/:id/receipt-check', (req, res) => {
   });
 });
 
+/**
+ * 原料受払記録の一覧。取消済みも状態つきで出す。
+ *
+ * この口は前からあったが、どの画面からも呼ばれていなかった。
+ * 蒸留タブの「原料受払記録の一覧」がここを使う。
+ */
 router.get('/', (req, res) => {
-  const db = getConnection();
-  const limit = Math.min(Number(req.query.limit) || 200, 1000);
+  const q = req.query;
+  const cancelled = q.cancelled === undefined || q.cancelled === '' ? null : q.cancelled === 'true';
   res.json(
-    db
-      .prepare(
-        `SELECT l.*, ft.name AS from_tank_name, tt.name AS to_tank_name,
-                b.name AS brand_name, d.distillation_code
-         FROM raw_sake_ledger l
-         LEFT JOIN tanks ft ON ft.id = l.from_tank_id
-         LEFT JOIN tanks tt ON tt.id = l.to_tank_id
-         LEFT JOIN raw_sake_brands b ON b.id = l.raw_sake_brand_id
-         LEFT JOIN distillations d ON d.id = l.distillation_id
-         ORDER BY l.txn_date DESC, l.id DESC
-         LIMIT ?`
-      )
-      .all(limit)
+    rawSakeLedgerService.listLedger({
+      txnType: q.txnType || null,
+      tankId: Number(q.tankId) || null,
+      cancelled,
+      limit: Math.min(Number(q.limit) || 200, 1000),
+    })
   );
+});
+
+// --- 原料受払記録の取り消しと編集 -------------------------------------------
+
+/**
+ * 1行を直すときの入力。
+ *
+ * .strict() にしているのは、知らないキーを黙って捨てないため。
+ * タンク・区分・原酒受払IDはここに無く、送れば400になる
+ * （別の記録になるので、取り消して入れ直してもらう）。
+ */
+const ledgerUpdateSchema = z
+  .object({
+    txnDate: dateOnly.optional(),
+    quantity: z.number().positive('数量は0より大きい値で入力してください').optional(),
+    note: z.string().nullable().optional(),
+    brandId: z.number().int().positive().nullable().optional(),
+    specNote: z.string().nullable().optional(),
+    sourceRef: z.string().nullable().optional(),
+  })
+  .strict()
+  .refine((v) => Object.keys(v).length > 0, { message: '直す項目がひとつもありません' });
+
+const ledgerCancelSchema = z.object({
+  reason: z.string().min(1, '取消理由は必須です'),
+});
+
+/** 引き当てが決まっていない払出（古い順で引くならどれになるか、の候補つき） */
+router.get('/ledger/unlinked', (req, res) => {
+  res.json(rawSakeLotService.listUnlinkedPayouts());
+});
+
+/** 未紐付けの払出を、古い順でまとめて引き当てる */
+router.post('/ledger/backfill-allocations', (req, res, next) => {
+  try {
+    res.json(rawSakeLotService.backfillFromFifo(req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 払出1件の引当内訳 */
+router.get('/ledger/:ledgerId/allocations', (req, res) => {
+  res.json(rawSakeLotService.listAllocations(Number(req.params.ledgerId)));
+});
+
+/** 払出1件の引当を置き換える（足すのではないので、2回送っても二重にならない） */
+const allocationSchema = z.object({
+  items: z
+    .array(
+      z.object({
+        receiptLedgerId: z.number().int().positive(),
+        quantity: z.number().positive(),
+      })
+    )
+    .default([]),
+});
+
+router.put(
+  '/ledger/:ledgerId/allocations',
+  validateRequest(allocationSchema),
+  (req, res, next) => {
+    try {
+      res.json(
+        rawSakeLotService.replaceAllocations(
+          Number(req.params.ledgerId),
+          req.body.items,
+          req.user
+        )
+      );
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/** 直す画面に出す1件ぶんの中身 */
+router.get('/ledger/:ledgerId', (req, res, next) => {
+  try {
+    res.json(rawSakeLedgerService.getRecord(Number(req.params.ledgerId)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 1行を直す。台帳の行を書き換える。原酒受払IDは変わらない */
+router.patch('/ledger/:ledgerId', validateRequest(ledgerUpdateSchema), (req, res, next) => {
+  try {
+    res.json(rawSakeLedgerService.updateRecord(Number(req.params.ledgerId), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 1行を取り消す。行は残り、残量だけが戻る */
+router.post('/ledger/:ledgerId/cancel', validateRequest(ledgerCancelSchema), (req, res, next) => {
+  try {
+    res.json(rawSakeLedgerService.cancelRecord(Number(req.params.ledgerId), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.post('/', validateRequest(receiptSchema), (req, res, next) => {
