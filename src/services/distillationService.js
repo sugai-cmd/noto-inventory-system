@@ -34,6 +34,38 @@ function nextDetailCode(db) {
   return `DTL-${max + 1}`;
 }
 
+/**
+ * ヘッダの「投入量合計」と「使用原酒（表示用の文）」を、生きている明細から組み直す。
+ *
+ * 明細を差し替えても input_summary を書き換えていなかったため、
+ * **蒸留記録の一覧だけが古い投入元を出し続けていた**
+ * （明細は「取消済み → DTL-99」と直っているのに、一覧は元のタンク名のまま）。
+ *
+ * この欄は画面から手でも直せるが、**明細が動いたらこちらで組み直す**。
+ * 欄の役目が「どの原酒を入れたか」の要約である以上、明細と食い違ったままにしておくと、
+ * 一覧を見た人が投入元を取り違える。手で書いた文が要るときは、
+ * 直したあとにヘッダの編集でもう一度入れてもらう。
+ */
+function rebuildDistillationInputs(db, distillationId) {
+  const rows = db
+    .prepare(
+      `SELECT d.input_l, t.name AS tank_name
+         FROM distillation_details d
+         LEFT JOIN tanks t ON t.id = d.source_tank_id
+        WHERE d.distillation_id = ? AND d.is_cancelled = 0
+        ORDER BY d.id`
+    )
+    .all(distillationId);
+
+  const total = rows.reduce((sum, r) => sum + r.input_l, 0);
+  const summary = rows.map((r) => `${r.tank_name ?? '(タンク不明)'} ${r.input_l}L`).join(' / ');
+
+  db.prepare('UPDATE distillations SET total_input_l = @total, input_summary = @summary WHERE id = @id')
+    .run({ total, summary, id: distillationId });
+
+  return total;
+}
+
 const STATUS_IN_PROGRESS = '蒸留中';
 const STATUS_COMPLETED = '完了';
 
@@ -516,18 +548,8 @@ function cancelDistillationDetailItem(detailId, { reason } = {}) {
         note: `蒸留 ${detail.distillation_code} の投入明細取消による戻し`,
       });
 
-    // ヘッダの投入量合計を、取消されていない明細だけで再計算する
-    const { total } = db
-      .prepare(
-        `SELECT COALESCE(SUM(input_l), 0) AS total
-         FROM distillation_details
-         WHERE distillation_id = ? AND is_cancelled = 0`
-      )
-      .get(detail.distillation_id);
-    db.prepare('UPDATE distillations SET total_input_l = ? WHERE id = ?').run(
-      total,
-      detail.distillation_id
-    );
+    // ヘッダの投入量合計と使用原酒の文を、取消されていない明細だけで組み直す
+    const total = rebuildDistillationInputs(db, detail.distillation_id);
 
     return {
       detailId,
@@ -997,6 +1019,14 @@ function updateDistillationDetail(detailId, input, actor = null) {
         note,
       });
 
+    // 差し替えで作った払出にも引き当てを付ける。
+    // 蒸留開始・明細追加では呼んでいたのに、ここだけ抜けていた
+    // （直した明細だけが「引き当てが決まっていない払出」に残り続けていた）
+    rawSakeLotService.allocateForPayout(db, ledgerResult.lastInsertRowid, {
+      tankId: sourceTankId,
+      quantity: inputL,
+    });
+
     const newDetailCode = nextDetailCode(db);
     const detailResult = db
       .prepare(
@@ -1019,15 +1049,8 @@ function updateDistillationDetail(detailId, input, actor = null) {
       `UPDATE distillation_details SET note = TRIM(COALESCE(note, '') || ' → ' || @to) WHERE id = @id`
     ).run({ id: detailId, to: newDetailCode });
 
-    // 3. 投入量合計を、取り消されていない明細で数え直す
-    const { total } = db
-      .prepare(
-        `SELECT COALESCE(SUM(input_l), 0) AS total FROM distillation_details
-          WHERE distillation_id = ? AND is_cancelled = 0`
-      )
-      .get(detail.distillation_id);
-    db.prepare('UPDATE distillations SET total_input_l = ? WHERE id = ?')
-      .run(total, detail.distillation_id);
+    // 3. 投入量合計と使用原酒の文を、取り消されていない明細で組み直す
+    const total = rebuildDistillationInputs(db, detail.distillation_id);
 
     // 4. 書き込んだあとで残量を確かめる。負なら全部やり直し（トランザクション）
     assertRawSakeTankNotNegative(db, [detail.source_tank_id, sourceTankId]);
@@ -1279,13 +1302,8 @@ function addDistillationDetailItem(distillationId, { tankId, volumeL, note, spec
         note: note ?? null,
       });
 
-    // ヘッダの投入量合計を、取消されていない明細だけで数え直す
-    db.prepare(
-      `UPDATE distillations
-         SET total_input_l = (SELECT COALESCE(SUM(input_l), 0) FROM distillation_details
-                              WHERE distillation_id = ? AND is_cancelled = 0)
-       WHERE id = ?`
-    ).run(distillationId, distillationId);
+    // ヘッダの投入量合計と使用原酒の文を、取消されていない明細だけで組み直す
+    rebuildDistillationInputs(db, distillationId);
 
     operationLogService.record({
       user: actor,
