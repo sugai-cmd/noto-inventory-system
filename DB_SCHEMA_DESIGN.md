@@ -1407,6 +1407,7 @@ Cookieは`HttpOnly`（JavaScriptから読めない）・`SameSite=Lax`・HTTPS�
 
 | メソッド | パス | 内容 |
 |---|---|---|
+| POST | `/api/stocktaking/raw-sake-tanks` | 原酒タンクの棚卸（度数の欄は無い） |
 | POST | `/api/materials/receipts` | 資材入荷 |
 | GET | `/api/materials/:id/receipt-defaults` | 入荷画面の初期値（旧`getMaterialDefaultPrice`） |
 | GET | `/api/materials/ledger/:ledgerId` | 入出庫履歴の1件（編集画面用） |
@@ -1440,9 +1441,16 @@ Cookieは`HttpOnly`（JavaScriptから読めない）・`SameSite=Lax`・HTTPS�
   （`bottlingService.updateRecord` が本数の比で引き直すため、こちらで直しても
   あちらを直したときに上書きされる。実データでは消費167件のうち153件がこれ）。
   変更前後の値は操作ログ（`material.ledger.update` / `.cancel`）に残す。
-- **棚卸**：商品・資材・タンクのいずれも操作ログ（`stocktaking.product` / `.material` /
-  `.tank`）を残し、台帳の行に `created_by` を入れる。
+- **棚卸**：商品・資材・浄酎タンク・原酒タンクのいずれも操作ログ
+  （`stocktaking.product` / `.material` / `.tank` / `.rawSake`）を残し、
+  台帳の行に `created_by` を入れる。
   **差が0で1行も書かないときもログは残す**（数えて合っていたことも記録として意味がある）。
+- **原酒タンクの棚卸**：残量は `raw_sake_ledger` から出るので、浄酎の棚卸では直せない
+  （#38 でそちらは浄酎だけに絞った）。`submitRawSakeStocktaking` は原酒タンク以外を422で断り
+  （判定は容器IDの接頭辞。`container_type` では判定できない）、
+  差が＋なら `棚卸調整` を `to_tank_id` に、−なら `欠減` を `from_tank_id` に書く。
+  原酒受払IDは0帯（移入の帯を食わない）。**度数は受け付けない**（この台帳に `abv` 列が無い）。
+  増えたぶんの銘柄は推測せず、ロット追跡では「由来が分からないぶん」として置く。
 - **返品**：受注を指定した場合、商品の一致と「返品数 ≤ 受注数」を検証する。
 - **サンプル送付**：送付記録と出荷履歴を同一トランザクションで作り、
   `sample_shipment_id`で確実に紐付ける。8-1で設計した通り、**新規データでは推測マッチングが不要**になる。

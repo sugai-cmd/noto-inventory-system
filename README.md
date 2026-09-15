@@ -41,7 +41,7 @@ node scripts/create-user.js --list  # ユーザー一覧
 | `/tanks.html` | 容器移動・未納税移出・タンク入出庫履歴 |
 | `/stock.html` | 商品／資材／タンク／原酒タンクの在庫モニター |
 | `/lots.html` | ロット追跡（どのタンクにどの蒸留ロットが入っているか・蒸留ロットの行方・原酒の銘柄・仕掛品ロット） |
-| `/stocktaking.html` | 棚卸 |
+| `/stocktaking.html` | 棚卸（商品・仕掛品／資材／タンク（浄酎）／タンク（原酒）） |
 | `/shipments.html` | 返品・サンプル送付・委託販売実績報告 |
 | `/materials.html` | 資材入荷・資材在庫・入出庫履歴（取り消し・編集つき） |
 | `/audit.html` | 在庫監査レポート・修正履歴 |

@@ -51,6 +51,27 @@ router.post('/materials', validateRequest(materialSchema), (req, res, next) => {
   }
 });
 
+/**
+ * 原酒タンクの棚卸。tankSchema を写しているが、**度数の欄は無い**。
+ * raw_sake_ledger に abv 列が無く、原酒は銘柄とスペックで管理しているため。
+ */
+const rawSakeTankSchema = z
+  .object({
+    tankId: z.number().int().positive(),
+    actualVolumeL: z.number().nonnegative(),
+    txnDate: dateOnly.optional(),
+    reason: z.string().optional(),
+  })
+  .strict(); // 度数を送られても黙って捨てない。この台帳は度数を持たない
+
+router.post('/raw-sake-tanks', validateRequest(rawSakeTankSchema), (req, res, next) => {
+  try {
+    res.status(201).json(stocktakingService.submitRawSakeStocktaking(req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.post('/tanks', validateRequest(tankSchema), (req, res, next) => {
   try {
     res.status(201).json(stocktakingService.submitTankStocktaking(req.body, req.user));

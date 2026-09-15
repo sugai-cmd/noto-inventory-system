@@ -79,6 +79,25 @@
       </table>
     </div>
   </section>
+
+  <section class="panel">
+    <h2>タンク（原酒）</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      原酒の残量は<strong>原料受払記録から出しています</strong>（浄酎とは別の台帳です）。
+      実測度数の欄はありません。原酒は銘柄とスペックで管理していて、この台帳は度数を持ちません。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead>
+          <tr>
+            <th>容器ID</th><th>容器名称</th>
+            <th class="num">理論液量(L)</th><th class="num">実測液量(L)</th><th></th>
+          </tr>
+        </thead>
+        <tbody id="rawTankRows"></tbody>
+      </table>
+    </div>
+  </section>
 </main>
 
 <script src="assets/js/app.js"></script>
@@ -129,6 +148,7 @@ async function loadMaterials() {
 async function loadTanks() {
   // 浄酎タンクだけを出す。原酒・残渣はこの台帳に記録が無く、理論値が
   // 必ず 0L になるうえ、保存すると浄酎の台帳に調整が書かれてしまう。
+  // 原酒は下の「タンク（原酒）」で、原料受払記録のほうに記録する。
   const rows = await apiGet('/api/tanks/monitor?kind=' + encodeURIComponent('浄酎'));
   el('tankRows').innerHTML = rows.length
     ? rows.map((t) => `<tr data-tank="${t.tank_id}">
@@ -140,6 +160,20 @@ async function loadTanks() {
         <td><button class="small" data-save-tank="${t.tank_id}">保存</button></td>
       </tr>`).join('')
     : '<tr><td colspan="6" class="empty">タンクが登録されていません</td></tr>';
+}
+
+/** 原酒タンク。残量は原料受払記録（raw_sake_ledger）から出る */
+async function loadRawTanks() {
+  const rows = await apiGet('/api/raw-sake-receipts/tanks');
+  el('rawTankRows').innerHTML = rows.length
+    ? rows.map((t) => `<tr data-tank="${t.tank_id}">
+        <td>${escapeHtml(t.code)}</td>
+        <td>${escapeHtml(t.name)}</td>
+        <td class="num theoretical">${num(t.current_volume_l, 1)}</td>
+        <td><input type="number" class="actual" step="0.1" min="0" placeholder="未入力"></td>
+        <td><button class="small" data-save-raw-tank="${t.tank_id}">保存</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="empty">原酒タンクが登録されていません</td></tr>';
 }
 
 el('productRows').addEventListener('click', async (e) => {
@@ -230,8 +264,33 @@ el('tankRows').addEventListener('click', async (e) => {
   }
 });
 
+el('rawTankRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-save-raw-tank]');
+  if (!btn) return;
+  clearMessage('messages');
+  const tr = btn.closest('tr');
+  const value = tr.querySelector('.actual').value;
+  if (value === '') return showMessage('messages', 'error', '実測液量を入力してください');
+
+  btn.disabled = true;
+  try {
+    const r = await apiPost('/api/stocktaking/raw-sake-tanks', {
+      tankId: Number(btn.dataset.saveRawTank),
+      actualVolumeL: Number(value),
+      ...commonFields(),
+    });
+    showMessage('messages', 'ok', `${r.tank.name} の棚卸を保存しました（${describeDiff(r.diff, 'L')}）`);
+    tr.querySelector('.theoretical').textContent = num(r.after.current_volume_l, 1);
+    tr.querySelector('.actual').value = '';
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
 el('stDate').value = todayStr();
-Promise.all([loadProducts(), loadMaterials(), loadTanks()])
+Promise.all([loadProducts(), loadMaterials(), loadTanks(), loadRawTanks()])
   .catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

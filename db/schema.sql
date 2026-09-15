@@ -327,12 +327,12 @@ CREATE TABLE "raw_sake_brands" (
   current_stock     REAL DEFAULT 0              -- 現在在庫量（実質raw_sake_ledgerで管理、参考値）
 );
 
-CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
+CREATE TABLE "raw_sake_ledger" (
   id              INTEGER PRIMARY KEY,
   lot_code        TEXT UNIQUE,                   -- 原酒受払ID
   txn_date        TEXT NOT NULL CHECK (txn_date GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
-  txn_type        TEXT NOT NULL CHECK (txn_type IN ('受入','払出')),
-  from_tank_id    INTEGER REFERENCES tanks(id),         -- 受入元（払出の場合：投入元タンク）
+  txn_type        TEXT NOT NULL CHECK (txn_type IN ('受入','払出','棚卸調整','欠減')),
+  from_tank_id    INTEGER REFERENCES tanks(id),         -- 受入元（払出・欠減の場合：出ていくタンク）
   to_ref          TEXT,                          -- 払出先（受入先タンクID or 蒸留ID。用途混在のため文字列＋下2列で正規化）
   to_tank_id      INTEGER REFERENCES tanks(id),
   distillation_id INTEGER REFERENCES distillations(id),
@@ -342,8 +342,11 @@ CREATE TABLE raw_sake_ledger (                   -- 原料受払記録
   is_fifo_estimated INTEGER DEFAULT 0,           -- 過去データ一括変換時のFIFO推定フラグ
   note            TEXT,
   created_at      TEXT NOT NULL DEFAULT (datetime('now')),
-  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
-, created_by INTEGER REFERENCES users(id), source_ref TEXT, legacy_lot_code TEXT);
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  created_by      INTEGER REFERENCES users(id),
+  source_ref      TEXT,
+  legacy_lot_code TEXT
+);
 
 CREATE TABLE resource_locks (
   id               INTEGER PRIMARY KEY,
@@ -491,7 +494,7 @@ CREATE INDEX idx_quotations_date     ON quotations(quoted_on);
 
 CREATE INDEX idx_raw_sake_brands_name ON raw_sake_brands(name);
 
-CREATE INDEX idx_rawsake_legacy  ON raw_sake_ledger(legacy_lot_code);
+CREATE INDEX idx_rawsake_legacy ON raw_sake_ledger(legacy_lot_code);
 
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 
@@ -587,11 +590,11 @@ SELECT
   t.initial_volume_l
     + COALESCE((
         SELECT SUM(l.quantity) FROM raw_sake_ledger l
-        WHERE l.to_tank_id = t.id AND l.txn_type = '受入'
+        WHERE l.to_tank_id = t.id AND l.txn_type IN ('受入', '棚卸調整')
       ), 0)
     - COALESCE((
         SELECT SUM(l.quantity) FROM raw_sake_ledger l
-        WHERE l.from_tank_id = t.id AND l.txn_type = '払出'
+        WHERE l.from_tank_id = t.id AND l.txn_type IN ('払出', '欠減')
       ), 0) AS current_volume_l
 FROM tanks t;
 

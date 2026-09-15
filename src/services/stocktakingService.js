@@ -10,7 +10,8 @@ const { getConnection } = require('../db/connection');
 const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
-const { tankKind } = require('./tankService');
+const { tankKind, isRawSakeTankCode } = require('./tankService');
+const { nextRawSakeLotCodes } = require('../utils/rawSakeCode');
 const operationLogService = require('./operationLogService');
 
 /**
@@ -304,6 +305,126 @@ function submitTankStocktaking(input, actor = null) {
   return run();
 }
 
+/**
+ * 原酒タンクの棚卸。
+ *
+ * 原酒の残量は raw_sake_ledger（原料受払記録）から出る。浄酎の台帳とは別なので、
+ * submitTankStocktaking では直せない（#38 でそちらは浄酎だけに絞った）。
+ *
+ * ビューは to_tank_id 側を加算・from_tank_id 側を減算して数えるので、
+ * 増減の向きで埋める列を変える。0019 で txn_type に '棚卸調整' / '欠減' を足した。
+ *
+ * 原酒受払IDは 0帯（R2609-0001〜）に入る。千の位は「その月の何回目の移入か」を
+ * 表す帯なので、移入ではない棚卸をそこに入れない（nextRawSakeLotCodes が
+ * 受入以外を自動で0帯へ回す）。
+ */
+function submitRawSakeStocktaking(input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const txnDate = input.txnDate ?? today();
+
+    const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(input.tankId);
+    if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${input.tankId})`);
+
+    // 原酒タンク以外はここでは直せない。浄酎タンクを指定されて raw_sake_ledger に
+    // 書くと、浄酎の残量は動かないのに原酒の残量だけが増える
+    // （submitTankStocktaking が浄酎だけに絞っているのと対）。
+    if (!isRawSakeTankCode(tank.code)) {
+      const kind = tankKind(tank.code);
+      throw new BusinessRuleError(
+        `${tank.name}（${tank.code}）は${kind}タンクです。この棚卸は原酒タンクだけが対象です` +
+          (kind === '浄酎' ? '。浄酎タンクは「タンク（浄酎）」から行ってください' : '')
+      );
+    }
+    if (tank.discarded_on) {
+      throw new BusinessRuleError(
+        `${tank.name}（${tank.code}）は ${tank.discarded_on} に廃棄されています。棚卸の対象外です`
+      );
+    }
+
+    const before = db
+      .prepare('SELECT * FROM v_raw_sake_tank_volume WHERE tank_id = ?')
+      .get(input.tankId);
+    const diff = Number((input.actualVolumeL - before.current_volume_l).toFixed(3));
+
+    if (diff === 0) {
+      logRawSake({ tank, before, input, diff: 0, txnType: null, ledgerId: null, txnDate, actor });
+      return {
+        tank: { id: tank.id, name: tank.name, code: tank.code },
+        theoretical: before.current_volume_l,
+        actual: input.actualVolumeL,
+        diff: 0,
+        ledgerId: null,
+        skipped: true,
+        after: before,
+      };
+    }
+
+    const isIncrease = diff > 0;
+    const txnType = isIncrease ? '棚卸調整' : '欠減';
+    const result = db
+      .prepare(
+        `INSERT INTO raw_sake_ledger
+           (lot_code, txn_date, txn_type, from_tank_id, to_tank_id, quantity, note, created_by)
+         VALUES
+           (@lotCode, @txnDate, @txnType, @fromTankId, @toTankId, @quantity, @note, @createdBy)`
+      )
+      .run({
+        lotCode: nextRawSakeLotCodes(db, txnType, txnDate, 1)[0],
+        txnDate,
+        txnType,
+        fromTankId: isIncrease ? null : input.tankId,
+        toTankId: isIncrease ? input.tankId : null,
+        quantity: Math.abs(diff),
+        // 増えたぶんの銘柄は分からないので raw_sake_brand_id は入れない。
+        // ロット追跡では「由来が分からないぶん」として扱う（lotTraceService）
+        note: `棚卸: 理論${before.current_volume_l}L → 実測${input.actualVolumeL}L` +
+          (input.reason ? ` / ${input.reason}` : ''),
+        createdBy: actor?.id ?? null,
+      });
+
+    logRawSake({ tank, before, input, diff, txnType, ledgerId: result.lastInsertRowid, txnDate, actor });
+
+    return {
+      tank: { id: tank.id, name: tank.name, code: tank.code },
+      theoretical: before.current_volume_l,
+      actual: input.actualVolumeL,
+      diff,
+      txnType,
+      ledgerId: result.lastInsertRowid,
+      skipped: false,
+      after: db.prepare('SELECT * FROM v_raw_sake_tank_volume WHERE tank_id = ?').get(input.tankId),
+    };
+  });
+
+  return run();
+}
+
+/** 原酒タンクの棚卸の操作ログ。差が0で1行も書かなかったときも残す */
+function logRawSake({ tank, before, input, diff, txnType, ledgerId, txnDate, actor }) {
+  operationLogService.record({
+    user: actor,
+    action: 'stocktaking.rawSake',
+    targetType: 'raw_sake_ledger',
+    targetId: ledgerId,
+    summary:
+      `${tank.name}（${tank.code}）を棚卸／理論${before.current_volume_l}L → 実測${input.actualVolumeL}L` +
+      (diff === 0 ? '（差なし）' : `（${diff > 0 ? '+' : ''}${diff}L / ${txnType}）`) +
+      (input.reason ? `／理由: ${input.reason}` : ''),
+    detail: {
+      tankId: tank.id,
+      tankCode: tank.code,
+      txnDate,
+      theoretical: before.current_volume_l,
+      actual: input.actualVolumeL,
+      diff,
+      txnType,
+      reason: input.reason ?? null,
+    },
+  });
+}
+
 /** タンクの棚卸の操作ログ。差が0で1行も書かなかったときも残す */
 function logTank({ tank, before, input, diff, txnType, ledgerId, txnDate, actor }) {
   operationLogService.record({
@@ -357,4 +478,5 @@ module.exports = {
   submitProductStocktaking,
   submitMaterialStocktaking,
   submitTankStocktaking,
+  submitRawSakeStocktaking,
 };

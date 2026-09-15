@@ -349,8 +349,18 @@ function listRawSakeTankLots({ includeEmpty = false } = {}) {
   const freeLabels = new Map();
 
   for (const row of rows) {
-    if (row.txn_type === '払出' && row.from_tank_id != null && compositions.has(row.from_tank_id)) {
+    // 棚卸で減ったぶん（欠減）は、払出と同じ按分で減らす。
+    // 0019 で raw_sake_ledger に棚卸の区分を足したので、ここも見ないと
+    // 内訳の合計だけが v_raw_sake_tank_volume とずれる（黙ってずれるのがいちばん困る）。
+    if (['払出', '欠減'].includes(row.txn_type)
+        && row.from_tank_id != null && compositions.has(row.from_tank_id)) {
       take(compositions.get(row.from_tank_id), row.quantity);
+      continue;
+    }
+    // 棚卸で増えたぶんは、どこから来た液体か本当に分からない。
+    // 浄酎側（computeTankCompositions）と同じく「由来が分からないぶん」として置く
+    if (row.txn_type === '棚卸調整' && row.to_tank_id != null && compositions.has(row.to_tank_id)) {
+      pour(compositions.get(row.to_tank_id), new Map([[ADJUSTED, row.quantity]]));
       continue;
     }
     if (row.txn_type === '受入' && row.to_tank_id != null && compositions.has(row.to_tank_id)) {
