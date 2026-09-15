@@ -66,6 +66,144 @@
   </section>
 
   <section class="panel">
+    <details id="ledgerBox">
+      <summary style="cursor:pointer;font-weight:600;font-size:17px">
+        原料受払記録の一覧・取り消し <span id="ledgerCount" class="hint"></span>
+      </summary>
+
+      <p class="muted" style="font-size:13px">
+        原酒入荷・棚卸調整・欠減の記録です。取り消すとタンクの残量が元に戻ります
+        （記録自体は残ります）。理由の入力は必須です。
+        日付や数量が違うだけなら、<strong>「編集」</strong>で書き換えられます
+        （原酒受払IDは変わりません）。
+        <strong>蒸留が作った行（払出・明細取消の戻し）はここから直せません</strong>。
+        その蒸留を蒸留記録の詳細で直してください。
+      </p>
+
+      <div id="ledgerEditPanel"
+           style="display:none;margin-bottom:1em;border:1px solid var(--line);border-radius:6px;padding:1em">
+        <h3 id="ledgerEditTitle" style="margin-top:0"></h3>
+        <p class="muted" style="font-size:13px;margin-top:0">
+          <strong>原酒受払IDは変わりません</strong>（月をまたぐ日付に直しても、番号はそのままです）。
+          タンクと区分は直せません。それを変えるなら取り消して入れ直してください。
+          直した内容は設定タブの操作ログに残ります。
+        </p>
+        <p id="ledgerEditWarn" class="muted" style="display:none;font-size:13px;color:var(--danger)"></p>
+
+        <div class="grid">
+          <div>
+            <label for="lgDate">日付</label>
+            <input type="date" id="lgDate">
+          </div>
+          <div>
+            <label for="lgQuantity">数量(L)</label>
+            <input type="number" id="lgQuantity" min="0.1" step="0.1">
+          </div>
+        </div>
+
+        <div class="grid" id="lgReceiptFields" style="margin-top:12px">
+          <div>
+            <label for="lgBrand">銘柄</label>
+            <select id="lgBrand"></select>
+          </div>
+          <div>
+            <label for="lgSource">受入元</label>
+            <input type="text" id="lgSource">
+          </div>
+          <div>
+            <label for="lgSpec">スペック</label>
+            <input type="text" id="lgSpec">
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <label for="lgNote">備考</label>
+          <input type="text" id="lgNote">
+        </div>
+
+        <div class="actions">
+          <span id="lgHint" class="hint"></span>
+          <button type="button" id="lgSave">この内容で直す</button>
+          <button type="button" id="lgClose" class="secondary">閉じる</button>
+        </div>
+      </div>
+
+      <div class="grid" style="margin-bottom:12px">
+        <div>
+          <label for="filterLedgerType">区分で絞り込む</label>
+          <select id="filterLedgerType">
+            <option value="">すべて</option>
+            <option value="受入">受入</option>
+            <option value="払出">払出</option>
+            <option value="棚卸調整">棚卸調整</option>
+            <option value="欠減">欠減</option>
+          </select>
+        </div>
+        <div>
+          <label for="filterLedgerTank">タンクで絞り込む</label>
+          <select id="filterLedgerTank"></select>
+        </div>
+        <div>
+          <label for="filterLedgerCancelled">取消済み</label>
+          <select id="filterLedgerCancelled">
+            <option value="false">除く</option>
+            <option value="">含める</option>
+            <option value="true">取消済みだけ</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>原酒受払ID</th><th>日付</th><th>区分</th><th>タンク</th>
+              <th class="num">数量</th><th>銘柄</th><th>引当</th><th>状態</th><th>操作</th>
+            </tr>
+          </thead>
+          <tbody id="ledgerRows"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel">
+    <details id="allocBox">
+      <summary style="cursor:pointer;font-weight:600;font-size:17px">
+        引き当てが決まっていない払出・欠減 <span id="allocCount" class="hint"></span>
+      </summary>
+
+      <p class="muted" style="font-size:13px">
+        タンクから出ていった原酒が、<strong>そのタンクの中のどの受入ロットだったか</strong>の記録です。
+        新しい蒸留は登録したときに古い順（先に入った受入から）で自動に紐付きますが、
+        移行前の記録には紐付きがありません。
+        下の「古い順でまとめて引き当てる」で、同じ計算をまとめて当てられます
+        （<strong>2回押しても二重にはなりません</strong>）。
+        投入元タンクが空欄の払出は引き当てようがないので、そのまま残ります。<br>
+        <strong>棚卸の欠減もここに出ます。</strong>減ったぶんもロットから引いておかないと、
+        そのロットに残っていない液体を次の蒸留に引き当ててしまうためです。
+      </p>
+
+      <div class="actions" style="margin-top:0">
+        <span id="allocHint" class="hint"></span>
+        <button type="button" id="allocBackfill" class="secondary">古い順でまとめて引き当てる</button>
+      </div>
+
+      <div class="table-scroll">
+        <table>
+          <thead>
+            <tr>
+              <th>原酒受払ID</th><th>日付</th><th>区分</th><th>投入元タンク</th>
+              <th class="num">数量</th><th class="num">未引当</th><th>蒸留</th><th>古い順ならこれ</th>
+            </tr>
+          </thead>
+          <tbody id="allocRows"></tbody>
+        </table>
+      </div>
+    </details>
+  </section>
+
+  <section class="panel">
     <h2>蒸留開始</h2>
     <form id="startForm">
       <div class="grid">
@@ -249,6 +387,8 @@ let rawSakeTanks = [];
 let receivableTanks = [];
 // 残渣の行き先。容器IDの接頭辞で決まる（容器種別では判別できない）
 let residueTanks = [];
+// 原酒銘柄。入荷の選択肢と、原料受払記録の編集パネルの両方で使う
+let rawSakeBrands = [];
 
 /** 残渣タンクの選択肢。選ばれている値は保つ */
 function residueTankOptions(selectedId) {
@@ -270,6 +410,7 @@ async function loadTanks() {
   rawSakeTanks = raw;
   receivableTanks = receivable;
   residueTanks = residue;
+  rawSakeBrands = brands;
 
   const keepResidue = el('cResidueDest').value;
   el('cResidueDest').innerHTML = residueTankOptions(keepResidue);
@@ -278,7 +419,296 @@ async function loadTanks() {
 
   el('rBrand').innerHTML = '<option value="">（指定しない）</option>' +
     brands.map((b) => `<option value="${b.id}">${escapeHtml(b.name)}</option>`).join('');
+
+  // 一覧の絞り込みは原酒タンクだけ。選ばれている値は保つ（読み直しで消えると使いにくい）
+  const keepFilter = el('filterLedgerTank').value;
+  el('filterLedgerTank').innerHTML = '<option value="">すべて</option>' +
+    rawSakeTanks.map((t) =>
+      `<option value="${t.tank_id}"${String(t.tank_id) === keepFilter ? ' selected' : ''}>` +
+      `${escapeHtml(t.name)}（${escapeHtml(t.code)}）</option>`).join('');
 }
+
+// --- 原料受払記録の一覧・取り消し・編集 -------------------------------------
+
+/** その行が効いているタンク（受入・棚卸調整は受入先、払出・欠減は投入元） */
+function ledgerTankLabel(r) {
+  return r.to_tank_name ?? r.from_tank_name ?? '';
+}
+
+/**
+ * 引当の欄。向きが逆なので区分で出し分ける。
+ *
+ * 受入 … この受入がどの蒸留に出たか（引当先）
+ * 払出・欠減 … どの受入ロットから引いたか（引当元）。足りていなければ未引当を出す
+ */
+function ledgerAllocationCell(r) {
+  if (r.txn_type === '受入') {
+    if (!r.allocated_to_labels) return '';
+    return `<span class="hint">→ ${escapeHtml(r.allocated_to_labels)}` +
+           `（${num(r.allocated_out, 1)}L）</span>`;
+  }
+  if (!['払出', '欠減'].includes(r.txn_type)) return '';
+
+  const short = r.quantity - r.allocated_in;
+  const from = r.allocated_from_labels
+    ? `← ${escapeHtml(r.allocated_from_labels)}（${num(r.allocated_in, 1)}L）`
+    : '';
+  const rest = short > 0.0005
+    ? `<span class="badge warn">未引当 ${num(short, 1)}L</span>`
+    : '';
+  return `<span class="hint">${from}</span> ${rest}`;
+}
+
+/**
+ * 操作の列。押せないボタンを出すより、行き先を示したほうが分かる。
+ *
+ * 蒸留が作った行（払出と、明細取消の「戻し」受入）は distillation_id を持つ。
+ * こちらで直しても蒸留を直した瞬間に食い違うので、ボタンを出さず紐付き先を出す。
+ */
+function ledgerActions(r) {
+  if (r.is_cancelled) return escapeHtml(r.cancel_reason ?? '');
+  if (r.distillation_id != null) {
+    return `<span class="hint">蒸留 ${escapeHtml(r.distillation_code ?? '')}</span>`;
+  }
+  return '<div class="row-actions">' +
+    `<button type="button" class="secondary small" data-ledger-edit="${r.id}">編集</button>` +
+    `<button type="button" class="danger small" data-ledger-cancel="${r.id}">取り消す</button></div>`;
+}
+
+async function loadLedger() {
+  const params = new URLSearchParams();
+  if (el('filterLedgerType').value) params.set('txnType', el('filterLedgerType').value);
+  if (el('filterLedgerTank').value) params.set('tankId', el('filterLedgerTank').value);
+  if (el('filterLedgerCancelled').value) params.set('cancelled', el('filterLedgerCancelled').value);
+
+  const rows = await apiGet(`/api/raw-sake-receipts?${params}`);
+  el('ledgerCount').textContent = rows.length ? `${rows.length}件` : '';
+  el('ledgerRows').innerHTML = rows.length
+    ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
+        <td>${escapeHtml(r.lot_code ?? '')}</td>
+        <td>${escapeHtml(r.txn_date)}</td>
+        <td>${escapeHtml(r.txn_type)}</td>
+        <td>${escapeHtml(ledgerTankLabel(r))}</td>
+        <td class="num">${num(r.quantity, 1)}L</td>
+        <td>${escapeHtml(r.brand_name ?? '')}</td>
+        <td>${ledgerAllocationCell(r)}</td>
+        <td>${r.is_cancelled
+              ? '<span class="badge muted">取消済</span>'
+              : '<span class="badge ok">有効</span>'}</td>
+        <td>${ledgerActions(r)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="9" class="empty">記録がありません</td></tr>';
+}
+
+for (const id of ['filterLedgerType', 'filterLedgerTank', 'filterLedgerCancelled']) {
+  el(id).addEventListener('change', () => {
+    loadLedger().catch((err) => showMessage('messages', 'error', err.message, err.details));
+  });
+}
+
+// いま直している記録。読み込んだときの値も持っておき、変わった項目だけを送る
+let editingLedger = null;
+
+function closeLedgerEditPanel() {
+  editingLedger = null;
+  el('ledgerEditPanel').style.display = 'none';
+}
+
+async function openLedgerEditPanel(ledgerId) {
+  const { row, currentVolumeL, allocated } =
+    await apiGet(`/api/raw-sake-receipts/ledger/${ledgerId}`);
+  editingLedger = { id: ledgerId, row };
+
+  const tankName = row.to_tank_name ?? row.from_tank_name ?? 'タンク';
+  el('ledgerEditTitle').textContent =
+    `${row.txn_type}の編集 ${row.lot_code ?? ''}（${tankName}）`;
+  el('lgDate').value = row.txn_date;
+  el('lgQuantity').value = row.quantity;
+  el('lgNote').value = row.note ?? '';
+
+  // 銘柄・スペック・受入元は受入にしか無い。棚卸の行では欄ごと隠す（送れば422になる）
+  const isReceipt = row.txn_type === '受入';
+  el('lgReceiptFields').style.display = isReceipt ? '' : 'none';
+  if (isReceipt) {
+    el('lgBrand').innerHTML = '<option value="">（指定しない）</option>' +
+      rawSakeBrands.map((b) =>
+        `<option value="${b.id}"${b.id === row.raw_sake_brand_id ? ' selected' : ''}>` +
+        `${escapeHtml(b.name)}</option>`).join('');
+    el('lgSource').value = row.source_ref ?? '';
+    el('lgSpec').value = row.spec_note ?? '';
+  }
+
+  const warnings = [];
+  if (['棚卸調整', '欠減'].includes(row.txn_type)) {
+    warnings.push(
+      '棚卸で入った行です。数量を直すと、備考の「理論 → 実測」と食い違わないように' +
+      '「（編集: 数量 X → Y）」が備考に足されます。'
+    );
+  }
+  if (allocated > 0) {
+    warnings.push(
+      `この受入は ${num(allocated, 1)}L が蒸留に引き当てられています。` +
+      'それより少ない数量には減らせません。'
+    );
+  }
+  el('ledgerEditWarn').innerHTML = warnings.map(escapeHtml).join('<br>');
+  el('ledgerEditWarn').style.display = warnings.length ? '' : 'none';
+
+  el('lgHint').textContent = `${tankName} のいまの残量 ${num(currentVolumeL, 1)}L`;
+
+  el('ledgerEditPanel').style.display = '';
+  el('ledgerEditPanel').scrollIntoView({ behavior: 'smooth', block: 'center' });
+}
+
+el('lgClose').addEventListener('click', closeLedgerEditPanel);
+
+el('lgSave').addEventListener('click', async () => {
+  if (!editingLedger) return;
+  const { id, row } = editingLedger;
+
+  // 変わった項目だけを送る。送らなかった項目はサーバ側でそのまま残る
+  const payload = {};
+  if (el('lgDate').value && el('lgDate').value !== row.txn_date) payload.txnDate = el('lgDate').value;
+
+  const quantity = Number(el('lgQuantity').value);
+  if (Number.isFinite(quantity) && quantity !== row.quantity) payload.quantity = quantity;
+
+  if (el('lgNote').value !== (row.note ?? '')) payload.note = el('lgNote').value;
+
+  if (row.txn_type === '受入') {
+    const brandId = el('lgBrand').value === '' ? null : Number(el('lgBrand').value);
+    if (brandId !== (row.raw_sake_brand_id ?? null)) payload.brandId = brandId;
+    if (el('lgSource').value !== (row.source_ref ?? '')) payload.sourceRef = el('lgSource').value;
+    if (el('lgSpec').value !== (row.spec_note ?? '')) payload.specNote = el('lgSpec').value;
+  }
+
+  if (Object.keys(payload).length === 0) {
+    return showMessage('messages', 'error', '直す項目がありません');
+  }
+
+  clearMessage('messages');
+  el('lgSave').disabled = true;
+  try {
+    const r = await apiPatch(`/api/raw-sake-receipts/ledger/${id}`, payload);
+    showMessage('messages', 'ok',
+      `${r.lotCode}（${r.txnType}）を直しました` +
+      `（${Object.keys(r.changes).length}項目 / 残量 ${num(r.volume?.current_volume_l ?? 0, 1)}L）`);
+    closeLedgerEditPanel();
+    await Promise.all([refreshLedgerPanels(), loadTanks(), loadAlerts()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('lgSave').disabled = false;
+  }
+});
+
+el('ledgerRows').addEventListener('click', async (e) => {
+  const edit = e.target.closest('[data-ledger-edit]');
+  if (edit) {
+    clearMessage('messages');
+    try {
+      await openLedgerEditPanel(Number(edit.dataset.ledgerEdit));
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
+    return;
+  }
+
+  const btn = e.target.closest('[data-ledger-cancel]');
+  if (!btn) return;
+  const reason = prompt('取消理由を入力してください（必須）');
+  if (reason == null) return;
+  if (!reason.trim()) return showMessage('messages', 'error', '取消理由は必須です');
+
+  clearMessage('messages');
+  btn.disabled = true;
+  try {
+    const r = await apiPost(
+      `/api/raw-sake-receipts/ledger/${btn.dataset.ledgerCancel}/cancel`,
+      { reason: reason.trim() }
+    );
+    showMessage('messages', 'ok',
+      `${r.cancelled.lot_code} を取り消しました` +
+      `（${r.tank.name} の残量 ${num(r.volume?.current_volume_l ?? 0, 1)}L` +
+      `${r.releasedAllocations ? ` / 引当${r.releasedAllocations}件を解除` : ''}）`);
+    closeLedgerEditPanel();
+    await Promise.all([refreshLedgerPanels(), loadTanks(), loadAlerts()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    btn.disabled = false;
+  }
+});
+
+// --- 引き当てが決まっていない払出 -------------------------------------------
+
+/** 古い順で引くならどうなるか。引き当てようがない行は、その理由を出す */
+function suggestionCell(r) {
+  if (r.from_tank_id == null) {
+    return '<span class="hint">投入元タンクが空欄のため引き当てられません</span>';
+  }
+  if (!r.suggestion.length) return '<span class="hint">引き当てられる受入がありません</span>';
+
+  const list = r.suggestion
+    .map((s) => `${escapeHtml(s.lotCode)} ${num(s.quantity, 1)}L`)
+    .join(' / ');
+  const short = r.shortage > 0.0005
+    ? ` <span class="badge warn">${num(r.shortage, 1)}L 足りません</span>`
+    : '';
+  return `${list}${short}`;
+}
+
+async function loadUnlinkedPayouts() {
+  const rows = await apiGet('/api/raw-sake-receipts/ledger/unlinked');
+  el('allocCount').textContent = rows.length ? `${rows.length}件` : '（なし）';
+
+  const linkable = rows.filter((r) => r.suggestion.length).length;
+  el('allocHint').textContent = rows.length
+    ? `未紐付け ${rows.length}件 / いま引き当てられるのは ${linkable}件`
+    : 'すべての払出・欠減に引き当てが付いています';
+  el('allocBackfill').disabled = linkable === 0;
+
+  el('allocRows').innerHTML = rows.length
+    ? rows.map((r) => `<tr>
+        <td>${escapeHtml(r.lot_code ?? '')}</td>
+        <td>${escapeHtml(r.txn_date)}</td>
+        <td>${escapeHtml(r.txn_type)}</td>
+        <td>${escapeHtml(r.from_tank_name ?? '')}</td>
+        <td class="num">${num(r.quantity, 1)}L</td>
+        <td class="num">${num(r.remaining, 1)}L</td>
+        <td>${escapeHtml(r.distillation_code ?? '')}</td>
+        <td>${suggestionCell(r)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">未紐付けの払出はありません</td></tr>';
+}
+
+/**
+ * 一覧と引き当ての2つを読み直す。
+ *
+ * 原料受払記録が動く操作（原酒入荷・蒸留開始・投入明細の追加と取消・完了報告）の
+ * あとは必ず呼ぶ。折り畳んであっても summary の件数は出しているので、
+ * 開いていないから読まない、にはしない。
+ */
+const refreshLedgerPanels = () => Promise.all([loadLedger(), loadUnlinkedPayouts()]);
+
+el('allocBackfill').addEventListener('click', async () => {
+  if (!confirm('未紐付けの払出を、古い順（先に入った受入から）でまとめて引き当てます。よろしいですか？')) return;
+
+  clearMessage('messages');
+  el('allocBackfill').disabled = true;
+  try {
+    const r = await apiPost('/api/raw-sake-receipts/ledger/backfill-allocations', {});
+    showMessage('messages', 'ok',
+      `対象 ${r.targets}件のうち ${r.linked}件を引き当てました` +
+      `${r.partial ? `（うち一部だけ ${r.partial}件）` : ''}`,
+      r.skipped.map((s) => ({ path: s.lotCode, message: s.reason })));
+    await refreshLedgerPanels();
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('allocBackfill').disabled = false;
+  }
+});
 
 const DEFAULT_RECEIPT_L = 20;
 
@@ -675,7 +1105,7 @@ async function saveDetailRow(tr) {
   });
   showMessage('messages', 'ok',
     `投入明細を直しました（投入量合計 ${num(d.total_input_l, 1)}L）`);
-  await Promise.all([loadDistillations(), loadTanks()]);
+  await Promise.all([loadDistillations(), loadTanks(), refreshLedgerPanels()]);
   await showDetail(currentDetailId);
 }
 
@@ -696,7 +1126,7 @@ async function saveOutput() {
   });
   showMessage('messages', 'ok',
     `${d.distillation_code} の蒸留量を ${num(d.output_l, 1)}L に直しました`);
-  await Promise.all([loadDistillations(), loadTanks()]);
+  await Promise.all([loadDistillations(), loadTanks(), refreshLedgerPanels()]);
   await showDetail(currentDetailId);
 }
 
@@ -795,7 +1225,7 @@ el('detailBody').addEventListener('click', async (e) => {
     const r = await apiPost(`/api/distillations/details/${btn.dataset.cancelDetail}/cancel`, { reason });
     showMessage('messages', 'ok',
       `投入明細を取り消しました（原酒をタンクへ戻しました。投入量合計 ${num(r.totalInputL, 1)}L）`);
-    await Promise.all([loadDistillations(), loadTanks()]);
+    await Promise.all([loadDistillations(), loadTanks(), refreshLedgerPanels()]);
     await showDetail(currentDetailId);
   } catch (err) {
     showMessage('messages', 'error', err.message);
@@ -890,7 +1320,7 @@ el('completeForm').addEventListener('submit', async (e) => {
       `${r.distillation.distillation_code} を完了しました（浄酎タンクへ ${num(r.distillation.output_l, 1)}L を継足）`);
     completingId = null;
     el('completePanel').style.display = 'none';
-    await Promise.all([loadDistillations(), loadAlerts(), loadTanks()]);
+    await Promise.all([loadDistillations(), loadAlerts(), loadTanks(), refreshLedgerPanels()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {
@@ -927,7 +1357,7 @@ el('receiptForm').addEventListener('submit', async (e) => {
     el('rBrand').value = '';
     for (const box of el('rTankRows').querySelectorAll('input[type=checkbox]')) box.checked = false;
     el('rDate').value = todayStr();
-    await loadTanks();
+    await Promise.all([loadTanks(), refreshLedgerPanels()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {
@@ -965,7 +1395,7 @@ el('startForm').addEventListener('submit', async (e) => {
     recalcInputTotal();
     el('sDate').value = todayStr();
     el('sTime').value = nowTimeStr();
-    await Promise.all([loadDistillations(), loadTanks(), loadAlerts()]);
+    await Promise.all([loadDistillations(), loadTanks(), loadAlerts(), refreshLedgerPanels()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {
@@ -983,7 +1413,8 @@ el('sTime').value = nowTimeStr();
   try {
     await loadTanks();
     addInputRow();
-    await Promise.all([loadDistillations(), loadAlerts()]);
+    // 一覧と引き当ては折り畳んであるが、件数を summary に出すので最初から読む
+    await Promise.all([loadDistillations(), loadAlerts(), refreshLedgerPanels()]);
   } catch (err) {
     showMessage('messages', 'error', err.message);
   }
@@ -1021,7 +1452,7 @@ el('addDetailForm').addEventListener('submit', async (e) => {
     const r = await apiPost(`/api/distillations/${el('adDistillation').value}/details`, payload);
     showMessage('messages', 'ok', `投入明細を追加しました（投入量合計 ${num(r.totalInputL, 1)}L）`);
     el('addDetailForm').reset();
-    await Promise.all([loadAddDetailOptions(), loadDistillations()]);
+    await Promise.all([loadAddDetailOptions(), loadDistillations(), refreshLedgerPanels()]);
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
   } finally {

@@ -346,6 +346,14 @@ CREATE TABLE "raw_sake_ledger" (
   created_by      INTEGER REFERENCES users(id),
   source_ref      TEXT,
   legacy_lot_code TEXT
+, is_cancelled  INTEGER NOT NULL DEFAULT 0, cancel_reason TEXT, cancelled_at  TEXT, cancelled_by  INTEGER REFERENCES users(id));
+
+CREATE TABLE raw_sake_lot_allocations (
+  id                INTEGER PRIMARY KEY,
+  payout_ledger_id  INTEGER NOT NULL REFERENCES raw_sake_ledger(id),  -- 払出の行
+  receipt_ledger_id INTEGER NOT NULL REFERENCES raw_sake_ledger(id),  -- 引当元の受入ロット
+  quantity          REAL NOT NULL,
+  created_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE resource_locks (
@@ -496,6 +504,10 @@ CREATE INDEX idx_raw_sake_brands_name ON raw_sake_brands(name);
 
 CREATE INDEX idx_rawsake_legacy ON raw_sake_ledger(legacy_lot_code);
 
+CREATE INDEX idx_rsla_payout  ON raw_sake_lot_allocations(payout_ledger_id);
+
+CREATE INDEX idx_rsla_receipt ON raw_sake_lot_allocations(receipt_ledger_id);
+
 CREATE INDEX idx_sessions_expires ON sessions(expires_at);
 
 CREATE INDEX idx_sessions_user ON sessions(user_id);
@@ -591,10 +603,12 @@ SELECT
     + COALESCE((
         SELECT SUM(l.quantity) FROM raw_sake_ledger l
         WHERE l.to_tank_id = t.id AND l.txn_type IN ('受入', '棚卸調整')
+          AND l.is_cancelled = 0
       ), 0)
     - COALESCE((
         SELECT SUM(l.quantity) FROM raw_sake_ledger l
         WHERE l.from_tank_id = t.id AND l.txn_type IN ('払出', '欠減')
+          AND l.is_cancelled = 0
       ), 0) AS current_volume_l
 FROM tanks t;
 

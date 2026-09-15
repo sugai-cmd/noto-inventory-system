@@ -341,6 +341,7 @@ function listRawSakeTankLots({ includeEmpty = false } = {}) {
       `SELECT id, txn_date, txn_type, from_tank_id, to_tank_id, quantity,
               raw_sake_brand_id, source_ref, spec_note
        FROM raw_sake_ledger
+       WHERE is_cancelled = 0
        ORDER BY txn_date, id`
     )
     .all();

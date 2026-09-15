@@ -49,6 +49,10 @@ const bandOf = (seq) => Math.floor(seq / BAND_SIZE);
  * その月に既にある原酒受払IDを1回だけ読む。
  *
  * 1件ずつ採番すると月ぶんを毎回読み直すので、原酒ポリ25本のまとめ入力で25回走る。
+ *
+ * **取消済み（is_cancelled）の行も読む。** lot_code は UNIQUE なので、
+ * 取り消しても番号は占有され続ける。絞ると取り消した番号を採り直そうとして
+ * INSERT が落ちる。ここだけは取消済みを外さない。
  */
 function monthRows(db, yymm) {
   return db
