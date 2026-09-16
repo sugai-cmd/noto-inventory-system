@@ -172,6 +172,66 @@ test('使用原酒（表示用の文）が、生きている明細で組み直�
   assert.equal(d.total_input_l, live.reduce((s, r) => s + r.input_l, 0));
 });
 
+// 0022 は「直しが入る前に修正された記録」を組み直すマイグレーション。
+// サービス側の組み直しはこれから明細を動かしたときだけ走るので、
+// 既に直してある記録（利用者の D2609-0006）は二度と直る機会がない。
+// **マイグレーションの .sql をそのまま読んで流す**（試験用に書き写すと、
+// 本体を直したときに食い違う）。
+test('0022: 直しが入る前に修正された記録の「使用原酒」を組み直す', () => {
+  const sql = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../../db/migrations/0022_rebuild_corrected_input_summary.sql'),
+    'utf8'
+  );
+
+  const live = db
+    .prepare(
+      `SELECT t.name, d.input_l FROM distillation_details d
+         JOIN tanks t ON t.id = d.source_tank_id
+        WHERE d.distillation_id = ? AND d.is_cancelled = 0 ORDER BY d.id`
+    )
+    .all(distillationId);
+  const expected = live.map((r) => `${r.name} ${r.input_l}L`).join(' / ');
+
+  // 直す前の状態（古い投入元が残っている）を作る
+  db.prepare("UPDATE distillations SET input_summary = '原酒ポリ1 20L / 原酒ポリ3 10L' WHERE id = ?")
+    .run(distillationId);
+
+  db.exec(sql);
+
+  assert.equal(
+    db.prepare('SELECT input_summary FROM distillations WHERE id = ?').get(distillationId).input_summary,
+    expected,
+    '生きている明細から組み直されること'
+  );
+});
+
+test('0022: 直していない記録には触らない', () => {
+  const sql = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../../db/migrations/0022_rebuild_corrected_input_summary.sql'),
+    'utf8'
+  );
+
+  // 取消済みの明細を持たない蒸留を1件作る（移行で入った記録と同じ形）
+  const other = db
+    .prepare(
+      `INSERT INTO distillations (distillation_code, started_on, started_time, input_summary, status)
+       VALUES ('D9999-0001', '2026-07-01', '09:00', '原酒ポリ5 10.0L / 原酒ポリ6 20.0L', '完了')`
+    )
+    .run().lastInsertRowid;
+  db.prepare(
+    `INSERT INTO distillation_details (detail_code, distillation_id, raw_sake_ledger_id, input_l, source_tank_id)
+     VALUES ('DTL-9999', ?, (SELECT id FROM raw_sake_ledger LIMIT 1), 30, ?)`
+  ).run(other, TANK_A);
+
+  db.exec(sql);
+
+  assert.equal(
+    db.prepare('SELECT input_summary FROM distillations WHERE id = ?').get(other).input_summary,
+    '原酒ポリ5 10.0L / 原酒ポリ6 20.0L',
+    'シートから取り込んだ文をそのまま残すこと'
+  );
+});
+
 test('差し替えで作った払出にも引き当てが付く', async () => {
   const live = db
     .prepare('SELECT raw_sake_ledger_id FROM distillation_details WHERE distillation_id = ? AND is_cancelled = 0')
