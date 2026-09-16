@@ -56,6 +56,15 @@ const LIST_ALLOCATION_COLUMNS = `
     SELECT SUM(a.quantity) FROM raw_sake_lot_allocations a
     WHERE a.payout_ledger_id = l.id
   ), 0) AS allocated_in,
+  -- 蒸留明細の状態。明細を差し替え・取消しても**払出の行はそのまま残る**
+  -- （打ち消しの「戻し受入」を別に足す作り）ので、この列を見ないと
+  -- 一覧だけが「有効」と言い続ける。投入明細の画面と食い違っていた原因。
+  (SELECT d.is_cancelled FROM distillation_details d
+    WHERE d.raw_sake_ledger_id = l.id) AS detail_cancelled,
+  (SELECT d.detail_code FROM distillation_details d
+    WHERE d.raw_sake_ledger_id = l.id) AS detail_code,
+  (SELECT d.note FROM distillation_details d
+    WHERE d.raw_sake_ledger_id = l.id) AS detail_note,
   (
     SELECT GROUP_CONCAT(x.label, '・') FROM (
       SELECT COALESCE(pd.distillation_code, p.lot_code) AS label

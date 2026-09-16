@@ -436,6 +436,19 @@ function ledgerTankLabel(r) {
 }
 
 /**
+ * その行が「もう効いていない」かどうか。
+ *
+ * 明細を差し替え・取消しても、**払出の行そのものは台帳に残る**
+ * （打ち消しの「戻し受入」を別に足す作りなので、消すと残量が二重に戻る）。
+ * そのため is_cancelled だけを見ると、投入明細が「取消済み」と出している行を
+ * 一覧が「有効」と言い続ける。明細の状態も見て揃える。
+ */
+const ledgerIsVoided = (r) => Boolean(r.is_cancelled) || Boolean(r.detail_cancelled);
+
+/** 明細の取消・差し替えで足された「戻し」の受入。受入に蒸留IDが付くのはこれだけ */
+const ledgerIsRestore = (r) => r.txn_type === '受入' && r.distillation_id != null;
+
+/**
  * 引当の欄。向きが逆なので区分で出し分ける。
  *
  * 受入 … この受入がどの蒸留に出たか（引当先）
@@ -453,10 +466,19 @@ function ledgerAllocationCell(r) {
   const from = r.allocated_from_labels
     ? `← ${escapeHtml(r.allocated_from_labels)}（${num(r.allocated_in, 1)}L）`
     : '';
-  const rest = short > 0.0005
+  // 差し替え・取消された行に「未引当」を出しても、直しようがないので出さない
+  const rest = short > 0.0005 && !ledgerIsVoided(r)
     ? `<span class="badge warn">未引当 ${num(short, 1)}L</span>`
     : '';
   return `<span class="hint">${from}</span> ${rest}`;
+}
+
+/** 状態の欄。投入明細の画面と同じ言葉にする */
+function ledgerStatus(r) {
+  if (r.is_cancelled) return '<span class="badge muted">取消済</span>';
+  if (r.detail_cancelled) return '<span class="badge muted">取消済み</span>';
+  if (ledgerIsRestore(r)) return '<span class="badge warn">戻し</span>';
+  return '<span class="badge ok">有効</span>';
 }
 
 /**
@@ -464,11 +486,17 @@ function ledgerAllocationCell(r) {
  *
  * 蒸留が作った行（払出と、明細取消の「戻し」受入）は distillation_id を持つ。
  * こちらで直しても蒸留を直した瞬間に食い違うので、ボタンを出さず紐付き先を出す。
+ * 差し替えられた行は、明細に残っている「→ DTL-99」までそのまま出す
+ * （投入明細の画面と同じ内容にして、どちらを見ても同じことが分かるようにする）。
  */
 function ledgerActions(r) {
   if (r.is_cancelled) return escapeHtml(r.cancel_reason ?? '');
   if (r.distillation_id != null) {
-    return `<span class="hint">蒸留 ${escapeHtml(r.distillation_code ?? '')}</span>`;
+    const to = r.detail_cancelled && r.detail_note
+      ? `<br><span class="hint">${escapeHtml(r.detail_note)}</span>`
+      : '';
+    return `<span class="hint">蒸留 ${escapeHtml(r.distillation_code ?? '')}` +
+           `${r.detail_code ? `（${escapeHtml(r.detail_code)}）` : ''}</span>${to}`;
   }
   return '<div class="row-actions">' +
     `<button type="button" class="secondary small" data-ledger-edit="${r.id}">編集</button>` +
@@ -484,7 +512,7 @@ async function loadLedger() {
   const rows = await apiGet(`/api/raw-sake-receipts?${params}`);
   el('ledgerCount').textContent = rows.length ? `${rows.length}件` : '';
   el('ledgerRows').innerHTML = rows.length
-    ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
+    ? rows.map((r) => `<tr class="${ledgerIsVoided(r) ? 'muted' : ''}">
         <td>${escapeHtml(r.lot_code ?? '')}</td>
         <td>${escapeHtml(r.txn_date)}</td>
         <td>${escapeHtml(r.txn_type)}</td>
@@ -492,9 +520,7 @@ async function loadLedger() {
         <td class="num">${num(r.quantity, 1)}L</td>
         <td>${escapeHtml(r.brand_name ?? '')}</td>
         <td>${ledgerAllocationCell(r)}</td>
-        <td>${r.is_cancelled
-              ? '<span class="badge muted">取消済</span>'
-              : '<span class="badge ok">有効</span>'}</td>
+        <td>${ledgerStatus(r)}</td>
         <td>${ledgerActions(r)}</td>
       </tr>`).join('')
     : '<tr><td colspan="9" class="empty">記録がありません</td></tr>';

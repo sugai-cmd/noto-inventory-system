@@ -120,6 +120,140 @@ test('台帳は書き換えず、戻しと払出を足して表す', () => {
   );
 });
 
+// --- 直した結果が、どの一覧を見ても同じに見えること ---
+//
+// 明細を差し替えても払出の行はそのまま残る（打ち消しの戻し受入を別に足す作り）。
+// そのため原料受払記録の一覧だけが「有効」と言い続け、投入明細の画面では
+// 「取消済み」と出ているのに一覧では生きているように見えていた。
+
+test('差し替えられた払出は、受払一覧でも「取消済み」として出る', async () => {
+  const rows = await api('GET', '/api/raw-sake-receipts?limit=200');
+  assert.equal(rows.status, 200);
+  const mine = rows.body.filter((r) => r.distillation_id === distillationId);
+
+  const voided = mine.filter((r) => r.txn_type === '払出' && r.detail_cancelled);
+  assert.ok(voided.length >= 1, '差し替えられた払出が取消済みとして出ること');
+  assert.equal(voided[0].is_cancelled, 0, '台帳の行そのものは取り消していないこと');
+  assert.match(voided[0].detail_note, /修正のため差し替え/, '明細と同じ文が出ること');
+  assert.match(voided[0].detail_note, /→ DTL-/, '差し替え先までたどれること');
+
+  // 生きている払出は、その明細番号が付いて有効のまま
+  const live = mine.find((r) => r.txn_type === '払出' && !r.detail_cancelled);
+  assert.ok(live, '生きている払出があること');
+  assert.ok(live.detail_code, '明細番号が出ること');
+});
+
+test('打ち消しの「戻し」受入は、原酒入荷と見分けられる', async () => {
+  const rows = await api('GET', '/api/raw-sake-receipts?limit=200');
+  const restore = rows.body.find(
+    (r) => r.distillation_id === distillationId && r.txn_type === '受入'
+  );
+  assert.ok(restore, '戻しの受入があること');
+  // 受入に蒸留IDが付くのは戻しだけ。原酒入荷の受入は distillation_id が NULL
+  const receipts = rows.body.filter((r) => r.txn_type === '受入' && r.distillation_id == null);
+  assert.ok(receipts.length >= 2, '原酒入荷の受入は蒸留IDを持たないこと');
+});
+
+test('使用原酒（表示用の文）が、生きている明細で組み直される', async () => {
+  const d = distillation();
+  const live = db
+    .prepare(
+      `SELECT t.name, d.input_l FROM distillation_details d
+         JOIN tanks t ON t.id = d.source_tank_id
+        WHERE d.distillation_id = ? AND d.is_cancelled = 0 ORDER BY d.id`
+    )
+    .all(distillationId);
+
+  assert.equal(
+    d.input_summary,
+    live.map((r) => `${r.name} ${r.input_l}L`).join(' / '),
+    '取り消された明細の投入元が残らないこと'
+  );
+  assert.equal(d.total_input_l, live.reduce((s, r) => s + r.input_l, 0));
+});
+
+// 0022 は「直しが入る前に修正された記録」を組み直すマイグレーション。
+// サービス側の組み直しはこれから明細を動かしたときだけ走るので、
+// 既に直してある記録（利用者の D2609-0006）は二度と直る機会がない。
+// **マイグレーションの .sql をそのまま読んで流す**（試験用に書き写すと、
+// 本体を直したときに食い違う）。
+test('0022: 直しが入る前に修正された記録の「使用原酒」を組み直す', () => {
+  const sql = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../../db/migrations/0022_rebuild_corrected_input_summary.sql'),
+    'utf8'
+  );
+
+  const live = db
+    .prepare(
+      `SELECT t.name, d.input_l FROM distillation_details d
+         JOIN tanks t ON t.id = d.source_tank_id
+        WHERE d.distillation_id = ? AND d.is_cancelled = 0 ORDER BY d.id`
+    )
+    .all(distillationId);
+  const expected = live.map((r) => `${r.name} ${r.input_l}L`).join(' / ');
+
+  // 直す前の状態（古い投入元が残っている）を作る
+  db.prepare("UPDATE distillations SET input_summary = '原酒ポリ1 20L / 原酒ポリ3 10L' WHERE id = ?")
+    .run(distillationId);
+
+  db.exec(sql);
+
+  assert.equal(
+    db.prepare('SELECT input_summary FROM distillations WHERE id = ?').get(distillationId).input_summary,
+    expected,
+    '生きている明細から組み直されること'
+  );
+});
+
+test('0022: 直していない記録には触らない', () => {
+  const sql = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../../db/migrations/0022_rebuild_corrected_input_summary.sql'),
+    'utf8'
+  );
+
+  // 取消済みの明細を持たない蒸留を1件作る（移行で入った記録と同じ形）
+  const other = db
+    .prepare(
+      `INSERT INTO distillations (distillation_code, started_on, started_time, input_summary, status)
+       VALUES ('D9999-0001', '2026-07-01', '09:00', '原酒ポリ5 10.0L / 原酒ポリ6 20.0L', '完了')`
+    )
+    .run().lastInsertRowid;
+  db.prepare(
+    `INSERT INTO distillation_details (detail_code, distillation_id, raw_sake_ledger_id, input_l, source_tank_id)
+     VALUES ('DTL-9999', ?, (SELECT id FROM raw_sake_ledger LIMIT 1), 30, ?)`
+  ).run(other, TANK_A);
+
+  db.exec(sql);
+
+  assert.equal(
+    db.prepare('SELECT input_summary FROM distillations WHERE id = ?').get(other).input_summary,
+    '原酒ポリ5 10.0L / 原酒ポリ6 20.0L',
+    'シートから取り込んだ文をそのまま残すこと'
+  );
+});
+
+test('差し替えで作った払出にも引き当てが付く', async () => {
+  const live = db
+    .prepare('SELECT raw_sake_ledger_id FROM distillation_details WHERE distillation_id = ? AND is_cancelled = 0')
+    .get(distillationId);
+
+  const allocated = db
+    .prepare('SELECT COALESCE(SUM(quantity), 0) AS n FROM raw_sake_lot_allocations WHERE payout_ledger_id = ?')
+    .get(live.raw_sake_ledger_id).n;
+  const payout = db
+    .prepare('SELECT quantity FROM raw_sake_ledger WHERE id = ?')
+    .get(live.raw_sake_ledger_id).quantity;
+
+  assert.equal(allocated, payout, '払出量ぶんが引き当てられていること');
+
+  // 未紐付けの一覧にも残らない
+  const unlinked = await api('GET', '/api/raw-sake-receipts/ledger/unlinked');
+  assert.ok(
+    !unlinked.body.some((r) => r.id === live.raw_sake_ledger_id),
+    '差し替えた明細だけが未紐付けに残り続けないこと'
+  );
+});
+
 test('元容器を変えると、古いタンクが増えて新しいタンクが減る', async () => {
   const newDetail = db
     .prepare('SELECT id FROM distillation_details WHERE distillation_id = ? AND is_cancelled = 0')
