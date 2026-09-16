@@ -270,3 +270,94 @@ async function renderCurrentUser() {
     // 未ログインならサーバー側のリダイレクトに任せる
   }
 }
+
+// --- 一覧のページ送り・並べ替え -------------------------------------------
+//
+// 瓶詰めタブ（public/bottling.html）で先に作った形を、他の一覧でも使えるように
+// ここへ出した。**絞り込みは各画面に残す** — 一覧ごとに項目が違うので、
+// 1つの関数に押し込むと、どの画面が何を送るのか読めなくなる。
+//
+// view は { sort, order, offset, total } を持つただのオブジェクト。
+// ids は { limit, prev, next, range } の要素id。
+
+/** 一覧の状態。画面ごとに1つ作って、下のヘルパに渡す */
+function createListView(sort, order = 'desc') {
+  return { sort, order, offset: 0, total: 0 };
+}
+
+/** limit / offset / sort / order を載せた URLSearchParams を作る（絞り込みは呼び手が足す） */
+function listQuery(view, ids) {
+  return new URLSearchParams({
+    limit: el(ids.limit).value,
+    offset: String(view.offset),
+    sort: view.sort,
+    order: view.order,
+  });
+}
+
+/**
+ * 並べ替えの向きを見出しに出す。
+ *
+ * 見出しの文字は data-label に控えてあるので、矢印だけを付け替える
+ * （textContent を読み直すと、前回の矢印まで名前に取り込んでしまう）。
+ */
+function renderSortMarks(view, root = document) {
+  for (const btn of root.querySelectorAll('[data-sort]')) {
+    const mark = btn.dataset.sort === view.sort ? (view.order === 'asc' ? '▲' : '▼') : '';
+    btn.innerHTML = `${escapeHtml(btn.dataset.label ?? btn.textContent)}<span class="dir">${mark}</span>`;
+  }
+}
+
+/** 「120件中 51〜100件」と、前へ／次への押せる・押せないを出す */
+function renderPager(view, ids, shown) {
+  const limit = Number(el(ids.limit).value);
+  const start = view.total ? view.offset + 1 : 0;
+  el(ids.range).textContent = view.total
+    ? `${view.total}件中 ${start}〜${view.offset + shown}件`
+    : '該当する記録がありません';
+  el(ids.prev).disabled = view.offset <= 0;
+  el(ids.next).disabled = view.offset + limit >= view.total;
+}
+
+/**
+ * 件数選択・前へ・次への配線。
+ *
+ * filterIds に絞り込みの欄を渡すと、変えたときに1ページ目へ戻す
+ * （3ページ目で絞り込むと、該当0件なのに「次へ」だけ押せる状態になるため）。
+ */
+function wirePager(view, ids, reload, filterIds = []) {
+  for (const id of [ids.limit, ...filterIds]) {
+    el(id).addEventListener('change', () => {
+      view.offset = 0;
+      reload();
+    });
+  }
+  el(ids.prev).addEventListener('click', () => {
+    view.offset = Math.max(0, view.offset - Number(el(ids.limit).value));
+    reload();
+  });
+  el(ids.next).addEventListener('click', () => {
+    view.offset += Number(el(ids.limit).value);
+    reload();
+  });
+}
+
+/** 見出しを押すと並べ替える。同じ見出しをもう一度押すと昇順・降順が入れ替わる */
+function wireSortHeaders(view, tbodyId, reload) {
+  const thead = el(tbodyId).closest('table').querySelector('thead');
+  // 見出しの文字を控えておく。矢印を付け替えても名前が崩れない
+  for (const btn of thead.querySelectorAll('[data-sort]')) btn.dataset.label = btn.textContent;
+
+  thead.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-sort]');
+    if (!btn) return;
+    if (view.sort === btn.dataset.sort) {
+      view.order = view.order === 'asc' ? 'desc' : 'asc';
+    } else {
+      view.sort = btn.dataset.sort;
+      view.order = 'desc';
+    }
+    view.offset = 0; // 並べ替えたら1ページ目に戻す
+    reload();
+  });
+}

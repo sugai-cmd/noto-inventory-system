@@ -84,11 +84,58 @@
     </div>
 
     <h3>操作ログ</h3>
+    <p class="muted" style="font-size:13px;margin-top:0">
+      記録・取消・編集の履歴です。<strong>消さずに増え続ける</strong>ので、
+      絞り込みとページ送りで遡ってください。
+    </p>
+
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="lUser">操作者</label>
+        <select id="lUser"></select>
+      </div>
+      <div>
+        <label for="lAction">操作の種類</label>
+        <select id="lAction"></select>
+      </div>
+      <div>
+        <label for="lFrom">日付（から）</label>
+        <input type="date" id="lFrom">
+      </div>
+      <div>
+        <label for="lTo">日付（まで）</label>
+        <input type="date" id="lTo">
+      </div>
+      <div>
+        <label for="lLimit">1ページの件数</label>
+        <select id="lLimit">
+          <option value="10">10</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
+    </div>
+
     <div class="table-scroll">
       <table>
-        <thead><tr><th>日時</th><th>操作者</th><th>操作</th><th>内容</th></tr></thead>
+        <thead>
+          <tr>
+            <th><button type="button" class="link" data-sort="occurred_at">日時</button></th>
+            <th><button type="button" class="link" data-sort="display_name">操作者</button></th>
+            <th><button type="button" class="link" data-sort="action">操作</button></th>
+            <th>内容</th>
+          </tr>
+        </thead>
         <tbody id="logRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="lPrev">前へ</button>
+      <button type="button" id="lNext">次へ</button>
+      <span id="lRange" class="hint"></span>
     </div>
   </section>
 </main>
@@ -127,6 +174,8 @@ async function loadStatus() {
 
   if (user.role === 'admin') {
     el('adminPanel').style.display = '';
+    // 絞り込みの選択肢を先に入れてから一覧を読む
+    await loadLogOptions();
     await Promise.all([loadUsers(), loadLogs()]);
   }
 }
@@ -194,17 +243,58 @@ async function loadUsers() {
     </tr>`).join('');
 }
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const logView = createListView('occurred_at');
+const LOG_PAGER = { limit: 'lLimit', prev: 'lPrev', next: 'lNext', range: 'lRange' };
+
+/**
+ * 絞り込みの選択肢は**実データにある値から作る**。
+ * 固定リストにすると、新しい操作を足したときに絞り込めない行が生まれる。
+ */
+async function loadLogOptions() {
+  const { actions, users } = await apiGet('/api/auth/operation-logs/options');
+
+  const keepUser = el('lUser').value;
+  el('lUser').innerHTML = '<option value="">すべて</option>' +
+    users.map((u) =>
+      `<option value="${u.id}"${String(u.id) === keepUser ? ' selected' : ''}>` +
+      `${escapeHtml(u.display_name)}</option>`).join('');
+
+  const keepAction = el('lAction').value;
+  el('lAction').innerHTML = '<option value="">すべて</option>' +
+    actions.map((a) =>
+      `<option value="${escapeHtml(a)}"${a === keepAction ? ' selected' : ''}>` +
+      `${escapeHtml(a)}</option>`).join('');
+}
+
 async function loadLogs() {
-  const logs = await apiGet('/api/auth/operation-logs?limit=100');
-  el('logRows').innerHTML = logs.length
-    ? logs.map((l) => `<tr>
+  const params = listQuery(logView, LOG_PAGER);
+  if (el('lUser').value) params.set('userId', el('lUser').value);
+  if (el('lAction').value) params.set('action', el('lAction').value);
+  if (el('lFrom').value) params.set('from', el('lFrom').value);
+  if (el('lTo').value) params.set('to', el('lTo').value);
+
+  const { rows, total } = await apiGet(`/api/auth/operation-logs?${params}`);
+  logView.total = total;
+
+  el('logRows').innerHTML = rows.length
+    ? rows.map((l) => `<tr>
         <td>${escapeHtml(l.occurred_at)}</td>
         <td>${escapeHtml(l.display_name ?? l.username ?? '-')}</td>
         <td>${escapeHtml(l.action)}</td>
         <td>${escapeHtml(l.summary ?? '')}</td>
       </tr>`).join('')
-    : '<tr><td colspan="4" class="empty">操作ログがありません</td></tr>';
+    : '<tr><td colspan="4" class="empty">該当する操作ログがありません</td></tr>';
+
+  renderSortMarks(logView);
+  renderPager(logView, LOG_PAGER, rows.length);
 }
+
+const reloadLogs = () =>
+  loadLogs().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+wirePager(logView, LOG_PAGER, reloadLogs, ['lUser', 'lAction', 'lFrom', 'lTo']);
+wireSortHeaders(logView, 'logRows', reloadLogs);
 
 loadStatus().catch((err) => showMessage('messages', 'error', err.message));
 </script>

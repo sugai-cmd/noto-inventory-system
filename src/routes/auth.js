@@ -127,17 +127,27 @@ router.post(
 );
 
 // --- 操作ログ（管理者のみ） ---
+/** 操作ログ。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
 router.get('/operation-logs', requireAuth, requireAdmin, (req, res) => {
+  const q = req.query;
   res.json(
     operationLogService.list({
-      from: req.query.from,
-      to: req.query.to,
-      userId: req.query.userId ? Number(req.query.userId) : undefined,
-      action: req.query.action,
-      targetType: req.query.targetType,
-      limit: Math.min(Number(req.query.limit) || 200, 1000),
+      from: q.from,
+      to: q.to,
+      userId: q.userId ? Number(q.userId) : undefined,
+      action: q.action,
+      targetType: q.targetType,
+      limit: Math.min(Number(q.limit) || 200, 1000),
+      offset: Math.max(Number(q.offset) || 0, 0),
+      sort: q.sort || undefined,
+      order: q.order || undefined,
     })
   );
+});
+
+/** 絞り込みのプルダウンに出す値（実データにあるものだけ） */
+router.get('/operation-logs/options', requireAuth, requireAdmin, (req, res) => {
+  res.json(operationLogService.listFilterOptions());
 });
 
 module.exports = router;
