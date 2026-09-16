@@ -64,14 +64,21 @@ router.get('/defaults', (req, res) => {
   );
 });
 
+/** 受注の一覧。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
 router.get('/', (req, res) => {
+  const q = req.query;
   res.json(
     orderModel.list({
-      status: req.query.status,
-      customerId: req.query.customerId ? Number(req.query.customerId) : undefined,
-      from: req.query.from,
-      to: req.query.to,
-      limit: Math.min(Number(req.query.limit) || 200, 1000),
+      status: q.status,
+      customerId: q.customerId ? Number(q.customerId) : undefined,
+      productId: q.productId ? Number(q.productId) : undefined,
+      from: q.from,
+      to: q.to,
+      dateField: q.dateField || undefined,
+      limit: Math.min(Number(q.limit) || 200, 1000),
+      offset: Math.max(Number(q.offset) || 0, 0),
+      sort: q.sort || undefined,
+      order: q.order || undefined,
     })
   );
 });

@@ -129,7 +129,7 @@ test('台帳は書き換えず、戻しと払出を足して表す', () => {
 test('差し替えられた払出は、受払一覧でも「取消済み」として出る', async () => {
   const rows = await api('GET', '/api/raw-sake-receipts?limit=200');
   assert.equal(rows.status, 200);
-  const mine = rows.body.filter((r) => r.distillation_id === distillationId);
+  const mine = rows.body.rows.filter((r) => r.distillation_id === distillationId);
 
   const voided = mine.filter((r) => r.txn_type === '払出' && r.detail_cancelled);
   assert.ok(voided.length >= 1, '差し替えられた払出が取消済みとして出ること');
@@ -145,12 +145,12 @@ test('差し替えられた払出は、受払一覧でも「取消済み」と�
 
 test('打ち消しの「戻し」受入は、原酒入荷と見分けられる', async () => {
   const rows = await api('GET', '/api/raw-sake-receipts?limit=200');
-  const restore = rows.body.find(
+  const restore = rows.body.rows.find(
     (r) => r.distillation_id === distillationId && r.txn_type === '受入'
   );
   assert.ok(restore, '戻しの受入があること');
   // 受入に蒸留IDが付くのは戻しだけ。原酒入荷の受入は distillation_id が NULL
-  const receipts = rows.body.filter((r) => r.txn_type === '受入' && r.distillation_id == null);
+  const receipts = rows.body.rows.filter((r) => r.txn_type === '受入' && r.distillation_id == null);
   assert.ok(receipts.length >= 2, '原酒入荷の受入は蒸留IDを持たないこと');
 });
 

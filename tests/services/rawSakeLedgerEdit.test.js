@@ -72,19 +72,22 @@ test.after(async () => {
 // --- 一覧 ---
 
 test('一覧が見られる。区分・タンク・取消済みで絞れる', async () => {
+  // ページ送りのため {rows, total} を返す
   const all = await api('GET', '/api/raw-sake-receipts');
   assert.equal(all.status, 200);
-  assert.equal(all.body.length, 3, '受入2件＋払出1件');
-  assert.ok(all.body[0].to_tank_name || all.body[0].from_tank_name, 'タンク名が出ること');
+  assert.equal(all.body.rows.length, 3, '受入2件＋払出1件');
+  assert.equal(all.body.total, 3, '総件数も返ること');
+  assert.ok(all.body.rows[0].to_tank_name || all.body.rows[0].from_tank_name, 'タンク名が出ること');
 
   const receipts = await api('GET', '/api/raw-sake-receipts?txnType=受入');
-  assert.equal(receipts.body.length, 2);
+  assert.equal(receipts.body.rows.length, 2);
+  assert.equal(receipts.body.total, 2, 'total も絞ったあとの件数であること');
 
   const byTank = await api('GET', `/api/raw-sake-receipts?tankId=${SP3}`);
-  assert.equal(byTank.body.length, 2, 'SP-003 の受入と払出');
+  assert.equal(byTank.body.rows.length, 2, 'SP-003 の受入と払出');
 
   const alive = await api('GET', '/api/raw-sake-receipts?cancelled=false');
-  assert.equal(alive.body.length, 3);
+  assert.equal(alive.body.rows.length, 3);
 });
 
 // --- 蒸留が作った行は触らせない ---
@@ -321,9 +324,9 @@ test('取り消した行の原酒受払IDは、次の採番で再利用されな
 
 test('取消済みは残量から外れるが、一覧には状態つきで出る', async () => {
   const list = await api('GET', '/api/raw-sake-receipts?cancelled=true');
-  assert.ok(list.body.length >= 1, '取消済みだけを引ける');
-  assert.ok(list.body.every((r) => r.is_cancelled === 1));
-  assert.ok(list.body[0].cancel_reason, '理由も出ること');
+  assert.ok(list.body.rows.length >= 1, '取消済みだけを引ける');
+  assert.ok(list.body.rows.every((r) => r.is_cancelled === 1));
+  assert.ok(list.body.rows[0].cancel_reason, '理由も出ること');
 });
 
 test('「直近の受入」に取消済みが出ない', async () => {
@@ -353,7 +356,7 @@ test('取り消した原酒の行が、修正履歴に出る', async () => {
   const { status, body } = await api('GET', '/api/corrections');
   assert.equal(status, 200);
 
-  const found = body.find((r) => r.target_code === 'R2607-1003');
+  const found = body.rows.find((r) => r.target_code === 'R2607-1003');
   assert.ok(found, '原料受払記録の取消として出ること');
   assert.equal(found.target_type, '原料受払記録');
   assert.equal(found.reason, '二重に登録していた');

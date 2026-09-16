@@ -20,7 +20,20 @@ function toCsv(headers, rows) {
   return '﻿' + lines.join('\r\n') + '\r\n';
 }
 
-function fetchOrders(db, { orderIds, from, to, status }) {
+/**
+ * 絞る日付の列。受注一覧の画面と同じものを選べるようにする。
+ *
+ * 画面のボタンは「上の絞り込み条件で出力」と言っているので、**一覧で絞れるものは
+ * ここでも絞れないと嘘になる**（得意先・商品・日付の種類を足したときに気づいた）。
+ * 列名は許可リスト経由。知らない名前が来たら受注日に落とす。
+ */
+const DATE_FIELDS = {
+  ordered_on: 'o.ordered_on',
+  delivered_on: 'o.delivered_on',
+  payment_due_on: 'o.payment_due_on',
+};
+
+function fetchOrders(db, { orderIds, from, to, status, customerId, productId, dateField }) {
   const where = [];
   const params = {};
 
@@ -30,9 +43,13 @@ function fetchOrders(db, { orderIds, from, to, status }) {
     where.push(`o.id IN (${placeholders})`);
     orderIds.forEach((id, i) => { params[`id${i}`] = id; });
   }
-  if (from) { where.push('o.ordered_on >= @from'); params.from = from; }
-  if (to) { where.push('o.ordered_on <= @to'); params.to = to; }
+
+  const dateColumn = DATE_FIELDS[dateField] ?? DATE_FIELDS.ordered_on;
+  if (from) { where.push(`${dateColumn} >= @from`); params.from = from; }
+  if (to) { where.push(`${dateColumn} <= @to`); params.to = to; }
   if (status) { where.push('o.status = @status'); params.status = status; }
+  if (customerId) { where.push('o.customer_id = @customerId'); params.customerId = customerId; }
+  if (productId) { where.push('o.product_id = @productId'); params.productId = productId; }
 
   const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
   return db

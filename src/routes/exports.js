@@ -18,6 +18,12 @@ function parseFilter(query) {
   if (query.from) filter.from = String(query.from);
   if (query.to) filter.to = String(query.to);
   if (query.status) filter.status = String(query.status);
+  // 受注一覧の絞り込みをそのまま引き継げるようにする。
+  // 画面のボタンが「上の絞り込み条件で出力」と言っている以上、
+  // 一覧で絞れるものはCSVでも絞れないと嘘になる
+  if (query.customerId) filter.customerId = Number(query.customerId);
+  if (query.productId) filter.productId = Number(query.productId);
+  if (query.dateField) filter.dateField = String(query.dateField);
   return filter;
 }
 

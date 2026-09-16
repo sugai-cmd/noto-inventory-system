@@ -99,14 +99,40 @@ function tankVolumeOf(db, tankId) {
 }
 
 /**
+ * 並べ替えに使ってよい列。画面から来た文字列をそのままSQLに入れない。
+ */
+const LIST_SORTABLE = {
+  txn_date: 'l.txn_date',
+  lot_code: 'l.lot_code',
+  txn_type: 'l.txn_type',
+  quantity: 'l.quantity',
+  brand_name: 'b.name',
+  is_cancelled: 'l.is_cancelled',
+};
+const LIST_DEFAULT_SORT = 'txn_date';
+
+/**
  * 一覧。取消済みも出す（状態は行に付ける）。
  *
- * 絞り込みが無ければ既存の GET / と同じ結果になる。
+ * 実データ158件。既定200にはまだ当たっていないが、増え続けるので
+ * 他の一覧（瓶詰め・資材）と同じ形に揃える。
+ *
+ * @returns {{rows: object[], total: number}} total は同じ絞り込みでの全件数
  */
-function listLedger({ txnType = null, tankId = null, cancelled = null, limit = 200 } = {}) {
+function listLedger({
+  txnType = null,
+  tankId = null,
+  cancelled = null,
+  from = null,
+  to = null,
+  limit = 200,
+  offset = 0,
+  sort = LIST_DEFAULT_SORT,
+  order = 'desc',
+} = {}) {
   const db = getConnection();
   const where = [];
-  const params = { limit };
+  const params = {};
 
   if (txnType) {
     where.push('l.txn_type = @txnType');
@@ -120,16 +146,37 @@ function listLedger({ txnType = null, tankId = null, cancelled = null, limit = 2
     where.push('l.is_cancelled = @cancelled');
     params.cancelled = cancelled ? 1 : 0;
   }
+  if (from) {
+    where.push('l.txn_date >= @from');
+    params.from = from;
+  }
+  if (to) {
+    where.push('l.txn_date <= @to');
+    params.to = to;
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
-  return db
+  const column = LIST_SORTABLE[sort] ?? LIST_SORTABLE[LIST_DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 同じ値のときの並びが実行のたびに変わらないよう、idを第2キーにする
+  const orderSql = `${column} ${direction}, l.id ${direction}`;
+
+  // 件数は引き当ての列を数えずに済むので、軽い方のFROMで数える
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total ${FROM_JOINS} ${whereSql}`)
+    .get(params);
+
+  const rows = db
     .prepare(
       `SELECT ${SELECT_COLUMNS}, ${LIST_ALLOCATION_COLUMNS}
         ${FROM_JOINS}
-        ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
-        ORDER BY l.txn_date DESC, l.id DESC
-        LIMIT @limit`
+        ${whereSql}
+        ORDER BY ${orderSql}
+        LIMIT @limit OFFSET @offset`
     )
-    .all(params);
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
 }
 
 /**

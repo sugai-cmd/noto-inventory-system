@@ -9,16 +9,45 @@
 const { getConnection } = require('../db/connection');
 
 /**
+ * 並べ替えに使ってよい列。UNIONの外側の名前で指定する。
+ *
+ * 画面から来た文字列をそのままSQLに入れない。
+ * **寄せ集めなので、元の表にしかない列では並べ替えられない**
+ * （数量や金額は枝ごとに意味が違うため、そもそも列になっていない）。
+ */
+const SORTABLE = {
+  occurred_at: 'occurred_at',
+  target_type: 'target_type',
+  target_code: 'target_code',
+  user_name: 'user_name',
+};
+const DEFAULT_SORT = 'occurred_at';
+
+/**
+ * 修正履歴。
+ *
  * @param {object} opts
  * @param {string} [opts.targetCode] - 蒸留IDや商品履歴IDでの絞り込み
- * @param {number} [opts.limit]
+ * @param {string} [opts.targetType] - 「商品在庫変動履歴」など
+ * @param {string} [opts.userName]   - 実施者（部分一致）
+ * @param {string} [opts.from]       - 日付の範囲
+ * @param {string} [opts.to]
+ * @returns {{rows: object[], total: number}} total は同じ絞り込みでの全件数
  */
-function list({ targetCode, limit = 200 } = {}) {
+function list({
+  targetCode,
+  targetType,
+  userName,
+  from,
+  to,
+  limit = 200,
+  offset = 0,
+  sort = DEFAULT_SORT,
+  order = 'desc',
+} = {}) {
   const db = getConnection();
 
-  const rows = db
-    .prepare(
-      `SELECT * FROM (
+  const union = `SELECT * FROM (
          -- 商品在庫変動履歴の取消（瓶詰め・箱詰め・出荷・返品）
          SELECT l.cancelled_at        AS occurred_at,
                 u.display_name        AS user_name,
@@ -77,14 +106,51 @@ function list({ targetCode, limit = 200 } = {}) {
          JOIN distillations d ON d.id = dd.distillation_id
          LEFT JOIN tanks t    ON t.id = dd.source_tank_id
          WHERE dd.is_cancelled = 1
-       )
-       WHERE (@targetCode IS NULL OR target_code = @targetCode)
-       ORDER BY occurred_at DESC NULLS LAST, target_code DESC
-       LIMIT @limit`
-    )
-    .all({ targetCode: targetCode ?? null, limit });
+       )`;
 
-  return rows;
+  const where = ['(@targetCode IS NULL OR target_code = @targetCode)'];
+  const params = {
+    targetCode: targetCode ?? null,
+    targetType: targetType ?? null,
+    userName: userName ? `%${userName}%` : null,
+    from: from ?? null,
+    to: to ?? null,
+  };
+
+  if (targetType) where.push('target_type = @targetType');
+  if (userName) where.push('user_name LIKE @userName');
+  // **日付を絞ると、蒸留明細の枝は落ちる。** あの枝は取消の日時を持っておらず
+  // （理由を備考に残すだけの作り）、occurred_at が NULL になる。
+  // 画面にもその旨を出しておく
+  if (from) where.push("date(occurred_at) >= @from");
+  if (to) where.push("date(occurred_at) <= @to");
+
+  const whereSql = `WHERE ${where.join(' AND ')}`;
+
+  const column = SORTABLE[sort] ?? SORTABLE[DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 日時を持たない行（蒸留明細）は常に最後へ。並べ替えても迷子にしない
+  const nulls = column === 'occurred_at' ? ' NULLS LAST' : '';
+  const orderSql = `${column} ${direction}${nulls}, target_code ${direction}`;
+
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total FROM (${union} ${whereSql})`)
+    .get(params);
+
+  const rows = db
+    .prepare(`${union} ${whereSql} ORDER BY ${orderSql} LIMIT @limit OFFSET @offset`)
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
 }
 
-module.exports = { list };
+/** 絞り込みのプルダウンに出す値（実データにあるものだけ） */
+function listFilterOptions() {
+  const { rows } = list({ limit: 100000 });
+  return {
+    targetTypes: [...new Set(rows.map((r) => r.target_type))].sort(),
+    users: [...new Set(rows.map((r) => r.user_name).filter(Boolean))].sort(),
+  };
+}
+
+module.exports = { list, listFilterOptions };
