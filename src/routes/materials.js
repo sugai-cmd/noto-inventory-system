@@ -78,12 +78,26 @@ router.get('/:id/receipt-defaults', (req, res, next) => {
   }
 });
 
-/** 資材の入出庫履歴 */
+/**
+ * 資材の入出庫履歴。`{rows, total}` を返す（total は同じ絞り込みでの全件数）。
+ *
+ * 以前は既定200件で切れており、実データ205件のうち5件が画面に出ていなかった。
+ */
 router.get('/ledger', (req, res) => {
+  const q = req.query;
+  const cancelled = q.cancelled === undefined || q.cancelled === '' ? null : q.cancelled === 'true';
   res.json(
     materialService.listLedger({
-      materialId: req.query.materialId ? Number(req.query.materialId) : undefined,
-      limit: Math.min(Number(req.query.limit) || 200, 1000),
+      materialId: q.materialId ? Number(q.materialId) : undefined,
+      limit: Math.min(Number(q.limit) || 200, 1000),
+      offset: Math.max(Number(q.offset) || 0, 0),
+      sort: q.sort || undefined,
+      order: q.order || undefined,
+      txnType: q.txnType || null,
+      counterparty: q.counterparty || null,
+      cancelled,
+      from: q.from || null,
+      to: q.to || null,
     })
   );
 });

@@ -124,14 +124,73 @@
         <label for="filterMaterial">資材で絞り込む</label>
         <select id="filterMaterial"></select>
       </div>
+      <div>
+        <label for="hType">受払区分</label>
+        <select id="hType">
+          <!-- material_stock_ledger.txn_type の CHECK 制約と同じ4つ -->
+          <option value="">すべて</option>
+          <option value="入荷">入荷</option>
+          <option value="消費">消費</option>
+          <option value="棚卸調整">棚卸調整</option>
+          <option value="欠損">欠損</option>
+        </select>
+      </div>
+      <div>
+        <label for="hCounterparty">相手先</label>
+        <input type="text" id="hCounterparty" placeholder="一部でも可">
+      </div>
+      <div>
+        <label for="hCancelled">取消済み</label>
+        <select id="hCancelled">
+          <option value="">含める</option>
+          <option value="false">除く</option>
+          <option value="true">取消済みだけ</option>
+        </select>
+      </div>
+      <div>
+        <label for="hFrom">日付（から）</label>
+        <input type="date" id="hFrom">
+      </div>
+      <div>
+        <label for="hTo">日付（まで）</label>
+        <input type="date" id="hTo">
+      </div>
+      <div>
+        <label for="hLimit">1ページの件数</label>
+        <select id="hLimit">
+          <option value="10">10</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
     </div>
     <div class="table-scroll">
       <table>
         <thead>
-          <tr><th>履歴ID</th><th>日付</th><th>資材</th><th>受払</th><th class="num">数量</th><th class="num">単価</th><th class="num">金額</th><th>相手先</th><th>備考</th><th>状態</th><th></th></tr>
+          <tr>
+            <th><button type="button" class="link" data-sort="history_code">履歴ID</button></th>
+            <th><button type="button" class="link" data-sort="txn_date">日付</button></th>
+            <th><button type="button" class="link" data-sort="material_name">資材</button></th>
+            <th><button type="button" class="link" data-sort="txn_type">受払</button></th>
+            <th class="num"><button type="button" class="link" data-sort="quantity">数量</button></th>
+            <th class="num">単価</th>
+            <th class="num"><button type="button" class="link" data-sort="total_price">金額</button></th>
+            <th><button type="button" class="link" data-sort="counterparty">相手先</button></th>
+            <th>備考</th>
+            <th><button type="button" class="link" data-sort="is_cancelled">状態</button></th>
+            <th></th>
+          </tr>
         </thead>
         <tbody id="ledgerRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="hPrev">前へ</button>
+      <button type="button" id="hNext">次へ</button>
+      <span id="hRange" class="hint"></span>
     </div>
   </section>
 </main>
@@ -199,10 +258,22 @@ function ledgerActions(r) {
     `<button type="button" class="danger small" data-cancel="${r.id}">取り消す</button></div>`;
 }
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const ledgerView = createListView('txn_date');
+const PAGER = { limit: 'hLimit', prev: 'hPrev', next: 'hNext', range: 'hRange' };
+
 async function loadLedger() {
-  const params = new URLSearchParams();
+  const params = listQuery(ledgerView, PAGER);
   if (el('filterMaterial').value) params.set('materialId', el('filterMaterial').value);
-  const rows = await apiGet(`/api/materials/ledger?${params}`);
+  if (el('hType').value) params.set('txnType', el('hType').value);
+  if (el('hCounterparty').value.trim()) params.set('counterparty', el('hCounterparty').value.trim());
+  if (el('hCancelled').value) params.set('cancelled', el('hCancelled').value);
+  if (el('hFrom').value) params.set('from', el('hFrom').value);
+  if (el('hTo').value) params.set('to', el('hTo').value);
+
+  const { rows, total } = await apiGet(`/api/materials/ledger?${params}`);
+  ledgerView.total = total;
+
   el('ledgerRows').innerHTML = rows.length
     ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
         <td>${escapeHtml(r.history_code ?? '')}</td>
@@ -219,10 +290,21 @@ async function loadLedger() {
               : '<span class="badge ok">有効</span>'}</td>
         <td>${ledgerActions(r)}</td>
       </tr>`).join('')
-    : '<tr><td colspan="11" class="empty">履歴がありません</td></tr>';
+    : '<tr><td colspan="11" class="empty">該当する履歴がありません</td></tr>';
+
+  renderSortMarks(ledgerView);
+  renderPager(ledgerView, PAGER, rows.length);
 }
 
-el('filterMaterial').addEventListener('change', loadLedger);
+// 絞り込みを変えたら1ページ目に戻す（3ページ目で絞ると、該当0件なのに
+// 「次へ」だけ押せる状態になる）
+wirePager(ledgerView, PAGER, () => loadLedger().catch(showLedgerError),
+  ['filterMaterial', 'hType', 'hCounterparty', 'hCancelled', 'hFrom', 'hTo']);
+wireSortHeaders(ledgerView, 'ledgerRows', () => loadLedger().catch(showLedgerError));
+
+function showLedgerError(err) {
+  showMessage('messages', 'error', err.message, err.details);
+}
 
 // --- 入出庫履歴の編集・取り消し -------------------------------------------
 

@@ -229,8 +229,9 @@ test('受注登録が操作ログに記録される', async () => {
   });
   assert.equal(order.status, 201);
 
+  // ページ送りのため {rows, total} を返すようになった
   const logs = await api('GET', '/api/auth/operation-logs?action=order');
-  const entry = logs.body.find((l) => l.target_id === order.body.id);
+  const entry = logs.body.rows.find((l) => l.target_id === order.body.id);
   assert.ok(entry, '受注登録がログに残ること');
   assert.equal(entry.action, 'order.create');
   assert.equal(entry.username, 'tester', '操作した人が記録されること');

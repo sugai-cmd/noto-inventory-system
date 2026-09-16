@@ -198,26 +198,108 @@ function updateMaterial(id, input, actor = null) {
 }
 
 /**
+ * 並べ替えに使ってよい列。
+ *
+ * 画面から来た文字列をそのままSQLに入れると、何でも実行できてしまう。
+ * ここに載っている名前だけを通し、それ以外は既定に落とす
+ * （ledgerCancelService.SORTABLE と同じ作法）。
+ */
+const LEDGER_SORTABLE = {
+  txn_date: 'l.txn_date',
+  history_code: 'l.history_code',
+  txn_type: 'l.txn_type',
+  material_name: 'm.name',
+  quantity: 'l.quantity',
+  total_price: 'l.total_price',
+  counterparty: 'l.counterparty',
+  is_cancelled: 'l.is_cancelled',
+};
+const LEDGER_DEFAULT_SORT = 'txn_date';
+
+/**
  * 資材の入出庫履歴。
  *
  * 瓶詰め・箱詰めに紐付く消費は `product_history_code` が入る。
  * 画面はこれを見て「ここからは直せない。瓶詰め・箱詰めタブへ」と案内する。
+ *
+ * **以前は既定200件で切れており、実データ205件のうち5件が画面に出ていなかった**
+ * （サービスの既定値・APIの既定値・画面がlimitを送っていないこと、の3つが重なっていた。
+ *  瓶詰めタブで同じことが起きたのと同じ形）。
+ * total を返してページ送りできるようにする。
+ *
+ * @returns {{rows: object[], total: number}} total は同じ絞り込みでの全件数
  */
-function listLedger({ materialId, limit = 200 } = {}) {
+function listLedger({
+  materialId,
+  limit = 200,
+  offset = 0,
+  sort = LEDGER_DEFAULT_SORT,
+  order = 'desc',
+  txnType = null,
+  counterparty = null,
+  cancelled = null,
+  from = null,
+  to = null,
+} = {}) {
   const db = getConnection();
-  const where = materialId ? 'WHERE l.material_id = @materialId' : '';
-  return db
+
+  const where = [];
+  const params = {};
+
+  if (materialId) {
+    where.push('l.material_id = @materialId');
+    params.materialId = materialId;
+  }
+  if (txnType) {
+    where.push('l.txn_type = @txnType');
+    params.txnType = txnType;
+  }
+  if (counterparty) {
+    where.push('l.counterparty LIKE @counterparty');
+    params.counterparty = `%${counterparty}%`;
+  }
+  if (cancelled !== null) {
+    where.push('l.is_cancelled = @cancelled');
+    params.cancelled = cancelled ? 1 : 0;
+  }
+  if (from) {
+    where.push('l.txn_date >= @from');
+    params.from = from;
+  }
+  if (to) {
+    where.push('l.txn_date <= @to');
+    params.to = to;
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const column = LEDGER_SORTABLE[sort] ?? LEDGER_SORTABLE[LEDGER_DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 同じ値のときの並びが実行のたびに変わらないよう、idを第2キーにする
+  const orderSql = `${column} ${direction}, l.id ${direction}`;
+
+  const { total } = db
+    .prepare(
+      `SELECT COUNT(*) AS total
+       FROM material_stock_ledger l
+       JOIN materials m ON m.id = l.material_id
+       ${whereSql}`
+    )
+    .get(params);
+
+  const rows = db
     .prepare(
       `SELECT l.*, m.name AS material_name, m.unit,
               b.history_code AS product_history_code, b.txn_type AS product_txn_type
        FROM material_stock_ledger l
        JOIN materials m ON m.id = l.material_id
        LEFT JOIN product_stock_ledger b ON b.id = l.product_ledger_id
-       ${where}
-       ORDER BY l.txn_date DESC, l.id DESC
-       LIMIT @limit`
+       ${whereSql}
+       ORDER BY ${orderSql}
+       LIMIT @limit OFFSET @offset`
     )
-    .all({ materialId, limit });
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
 }
 
 // ---------------------------------------------------------------------------
