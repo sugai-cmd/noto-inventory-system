@@ -621,3 +621,55 @@ test('修正履歴もページを送れて、日時を持たない行は最後�
     );
   }
 });
+
+// --- 版が食い違ったときに、原因が分かる形で止まること ---
+//
+// 利用者の環境で「Cannot read properties of undefined (reading 'length')」が
+// 4画面に同時に出た。原因は **git pull したあとサーバーを再起動していなかった**こと。
+// public/ はディスクから毎回読まれるので画面だけが新しくなり、src/ は起動時の
+// ものが動き続ける。古いサーバーは行の配列を返すので、{rows, total} に分解すると
+// rows が undefined になり、利用者には原因の分からない赤い帯だけが出ていた。
+//
+// 存在しないAPIには src/app.js が同じ趣旨の案内を404で返していたが、
+// **形が変わっただけの場合は404にならず素通りしていた**。
+// asListResult()（public/assets/js/app.js）で塞いだので、その動きを押さえる。
+
+test('一覧APIは、画面が期待する {rows, total} の形で返る', async () => {
+  // ここが配列に戻ると、画面側が分解した瞬間に undefined になる
+  for (const path of [
+    '/api/materials/ledger?limit=1',
+    '/api/auth/operation-logs?limit=1',
+    '/api/orders?limit=1',
+    '/api/raw-sake-receipts?limit=1',
+    '/api/corrections?limit=1',
+  ]) {
+    const res = await api('GET', path);
+    assert.equal(res.status, 200, path);
+    assert.ok(!Array.isArray(res.body), `${path} が配列で返っていないこと`);
+    assert.ok(Array.isArray(res.body.rows), `${path} の rows が配列であること`);
+    assert.equal(typeof res.body.total, 'number', `${path} の total が数であること`);
+  }
+});
+
+test('画面のヘルパは、古い形（配列）を原因の分かるメッセージで断る', () => {
+  // public/assets/js/app.js は素のスクリプト。試験からは読み込んで評価する
+  const src = require('node:fs').readFileSync(
+    require('node:path').join(__dirname, '../../public/assets/js/app.js'),
+    'utf8'
+  );
+  const asListResult = new Function(`${src}; return asListResult;`)();
+
+  // 新しい形はそのまま通る
+  const ok = asListResult({ rows: [1, 2], total: 2 }, '資材の入出庫履歴');
+  assert.deepEqual(ok, { rows: [1, 2], total: 2 });
+
+  // 古い形は、何をすればよいかが書かれたメッセージで止まる
+  assert.throws(
+    () => asListResult([1, 2], '資材の入出庫履歴'),
+    (err) => {
+      assert.match(err.message, /資材の入出庫履歴/, 'どの一覧かが分かること');
+      assert.match(err.message, /再起動/, '何をすればよいかが書いてあること');
+      return true;
+    }
+  );
+});

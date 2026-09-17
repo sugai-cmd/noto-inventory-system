@@ -546,7 +546,8 @@ async function loadLedger() {
   if (el('lgFrom').value) params.set('from', el('lgFrom').value);
   if (el('lgTo').value) params.set('to', el('lgTo').value);
 
-  const { rows, total } = await apiGet(`/api/raw-sake-receipts?${params}`);
+  const { rows, total } = asListResult(
+    await apiGet(`/api/raw-sake-receipts?${params}`), '原料受払記録');
   ledgerView.total = total;
   // 折り畳んだままでも件数が分かるよう、summary には全件数を出す
   el('ledgerCount').textContent = total ? `${total}件` : '';

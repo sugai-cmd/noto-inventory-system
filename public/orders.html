@@ -427,7 +427,8 @@ async function loadOrders() {
   const params = listQuery(orderView, ORDER_PAGER);
   for (const [key, value] of currentFilterParams()) params.set(key, value);
 
-  const { rows: orders, total } = await apiGet(`/api/orders?${params}`);
+  const { rows: orders, total } = asListResult(
+    await apiGet(`/api/orders?${params}`), '受注一覧');
   orderView.total = total;
   const tbody = el('orderRows');
 

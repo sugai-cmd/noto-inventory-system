@@ -271,7 +271,8 @@ async function loadLedger() {
   if (el('hFrom').value) params.set('from', el('hFrom').value);
   if (el('hTo').value) params.set('to', el('hTo').value);
 
-  const { rows, total } = await apiGet(`/api/materials/ledger?${params}`);
+  const { rows, total } = asListResult(
+    await apiGet(`/api/materials/ledger?${params}`), '資材の入出庫履歴');
   ledgerView.total = total;
 
   el('ledgerRows').innerHTML = rows.length

@@ -274,7 +274,8 @@ async function loadLogs() {
   if (el('lFrom').value) params.set('from', el('lFrom').value);
   if (el('lTo').value) params.set('to', el('lTo').value);
 
-  const { rows, total } = await apiGet(`/api/auth/operation-logs?${params}`);
+  const { rows, total } = asListResult(
+    await apiGet(`/api/auth/operation-logs?${params}`), '操作ログ');
   logView.total = total;
 
   el('logRows').innerHTML = rows.length
