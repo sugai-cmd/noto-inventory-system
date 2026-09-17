@@ -285,6 +285,29 @@ function createListView(sort, order = 'desc') {
   return { sort, order, offset: 0, total: 0 };
 }
 
+/**
+ * 一覧APIの返りを受け取る。**古い形（行の配列）なら、その場で気づける形で止める。**
+ *
+ * 一覧は `{rows, total}` を返すよう変えたが、`git pull` したあとサーバーを
+ * 再起動していないと、画面だけが新しくなる（`public/` はディスクから毎回読まれるが、
+ * `src/` は起動時に読まれたものが動き続ける）。
+ * 古いサーバーは行の配列を返すので、`{rows, total}` に分解すると rows が undefined になり、
+ * 利用者には「Cannot read properties of undefined」としか出ない（原因が分からない）。
+ *
+ * **存在しないAPIには src/app.js が同じ趣旨の案内を404で返している**が、
+ * 形が変わっただけの場合は404にならず素通りしてしまう。ここで塞ぐ。
+ */
+function asListResult(res, endpoint) {
+  if (Array.isArray(res)) {
+    throw new Error(
+      `一覧の形が古いままです（${endpoint}）。` +
+        '画面だけが新しく、サーバーが更新前のまま動いている可能性があります。' +
+        'サーバー機でアプリを再起動してください。'
+    );
+  }
+  return res;
+}
+
 /** limit / offset / sort / order を載せた URLSearchParams を作る（絞り込みは呼び手が足す） */
 function listQuery(view, ids) {
   return new URLSearchParams({

@@ -276,7 +276,8 @@ async function loadCorrections() {
     ? '日付で絞っているため、日時を持たない「蒸留明細」の取消は出ません。'
     : '';
 
-  const { rows, total } = await apiGet(`/api/corrections?${params}`);
+  const { rows, total } = asListResult(
+    await apiGet(`/api/corrections?${params}`), '修正履歴');
   corrView.total = total;
 
   el('corrRows').innerHTML = rows.length
