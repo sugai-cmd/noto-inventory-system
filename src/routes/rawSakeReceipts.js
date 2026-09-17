@@ -161,7 +161,12 @@ router.get('/', (req, res) => {
       txnType: q.txnType || null,
       tankId: Number(q.tankId) || null,
       cancelled,
+      from: q.from || null,
+      to: q.to || null,
       limit: Math.min(Number(q.limit) || 200, 1000),
+      offset: Math.max(Number(q.offset) || 0, 0),
+      sort: q.sort || undefined,
+      order: q.order || undefined,
     })
   );
 });

@@ -164,25 +164,71 @@
         </select>
       </div>
       <div>
-        <label for="filterFrom">受注日（開始）</label>
+        <label for="filterCustomerSearch">得意先</label>
+        <div class="search-wrap">
+          <input type="text" id="filterCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
+          <div class="search-results" id="filterCustomerResults"></div>
+        </div>
+        <div class="chosen" id="filterCustomerChosen">
+          <span class="name"></span>
+          <button type="button" class="secondary small">変更</button>
+        </div>
+      </div>
+      <div>
+        <label for="filterProduct">商品</label>
+        <select id="filterProduct"></select>
+      </div>
+      <div>
+        <label for="filterDateField">絞る日付</label>
+        <select id="filterDateField">
+          <option value="ordered_on">受注日</option>
+          <option value="delivered_on">納品日</option>
+          <option value="payment_due_on">入金予定日</option>
+        </select>
+      </div>
+      <div>
+        <label for="filterFrom">日付（開始）</label>
         <input type="date" id="filterFrom">
       </div>
       <div>
-        <label for="filterTo">受注日（終了）</label>
+        <label for="filterTo">日付（終了）</label>
         <input type="date" id="filterTo">
+      </div>
+      <div>
+        <label for="oLimit">1ページの件数</label>
+        <select id="oLimit">
+          <option value="10">10</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
       </div>
     </div>
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            <th>受注番号</th><th>受注日</th><th>得意先</th><th>商品</th>
-            <th class="num">本数</th><th class="num">合計</th>
-            <th>ステータス</th><th>納品日</th><th>入金予定</th><th>操作</th>
+            <th><button type="button" class="link" data-sort="order_no">受注番号</button></th>
+            <th><button type="button" class="link" data-sort="ordered_on">受注日</button></th>
+            <th><button type="button" class="link" data-sort="customer_name">得意先</button></th>
+            <th><button type="button" class="link" data-sort="product_name">商品</button></th>
+            <th class="num"><button type="button" class="link" data-sort="quantity">本数</button></th>
+            <th class="num"><button type="button" class="link" data-sort="total_amount">合計</button></th>
+            <th><button type="button" class="link" data-sort="status">ステータス</button></th>
+            <th><button type="button" class="link" data-sort="delivered_on">納品日</button></th>
+            <th><button type="button" class="link" data-sort="payment_due_on">入金予定</button></th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody id="orderRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="oPrev">前へ</button>
+      <button type="button" id="oNext">次へ</button>
+      <span id="oRange" class="hint"></span>
     </div>
     <div class="actions">
       <button type="button" class="secondary" id="exportYupack">ゆうパックCSV（上の絞り込み条件で出力）</button>
@@ -373,17 +419,22 @@ function recalcTotal() {
   el('totalAmount').value = sales + shipping;
 }
 
-async function loadOrders() {
-  const params = new URLSearchParams();
-  if (el('filterStatus').value) params.set('status', el('filterStatus').value);
-  if (el('filterFrom').value) params.set('from', el('filterFrom').value);
-  if (el('filterTo').value) params.set('to', el('filterTo').value);
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const orderView = createListView('ordered_on');
+const ORDER_PAGER = { limit: 'oLimit', prev: 'oPrev', next: 'oNext', range: 'oRange' };
 
-  const orders = await apiGet(`/api/orders?${params}`);
+async function loadOrders() {
+  const params = listQuery(orderView, ORDER_PAGER);
+  for (const [key, value] of currentFilterParams()) params.set(key, value);
+
+  const { rows: orders, total } = await apiGet(`/api/orders?${params}`);
+  orderView.total = total;
   const tbody = el('orderRows');
 
   if (!orders.length) {
     tbody.innerHTML = '<tr><td colspan="10" class="empty">該当する受注がありません</td></tr>';
+    renderSortMarks(orderView);
+    renderPager(orderView, ORDER_PAGER, 0);
     return;
   }
 
@@ -411,6 +462,9 @@ async function loadOrders() {
       </tr>`;
     })
     .join('');
+
+  renderSortMarks(orderView);
+  renderPager(orderView, ORDER_PAGER, orders.length);
 }
 
 el('orderRows').addEventListener('click', async (e) => {
@@ -734,10 +788,20 @@ el('cartonSaveBtn').addEventListener('click', async () => {
   }
 });
 
-/** 一覧の絞り込み条件をそのままCSV出力にも引き継ぐ */
+/**
+ * 一覧の絞り込み条件。**CSV出力にもそのまま引き継ぐ**ので、
+ * ここに足した項目はサーバ側（csvExportService.fetchOrders）でも
+ * 絞れるようにしておくこと。ボタンが「上の絞り込み条件で出力」と言っている以上、
+ * 画面で絞れてCSVで絞れない項目があると嘘になる。
+ */
 function currentFilterParams() {
   const params = new URLSearchParams();
   if (el('filterStatus').value) params.set('status', el('filterStatus').value);
+  if (filterCustomerSelect?.value) params.set('customerId', filterCustomerSelect.value.id);
+  if (el('filterProduct').value) params.set('productId', el('filterProduct').value);
+  if (el('filterFrom').value || el('filterTo').value) {
+    params.set('dateField', el('filterDateField').value);
+  }
   if (el('filterFrom').value) params.set('from', el('filterFrom').value);
   if (el('filterTo').value) params.set('to', el('filterTo').value);
   return params;
@@ -754,8 +818,34 @@ el('resetBtn').addEventListener('click', resetForm);
 el('quantity').addEventListener('input', refreshDefaults);
 el('requestedDeliveryOn').addEventListener('change', refreshDefaults);
 el('shippingFee').addEventListener('input', recalcTotal);
-for (const id of ['filterStatus', 'filterFrom', 'filterTo']) {
-  el(id).addEventListener('change', loadOrders);
+const reloadOrders = () =>
+  loadOrders().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+// 絞り込みを変えたら1ページ目に戻す（3ページ目で絞ると、該当0件なのに
+// 「次へ」だけ押せる状態になる）
+wirePager(orderView, ORDER_PAGER, reloadOrders,
+  ['filterStatus', 'filterProduct', 'filterDateField', 'filterFrom', 'filterTo']);
+wireSortHeaders(orderView, 'orderRows', reloadOrders);
+
+/** 一覧の絞り込み用の得意先検索。登録フォームのものとは別に持つ */
+const filterCustomerSelect = createSearchSelect({
+  inputId: 'filterCustomerSearch',
+  resultsId: 'filterCustomerResults',
+  chosenId: 'filterCustomerChosen',
+  endpoint: '/api/customers/search',
+  renderLabel: (c) => c.name,
+  renderSub: (c) => (c.parent_name ? `本店: ${c.parent_name}` : ''),
+  onSelect: () => {
+    orderView.offset = 0;
+    reloadOrders();
+  },
+});
+
+/** 商品は21件なので、そのままプルダウンに出す */
+async function loadProductFilter() {
+  const products = await apiGet('/api/products');
+  el('filterProduct').innerHTML = '<option value="">すべて</option>' +
+    products.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
 }
 
 customerSelect = createSearchSelect({
@@ -842,6 +932,7 @@ el('invoiceSubmit').addEventListener('click', async () => {
 el('orderedOn').value = todayStr();
 el('bulkInvoicedOn').value = todayStr();
 loadPendingInvoices().catch((err) => showMessage('messages', 'error', err.message));
+loadProductFilter().catch((err) => showMessage('messages', 'error', err.message));
 loadOrders().catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

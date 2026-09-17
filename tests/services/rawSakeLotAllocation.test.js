@@ -381,18 +381,18 @@ test('一覧に引当元・引当先が出る', async () => {
   const res = await api('GET', `/api/raw-sake-receipts?tankId=${SP1}`);
   assert.equal(res.status, 200);
 
-  const receipt = res.body.find((r) => r.id === sp1Old);
+  const receipt = res.body.rows.find((r) => r.id === sp1Old);
   assert.equal(receipt.allocated_out, 20, '受入は引き当てた合計が出ること');
   assert.match(receipt.allocated_to_labels, /^D/, '引当先は蒸留ロット番号で出ること');
 
-  const payout = res.body.find((r) => r.txn_type === '払出' && r.allocated_in > 0);
+  const payout = res.body.rows.find((r) => r.txn_type === '払出' && r.allocated_in > 0);
   assert.match(payout.allocated_from_labels, /^R/, '引当元は原酒受払IDで出ること');
 });
 
 test('取り消した払出のぶんは、受入の引当済みから外れて次に使える', async () => {
   // legacyId（4L）を取り消したので、sp1New の残りが4L戻っているはず
   const res = await api('GET', `/api/raw-sake-receipts?tankId=${SP1}`);
-  const receipt = res.body.find((r) => r.id === sp1New);
+  const receipt = res.body.rows.find((r) => r.id === sp1New);
   const expected = db
     .prepare(
       `SELECT COALESCE(SUM(a.quantity), 0) AS n FROM raw_sake_lot_allocations a
@@ -415,7 +415,7 @@ test('取消済みの払出に引当行が残っていても、受入の残り�
   assert.equal(row(legacyId).is_cancelled, 1, '前提: legacyId は取消済みの払出');
 
   const beforeOut = (await api('GET', `/api/raw-sake-receipts?tankId=${SP1}`))
-    .body.find((r) => r.id === sp1New).allocated_out;
+    .body.rows.find((r) => r.id === sp1New).allocated_out;
 
   db.prepare(
     `INSERT INTO raw_sake_lot_allocations (payout_ledger_id, receipt_ledger_id, quantity)
@@ -423,7 +423,7 @@ test('取消済みの払出に引当行が残っていても、受入の残り�
   ).run(legacyId, sp1New);
 
   const afterOut = (await api('GET', `/api/raw-sake-receipts?tankId=${SP1}`))
-    .body.find((r) => r.id === sp1New).allocated_out;
+    .body.rows.find((r) => r.id === sp1New).allocated_out;
   assert.equal(afterOut, beforeOut, '一覧の引当済みが増えないこと');
 
   // 引当元の候補としても、その4Lは食われていない。

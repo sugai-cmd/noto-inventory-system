@@ -37,12 +37,54 @@
         <label for="corrFilter">伝票番号で絞り込む</label>
         <input type="text" id="corrFilter" placeholder="L2609-0001 / D2609-0001 など">
       </div>
+      <div>
+        <label for="corrType">対象種別</label>
+        <select id="corrType"></select>
+      </div>
+      <div>
+        <label for="corrUser">実施者</label>
+        <select id="corrUser"></select>
+      </div>
+      <div>
+        <label for="corrFrom">日付（から）</label>
+        <input type="date" id="corrFrom">
+      </div>
+      <div>
+        <label for="corrTo">日付（まで）</label>
+        <input type="date" id="corrTo">
+      </div>
+      <div>
+        <label for="corrLimit">1ページの件数</label>
+        <select id="corrLimit">
+          <option value="10">10</option>
+          <option value="50">50</option>
+          <option value="100" selected>100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
     </div>
+    <p class="muted" style="font-size:13px;margin-top:0" id="corrDateHint"></p>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>日時</th><th>実施者</th><th>対象種別</th><th>対象</th><th>操作内容</th><th>理由</th></tr></thead>
+        <thead>
+          <tr>
+            <th><button type="button" class="link" data-sort="occurred_at">日時</button></th>
+            <th><button type="button" class="link" data-sort="user_name">実施者</button></th>
+            <th><button type="button" class="link" data-sort="target_type">対象種別</button></th>
+            <th><button type="button" class="link" data-sort="target_code">対象</button></th>
+            <th>操作内容</th>
+            <th>理由</th>
+          </tr>
+        </thead>
         <tbody id="corrRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="corrPrev">前へ</button>
+      <button type="button" id="corrNext">次へ</button>
+      <span id="corrRange" class="hint"></span>
     </div>
   </section>
 </main>
@@ -204,10 +246,39 @@ async function runAudit() {
 el('runBtn').addEventListener('click', runAudit);
 runAudit();
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const corrView = createListView('occurred_at');
+const CORR_PAGER = { limit: 'corrLimit', prev: 'corrPrev', next: 'corrNext', range: 'corrRange' };
+
+/** 絞り込みの選択肢は実データにある値から作る */
+async function loadCorrectionOptions() {
+  const { targetTypes, users } = await apiGet('/api/corrections/options');
+  el('corrType').innerHTML = '<option value="">すべて</option>' +
+    targetTypes.map((t) => `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`).join('');
+  el('corrUser').innerHTML = '<option value="">すべて</option>' +
+    users.map((u) => `<option value="${escapeHtml(u)}">${escapeHtml(u)}</option>`).join('');
+}
+
 /** 修正履歴（取消の一覧） */
 async function loadCorrections() {
+  const params = listQuery(corrView, CORR_PAGER);
   const q = el('corrFilter').value.trim();
-  const rows = await apiGet(`/api/corrections${q ? `?targetCode=${encodeURIComponent(q)}` : ''}`);
+  if (q) params.set('targetCode', q);
+  if (el('corrType').value) params.set('targetType', el('corrType').value);
+  if (el('corrUser').value) params.set('userName', el('corrUser').value);
+  if (el('corrFrom').value) params.set('from', el('corrFrom').value);
+  if (el('corrTo').value) params.set('to', el('corrTo').value);
+
+  // 蒸留明細の取消は日時を持たない（理由を備考に残すだけの作り）。
+  // 日付で絞るとその行が落ちるので、黙って消さずに断りを出す
+  const byDate = Boolean(el('corrFrom').value || el('corrTo').value);
+  el('corrDateHint').textContent = byDate
+    ? '日付で絞っているため、日時を持たない「蒸留明細」の取消は出ません。'
+    : '';
+
+  const { rows, total } = await apiGet(`/api/corrections?${params}`);
+  corrView.total = total;
+
   el('corrRows').innerHTML = rows.length
     ? rows.map((r) => `<tr>
         <td>${escapeHtml(r.occurred_at ?? '')}</td>
@@ -218,14 +289,28 @@ async function loadCorrections() {
         <td>${escapeHtml(r.reason ?? '')}</td>
       </tr>`).join('')
     : `<tr><td colspan="6" class="empty">${q ? '該当する修正履歴がありません' : '取り消した記録はありません'}</td></tr>`;
+
+  renderSortMarks(corrView);
+  renderPager(corrView, CORR_PAGER, rows.length);
 }
+
+const reloadCorrections = () =>
+  loadCorrections().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+wirePager(corrView, CORR_PAGER, reloadCorrections,
+  ['corrType', 'corrUser', 'corrFrom', 'corrTo']);
+wireSortHeaders(corrView, 'corrRows', reloadCorrections);
 
 let corrTimer = null;
 el('corrFilter').addEventListener('input', () => {
   clearTimeout(corrTimer);
-  corrTimer = setTimeout(() => loadCorrections().catch(() => {}), 200);
+  corrTimer = setTimeout(() => {
+    corrView.offset = 0; // 絞り込んだら1ページ目に戻す
+    reloadCorrections();
+  }, 200);
 });
 
+loadCorrectionOptions().catch(() => {});
 loadCorrections().catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

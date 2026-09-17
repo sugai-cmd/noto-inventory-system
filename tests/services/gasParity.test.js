@@ -584,17 +584,17 @@ test('修正履歴に取消が集まる（旧 getCorrectionHistory）', async ()
 
   const { status, body } = await api('GET', '/api/corrections');
   assert.equal(status, 200);
-  const row = body.find((r) => r.reason === '修正履歴の確認用' && r.target_type === '商品在庫変動履歴');
+  const row = body.rows.find((r) => r.reason === '修正履歴の確認用' && r.target_type === '商品在庫変動履歴');
   assert.ok(row, '取消した商品履歴が出ること');
   assert.equal(row.user_name, 'テスト管理者');
   assert.match(row.action, /瓶詰/);
 
   // 連動して取り消された資材も並ぶ
-  assert.ok(body.some((r) => r.target_type === '資材在庫変動履歴' && r.reason === '修正履歴の確認用'));
+  assert.ok(body.rows.some((r) => r.target_type === '資材在庫変動履歴' && r.reason === '修正履歴の確認用'));
 
   // 伝票番号で絞り込める
   const filtered = await api('GET', `/api/corrections?targetCode=${bottling.body.historyCode}`);
-  assert.ok(filtered.body.every((r) => r.target_code === bottling.body.historyCode));
+  assert.ok(filtered.body.rows.every((r) => r.target_code === bottling.body.historyCode));
 });
 
 test('担当者の候補は固定リストと実データを合わせて返す（旧 getStaffOptions）', async () => {

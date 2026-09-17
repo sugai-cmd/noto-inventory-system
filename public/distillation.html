@@ -151,18 +151,49 @@
             <option value="true">取消済みだけ</option>
           </select>
         </div>
+        <div>
+          <label for="lgFrom">日付（から）</label>
+          <input type="date" id="lgFrom">
+        </div>
+        <div>
+          <label for="lgTo">日付（まで）</label>
+          <input type="date" id="lgTo">
+        </div>
+        <div>
+          <label for="lgLimit">1ページの件数</label>
+          <select id="lgLimit">
+            <option value="10">10</option>
+            <option value="50">50</option>
+            <option value="100" selected>100</option>
+            <option value="200">200</option>
+            <option value="500">500</option>
+          </select>
+        </div>
       </div>
 
       <div class="table-scroll">
         <table>
           <thead>
             <tr>
-              <th>原酒受払ID</th><th>日付</th><th>区分</th><th>タンク</th>
-              <th class="num">数量</th><th>銘柄</th><th>引当</th><th>状態</th><th>操作</th>
+              <th><button type="button" class="link" data-sort="lot_code">原酒受払ID</button></th>
+              <th><button type="button" class="link" data-sort="txn_date">日付</button></th>
+              <th><button type="button" class="link" data-sort="txn_type">区分</button></th>
+              <th>タンク</th>
+              <th class="num"><button type="button" class="link" data-sort="quantity">数量</button></th>
+              <th><button type="button" class="link" data-sort="brand_name">銘柄</button></th>
+              <th>引当</th>
+              <th><button type="button" class="link" data-sort="is_cancelled">状態</button></th>
+              <th>操作</th>
             </tr>
           </thead>
           <tbody id="ledgerRows"></tbody>
         </table>
+      </div>
+
+      <div class="actions">
+        <button type="button" id="lgPrev">前へ</button>
+        <button type="button" id="lgNext">次へ</button>
+        <span id="lgRange" class="hint"></span>
       </div>
     </details>
   </section>
@@ -503,14 +534,22 @@ function ledgerActions(r) {
     `<button type="button" class="danger small" data-ledger-cancel="${r.id}">取り消す</button></div>`;
 }
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const ledgerView = createListView('txn_date');
+const LEDGER_PAGER = { limit: 'lgLimit', prev: 'lgPrev', next: 'lgNext', range: 'lgRange' };
+
 async function loadLedger() {
-  const params = new URLSearchParams();
+  const params = listQuery(ledgerView, LEDGER_PAGER);
   if (el('filterLedgerType').value) params.set('txnType', el('filterLedgerType').value);
   if (el('filterLedgerTank').value) params.set('tankId', el('filterLedgerTank').value);
   if (el('filterLedgerCancelled').value) params.set('cancelled', el('filterLedgerCancelled').value);
+  if (el('lgFrom').value) params.set('from', el('lgFrom').value);
+  if (el('lgTo').value) params.set('to', el('lgTo').value);
 
-  const rows = await apiGet(`/api/raw-sake-receipts?${params}`);
-  el('ledgerCount').textContent = rows.length ? `${rows.length}件` : '';
+  const { rows, total } = await apiGet(`/api/raw-sake-receipts?${params}`);
+  ledgerView.total = total;
+  // 折り畳んだままでも件数が分かるよう、summary には全件数を出す
+  el('ledgerCount').textContent = total ? `${total}件` : '';
   el('ledgerRows').innerHTML = rows.length
     ? rows.map((r) => `<tr class="${ledgerIsVoided(r) ? 'muted' : ''}">
         <td>${escapeHtml(r.lot_code ?? '')}</td>
@@ -523,14 +562,19 @@ async function loadLedger() {
         <td>${ledgerStatus(r)}</td>
         <td>${ledgerActions(r)}</td>
       </tr>`).join('')
-    : '<tr><td colspan="9" class="empty">記録がありません</td></tr>';
+    : '<tr><td colspan="9" class="empty">該当する記録がありません</td></tr>';
+
+  renderSortMarks(ledgerView);
+  renderPager(ledgerView, LEDGER_PAGER, rows.length);
 }
 
-for (const id of ['filterLedgerType', 'filterLedgerTank', 'filterLedgerCancelled']) {
-  el(id).addEventListener('change', () => {
-    loadLedger().catch((err) => showMessage('messages', 'error', err.message, err.details));
-  });
-}
+const reloadLedger = () =>
+  loadLedger().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+// 絞り込みを変えたら1ページ目に戻す
+wirePager(ledgerView, LEDGER_PAGER, reloadLedger,
+  ['filterLedgerType', 'filterLedgerTank', 'filterLedgerCancelled', 'lgFrom', 'lgTo']);
+wireSortHeaders(ledgerView, 'ledgerRows', reloadLedger);
 
 // いま直している記録。読み込んだときの値も持っておき、変わった項目だけを送る
 let editingLedger = null;

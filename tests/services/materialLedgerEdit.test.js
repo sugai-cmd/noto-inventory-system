@@ -337,7 +337,7 @@ test('取り消した資材の行が、修正履歴にそのまま出る', async
   const { status, body } = await api('GET', '/api/corrections');
   assert.equal(status, 200);
 
-  const found = body.find((r) => r.target_code === 'M2608-0002');
+  const found = body.rows.find((r) => r.target_code === 'M2608-0002');
   assert.ok(found, '資材在庫変動履歴の取消として出ること');
   assert.equal(found.target_type, '資材在庫変動履歴');
   assert.equal(found.reason, '二重に登録していた');
