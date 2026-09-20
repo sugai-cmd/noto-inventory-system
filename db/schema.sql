@@ -26,7 +26,7 @@ CREATE TABLE carton_rules (                     -- 旧「段ボール対応表�
   carton_size TEXT NOT NULL,                    -- 段ボールのサイズ区分（運賃表の区分名）
   note        TEXT,
   created_at  TEXT NOT NULL DEFAULT (datetime('now'))
-, box_name TEXT, material_id INTEGER REFERENCES materials(id));
+, box_name TEXT, material_id INTEGER REFERENCES materials(id), material_qty INTEGER NOT NULL DEFAULT 1, parcels      INTEGER NOT NULL DEFAULT 1, length_cm    REAL, width_cm     REAL, height_cm    REAL);
 
 CREATE TABLE "consignment_reports" (
   id              INTEGER PRIMARY KEY,

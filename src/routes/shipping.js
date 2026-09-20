@@ -24,6 +24,14 @@ const cartonRuleSchema = z.object({
   // 資材が入っていないと、出荷のときに推奨が出ない（手で選べば減算はできる）
   boxName: z.string().optional(),
   materialId: z.number().int().positive().nullable().optional(),
+  // 枚数（在庫から引く数）と荷物の個数（運賃を数える回数）は別物。
+  // 300ml2本は「1本用を2枚」使うが、くっつけて1つの荷物として送る
+  materialQty: z.number().int().positive('枚数は1以上で入力してください').optional(),
+  parcels: z.number().int().positive('荷物の個数は1以上で入力してください').optional(),
+  // 組み立てた1荷物の外寸(cm)。3辺の合計でサイズ区分が決まる
+  lengthCm: z.number().positive().nullable().optional(),
+  widthCm: z.number().positive().nullable().optional(),
+  heightCm: z.number().positive().nullable().optional(),
   note: z.string().optional(),
 });
 

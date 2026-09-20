@@ -79,21 +79,40 @@
       選べるのは<strong>資材の分類が「外箱」のものだけ</strong>です。
       化粧箱・桐箱・プラケースは箱詰めのときに引いているので、ここで選ぶと二重に引いてしまいます。
     </p>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      <strong>枚数と荷物の個数は別物です。</strong>
+      300ml 2本は1本用の箱を<strong>2枚</strong>使いますが、テープでくっつけて
+      <strong>1つの荷物</strong>として送るので、在庫は2枚減るのに運賃は1回です。
+      24本は12本用を2枚使い、2つの荷物として送るので運賃も2回になります。
+    </p>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      <strong>外寸は組み立てた1荷物ぶん</strong>を入れてください。くっつけて送る場合は
+      くっつけた後の寸法です。3辺の合計でサイズ区分が決まります。
+      入れておくと送料がそこから計算され、入れていなければサイズ欄の手入力が使われます。
+    </p>
     <form id="cartonForm">
       <div class="grid">
         <div><label for="cProduct">商品</label><select id="cProduct" required></select></div>
         <div><label for="cQty">本数</label><input type="number" id="cQty" min="1" step="1" required></div>
-        <div><label for="cSize">サイズ（送料用）</label><input type="text" id="cSize" list="cartonList2" required></div>
+        <div><label for="cSize">サイズ（外寸が無いとき用）</label><input type="text" id="cSize" list="cartonList2" required></div>
         <div><label for="cBoxName">呼び名</label><input type="text" id="cBoxName" placeholder="300ml12本用"></div>
         <div><label for="cMaterial">段ボール資材（在庫用）</label><select id="cMaterial"></select></div>
+        <div><label for="cMaterialQty">枚数（在庫から引く）</label><input type="number" id="cMaterialQty" min="1" step="1" placeholder="1"></div>
+        <div><label for="cParcels">荷物の個数（運賃の回数）</label><input type="number" id="cParcels" min="1" step="1" placeholder="1"></div>
+        <div><label for="cLength">外寸 縦(cm)</label><input type="number" id="cLength" min="0" step="0.1"></div>
+        <div><label for="cWidth">外寸 横(cm)</label><input type="number" id="cWidth" min="0" step="0.1"></div>
+        <div><label for="cHeight">外寸 高さ(cm)</label><input type="number" id="cHeight" min="0" step="0.1"></div>
       </div>
+      <p class="hint" id="cSizeHint"></p>
       <datalist id="cartonList2"></datalist>
       <div class="actions"><button type="submit">登録・更新</button></div>
     </form>
     <div class="table-scroll" style="margin-top:16px">
       <table>
         <thead><tr>
-          <th>商品</th><th class="num">本数</th><th>サイズ</th><th>呼び名</th><th>段ボール資材</th><th></th>
+          <th>商品</th><th class="num">本数</th><th>段ボール資材</th><th>呼び名</th>
+          <th class="num">枚数</th><th class="num">荷物</th>
+          <th>外寸</th><th>サイズ</th><th></th>
         </tr></thead>
         <tbody id="cartonRows"></tbody>
       </table>
@@ -168,19 +187,59 @@ function renderRates() {
     : '<tr><td colspan="4" class="empty">料金が登録されていません</td></tr>';
 }
 
+/**
+ * サイズの欄。**外寸から決まったのか手入力なのかが分かるように**出す。
+ * 食い違っていたら、どちらが使われるかを並べて見せる（使うのは外寸のほう）。
+ */
+function cartonSizeCell(c) {
+  if (c.size_from_dimensions == null) {
+    return `${escapeHtml(c.carton_size)} <span class="muted">（手入力）</span>`;
+  }
+  if (String(c.size_from_dimensions) === String(c.carton_size)) {
+    return `${escapeHtml(c.size_from_dimensions)} <span class="muted">（外寸から）</span>`;
+  }
+  return `<strong>${escapeHtml(c.size_from_dimensions)}</strong> <span class="muted">（外寸から）</span>` +
+    `<br><span class="badge warn">手入力は ${escapeHtml(c.carton_size)}</span>`;
+}
+
 function renderCartons() {
   el('cartonRows').innerHTML = cartons.length
-    ? cartons.map((c) => `<tr>
+    ? cartons.map((c) => {
+        const dims = [c.length_cm, c.width_cm, c.height_cm];
+        const dimText = dims.every((d) => d != null)
+          ? `${num(c.length_cm, 1)}×${num(c.width_cm, 1)}×${num(c.height_cm, 1)}（計${num(c.dimension_sum, 1)}cm）`
+          : '<span class="muted">未入力</span>';
+        return `<tr>
         <td>${escapeHtml(c.product_name)}</td>
         <td class="num">${num(c.quantity)}</td>
-        <td>${escapeHtml(c.carton_size)}</td>
-        <td>${escapeHtml(c.box_name ?? '')}</td>
         <td>${c.material_name
               ? escapeHtml(c.material_name)
               : '<span class="badge warn">未設定</span>'}</td>
+        <td>${escapeHtml(c.box_name ?? '')}</td>
+        <td class="num">${num(c.material_qty)}</td>
+        <td class="num">${num(c.parcels)}</td>
+        <td>${dimText}</td>
+        <td>${cartonSizeCell(c)}</td>
         <td><button type="button" class="danger small" data-carton-del="${c.id}">削除</button></td>
-      </tr>`).join('')
-    : '<tr><td colspan="6" class="empty">対応表が登録されていません</td></tr>';
+      </tr>`;
+      }).join('')
+    : '<tr><td colspan="9" class="empty">対応表が登録されていません</td></tr>';
+}
+
+/** 外寸を入れている最中に「3辺合計 50cm → 60サイズ」と根拠を出す */
+function renderSizeHint() {
+  const dims = ['cLength', 'cWidth', 'cHeight'].map((id) => Number(el(id).value));
+  if (dims.some((d) => !Number.isFinite(d) || d <= 0)) {
+    return el('cSizeHint').textContent =
+      '外寸を3辺とも入れると、そこからサイズ区分を決めます（入れなければサイズ欄の手入力を使います）';
+  }
+  const sum = dims.reduce((a, b) => a + b, 0);
+  const bands = [...new Set(rates.map((r) => Number(r.carton_size)))]
+    .filter(Number.isFinite).sort((a, b) => a - b);
+  const band = bands.find((s) => sum <= s);
+  el('cSizeHint').textContent = band != null
+    ? `3辺の合計 ${num(sum, 1)}cm → ${band}サイズ`
+    : `3辺の合計 ${num(sum, 1)}cm は運賃表のどの区分にも収まりません（分けて送るか、運賃表に区分を足してください）`;
 }
 
 /** 段ボール資材の選択肢。分類が「外箱」のものだけがサーバーから返る */
@@ -223,17 +282,28 @@ el('cartonForm').addEventListener('submit', async (e) => {
   e.preventDefault();
   clearMessage('messages');
   try {
+    // 空欄は「変えない」の意味で送らない（既存の値を残す）
+    const optionalNumber = (id) => (el(id).value.trim() ? Number(el(id).value) : undefined);
+
     await apiPost('/api/shipping/carton-rules', {
       productId: Number(el('cProduct').value),
       quantity: Number(el('cQty').value),
       cartonSize: el('cSize').value.trim(),
       boxName: el('cBoxName').value.trim() || undefined,
       materialId: el('cMaterial').value ? Number(el('cMaterial').value) : null,
+      materialQty: optionalNumber('cMaterialQty'),
+      parcels: optionalNumber('cParcels'),
+      lengthCm: optionalNumber('cLength'),
+      widthCm: optionalNumber('cWidth'),
+      heightCm: optionalNumber('cHeight'),
     });
     cartons = await apiGet('/api/shipping/carton-rules');
     renderCartons();
     refreshDatalists();
-    el('cBoxName').value = '';
+    for (const id of ['cBoxName', 'cMaterialQty', 'cParcels', 'cLength', 'cWidth', 'cHeight']) {
+      el(id).value = '';
+    }
+    renderSizeHint();
     showMessage('messages', 'ok', '対応表に登録しました');
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
@@ -278,6 +348,10 @@ document.addEventListener('click', async (e) => {
     renderCartons();
     renderCartonMaterials();
     refreshDatalists();
+    renderSizeHint();
+    for (const id of ['cLength', 'cWidth', 'cHeight']) {
+      el(id).addEventListener('input', renderSizeHint);
+    }
   } catch (err) {
     showMessage('messages', 'error', err.message);
   }

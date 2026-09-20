@@ -42,6 +42,65 @@ function extractPrefecture(address) {
  * @param {string} [input.cartonSize]  - 段ボールを画面で選んだ場合
  * @param {{productId:number, quantity:number}[]} input.items
  */
+/**
+ * 消費税率。`csvExportService` の納品書CSVと同じ値を使う。
+ *
+ * この仕組みは金額を**税抜で持ち、出力するときに10%を足す**作りになっている。
+ * 運賃表の金額も段ボールの単価も税抜なので、合計してから一度だけ掛ける。
+ */
+const TAX_RATE = 0.1;
+
+/**
+ * 送料は50円ごとに繰り上げる。
+ * 811円 → 850円、795円 → 800円。**ちょうど800円は800円のまま**（繰り上げない）。
+ */
+function ceilTo50(amount) {
+  return Math.ceil(amount / 50) * 50;
+}
+
+/**
+ * サイズ区分の候補。**運賃表に登録されている区分から作る。**
+ *
+ * 固定の配列にしない。運賃表を直したら追従してほしいため
+ * （いまは 60/80/100/120/140/160/170 の7つ）。
+ */
+function cartonSizeBands(db) {
+  return db
+    .prepare('SELECT DISTINCT carton_size FROM shipping_rates')
+    .all()
+    .map((r) => Number(r.carton_size))
+    .filter(Number.isFinite)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * 組み立てた荷物の外寸からサイズ区分を出す。ゆうパックは**3辺の合計**で決まる。
+ *
+ * 3辺が揃っていなければ null（呼び手が対応表の手入力に落とす）。
+ * どの区分にも収まらないときは `size: null` と合計値を返し、呼び手が理由を出す。
+ * **ここで手入力に落としてはいけない** — 黙って安い運賃で請求してしまう。
+ */
+function sizeFromDimensions(db, rule) {
+  const dims = [rule.length_cm, rule.width_cm, rule.height_cm];
+  if (dims.some((d) => d == null)) return null;
+
+  const sum = dims.reduce((a, b) => a + b, 0);
+  const band = cartonSizeBands(db).find((s) => sum <= s);
+  return { sum, size: band != null ? String(band) : null };
+}
+
+/**
+ * 送料の見積り。
+ *
+ *   送料 ＝ 繰り上げ50円( (運賃 × 荷物の個数 ＋ 段ボールの税抜単価 × 枚数) × 1.1 )
+ *
+ * **枚数と荷物の個数は別物。** 300ml 2本は1本用の箱を2枚使うが、
+ * テープでくっつけて1つの荷物として送るので、在庫は2枚減るのに運賃は1回。
+ * どちらも対応表の行が持っていて、注文本数 ÷ 行の本数 の倍率で伸ばす。
+ *
+ * 決まらない要素は reasons に理由を入れて返し、画面で補ってもらう。
+ * 金額だけでなく**内訳も返す**（画面で根拠を出せないと、利用者が検算できない）。
+ */
 function quote(input) {
   const db = getConnection();
   const reasons = [];
@@ -57,21 +116,67 @@ function quote(input) {
   }
 
   const items = input.items ?? [];
-  let cartonSize = input.cartonSize ?? null;
+  const picked = input.cartonSize ?? null; // 画面で段ボールを選んだ場合
+  let cartonSize = picked;
+  let sizeFrom = picked ? '画面で選択' : null;
+  let dimensionSum = null;
+  let rule = null;
+  let sheets = 1;
+  let parcels = 1;
 
-  if (!cartonSize) {
-    if (items.length === 1) {
-      const rule = db
-        .prepare('SELECT carton_size FROM carton_rules WHERE product_id = ? AND quantity = ?')
-        .get(items[0].productId, items[0].quantity);
-      if (rule) cartonSize = rule.carton_size;
-      else reasons.push('この商品と本数の組み合わせが段ボール対応表にありません');
-    } else if (items.length > 1) {
-      // 対応表は「商品×本数」の1対1なので、複数商品の組み合わせは自動で決められない。
-      reasons.push('複数商品の受注は段ボールを選んでください（対応表は商品×本数の1対1のため）');
-    } else {
-      reasons.push('商品が指定されていません');
+  if (items.length === 1) {
+    rule = findCartonRule(db, items[0].productId, items[0].quantity);
+    if (rule) {
+      const multiplier = items[0].quantity / rule.quantity;
+      sheets = rule.material_qty * multiplier;
+      parcels = rule.parcels * multiplier;
+
+      if (!cartonSize) {
+        const byDim = sizeFromDimensions(db, rule);
+        if (byDim) {
+          dimensionSum = byDim.sum;
+          if (byDim.size) {
+            cartonSize = byDim.size;
+            sizeFrom = '外寸';
+          } else {
+            // 手入力に落とすと、実際より小さい区分で安く請求してしまう
+            reasons.push(
+              `外寸の3辺合計 ${byDim.sum}cm は運賃表のどの区分にも収まりません（分けて送るか、運賃表に区分を足してください）`
+            );
+          }
+        } else {
+          cartonSize = rule.carton_size;
+          sizeFrom = '対応表';
+        }
+      }
+    } else if (!cartonSize) {
+      reasons.push('この商品と本数の組み合わせが段ボール対応表にありません');
     }
+  } else if (items.length > 1) {
+    // 対応表は「商品×本数」の1対1なので、複数商品の組み合わせは自動で決められない。
+    if (!cartonSize) {
+      reasons.push('複数商品の受注は段ボールを選んでください（対応表は商品×本数の1対1のため）');
+    }
+  } else {
+    reasons.push('商品が指定されていません');
+  }
+
+  // 段ボール代。資材が未設定でも運賃だけで出す（取り込んだ直後はほぼ全部この状態）
+  let materialName = null;
+  let materialUnitPrice = 0;
+  if (rule?.material_id != null) {
+    const material = db
+      .prepare('SELECT name, unit_price FROM materials WHERE id = ?')
+      .get(rule.material_id);
+    if (material) {
+      materialName = material.name;
+      materialUnitPrice = material.unit_price ?? 0;
+      if (material.unit_price == null) {
+        reasons.push(`「${material.name}」に単価が入っていないので、段ボール代は0円で計算しています`);
+      }
+    }
+  } else if (rule) {
+    reasons.push('段ボール代は含んでいません（対応表に段ボール資材が未設定）');
   }
 
   const rateRow =
@@ -84,12 +189,32 @@ function quote(input) {
     reasons.push(`地帯「${zoneRow.zone}」× 段ボール「${cartonSize}」の料金が未登録です`);
   }
 
+  const freightPerParcel = rateRow?.fee ?? null;
+  const freight = freightPerParcel != null ? freightPerParcel * parcels : null;
+  const materialCost = materialUnitPrice * sheets;
+  const subtotal = freight != null ? freight + materialCost : null;
+  // 小数の誤差で境目がずれないよう、税込にした時点で銭まで丸めてから繰り上げる
+  // （そうしないと 800.0000000001 が 850円になる）
+  const taxed = subtotal != null ? Math.round(subtotal * (1 + TAX_RATE) * 100) / 100 : null;
+  const fee = taxed != null ? ceilTo50(taxed) : null;
+
   return {
     prefecture,
     zone: zoneRow?.zone ?? null,
     cartonSize,
-    fee: rateRow?.fee ?? null,
-    resolved: rateRow != null,
+    sizeFrom,
+    dimensionSum,
+    sheets,
+    parcels,
+    materialName,
+    materialUnitPrice,
+    materialCost,
+    freightPerParcel,
+    freight,
+    subtotal,
+    taxed,
+    fee,
+    resolved: fee != null,
     reasons,
     // 画面の段ボール選択肢（料金表に登録済みのサイズ）
     cartonOptions: db
@@ -184,12 +309,18 @@ function suggestCartons({ productId, quantity, orderId = null }) {
     return { suggestion: null, reason: '対応表に設定された資材が見つかりません' };
   }
 
+  // **1組あたりの枚数を掛ける。** 300ml 2本は「1本用を2枚」なので、
+  // 倍率（注文本数 ÷ 行の本数）だけだと1枚しか引かれない
+  const multiplier = quantity / rule.quantity;
+
   return {
     suggestion: {
       materialId: material.id,
       materialName: material.name,
-      boxes: quantity / rule.quantity,
+      boxes: rule.material_qty * multiplier,
       ruleQuantity: rule.quantity,
+      materialQty: rule.material_qty,
+      parcels: rule.parcels * multiplier,
       boxName: rule.box_name ?? null,
       cartonSize: rule.carton_size,
     },
@@ -207,7 +338,22 @@ function suggestCartons({ productId, quantity, orderId = null }) {
  * 資材は**分類が「外箱」のものだけ**受ける。化粧箱・桐箱・プラケースは分類が「箱」で、
  * 箱詰めのレシピで既に減らしている。ここで通すと出荷時に二重に減る。
  */
-function upsertCartonRule({ productId, quantity, cartonSize, boxName, materialId, note }, actor = null) {
+function upsertCartonRule(
+  {
+    productId,
+    quantity,
+    cartonSize,
+    boxName,
+    materialId,
+    materialQty,
+    parcels,
+    lengthCm,
+    widthCm,
+    heightCm,
+    note,
+  },
+  actor = null
+) {
   const db = getConnection();
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
   if (!product) throw new NotFoundError(`商品が見つかりません (id=${productId})`);
@@ -224,20 +370,41 @@ function upsertCartonRule({ productId, quantity, cartonSize, boxName, materialId
     .prepare('SELECT * FROM carton_rules WHERE product_id = ? AND quantity = ?')
     .get(productId, quantity);
 
+  // 枚数・荷物の個数は 1以上。空で来たら既存値を残す（COALESCE）
+  for (const [label, value] of [['枚数', materialQty], ['荷物の個数', parcels]]) {
+    if (value != null && !(Number.isInteger(value) && value >= 1)) {
+      throw new BusinessRuleError(`${label}は1以上の整数で入力してください`);
+    }
+  }
+
   db.prepare(
-    `INSERT INTO carton_rules (product_id, quantity, carton_size, box_name, material_id, note)
-     VALUES (@productId, @quantity, @cartonSize, @boxName, @materialId, @note)
+    `INSERT INTO carton_rules
+       (product_id, quantity, carton_size, box_name, material_id,
+        material_qty, parcels, length_cm, width_cm, height_cm, note)
+     VALUES
+       (@productId, @quantity, @cartonSize, @boxName, @materialId,
+        COALESCE(@materialQty, 1), COALESCE(@parcels, 1), @lengthCm, @widthCm, @heightCm, @note)
      ON CONFLICT(product_id, quantity)
-     DO UPDATE SET carton_size = excluded.carton_size,
-                   box_name    = COALESCE(excluded.box_name, carton_rules.box_name),
-                   material_id = COALESCE(excluded.material_id, carton_rules.material_id),
-                   note        = excluded.note`
+     DO UPDATE SET carton_size  = excluded.carton_size,
+                   box_name     = COALESCE(excluded.box_name, carton_rules.box_name),
+                   material_id  = COALESCE(excluded.material_id, carton_rules.material_id),
+                   material_qty = COALESCE(@materialQty, carton_rules.material_qty),
+                   parcels      = COALESCE(@parcels, carton_rules.parcels),
+                   length_cm    = COALESCE(@lengthCm, carton_rules.length_cm),
+                   width_cm     = COALESCE(@widthCm, carton_rules.width_cm),
+                   height_cm    = COALESCE(@heightCm, carton_rules.height_cm),
+                   note         = excluded.note`
   ).run({
     productId,
     quantity,
     cartonSize,
     boxName: boxName ?? null,
     materialId: materialId ?? null,
+    materialQty: materialQty ?? null,
+    parcels: parcels ?? null,
+    lengthCm: lengthCm ?? null,
+    widthCm: widthCm ?? null,
+    heightCm: heightCm ?? null,
     note: note ?? null,
   });
 
@@ -254,6 +421,10 @@ function upsertCartonRule({ productId, quantity, cartonSize, boxName, materialId
       `段ボール対応表: ${product.name} ${quantity}本 → ${row.carton_size}サイズ` +
       (row.box_name ? `（${row.box_name}）` : '') +
       (material ? `／資材: ${material.name}` : '') +
+      `／${row.material_qty}枚・${row.parcels}荷物` +
+      (row.length_cm != null && row.width_cm != null && row.height_cm != null
+        ? `／外寸 ${row.length_cm}×${row.width_cm}×${row.height_cm}cm`
+        : '') +
       (before ? '（上書き）' : '（新規）'),
   });
 
@@ -273,15 +444,25 @@ function assertCartonMaterial(material) {
 
 function listCartonRules() {
   const db = getConnection();
-  return db
+  const rows = db
     .prepare(
-      `SELECT r.*, p.name AS product_name, m.name AS material_name
+      `SELECT r.*, p.name AS product_name, m.name AS material_name, m.unit_price AS material_unit_price
        FROM carton_rules r
        JOIN products p ON p.id = r.product_id
        LEFT JOIN materials m ON m.id = r.material_id
        ORDER BY p.name, r.quantity`
     )
     .all();
+
+  // 外寸から出る区分も返す。手入力と食い違っていたら画面で気づけるようにするため
+  return rows.map((r) => {
+    const byDim = sizeFromDimensions(db, r);
+    return {
+      ...r,
+      dimension_sum: byDim?.sum ?? null,
+      size_from_dimensions: byDim?.size ?? null,
+    };
+  });
 }
 
 function deleteCartonRule(id) {
@@ -349,6 +530,10 @@ module.exports = {
   assertCartonMaterial,
   suggestCartons,
   findCartonRule,
+  sizeFromDimensions,
+  cartonSizeBands,
+  ceilTo50,
+  TAX_RATE,
   CARTON_CATEGORY,
   deleteCartonRule,
   listZones,
