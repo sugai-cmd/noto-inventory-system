@@ -175,18 +175,95 @@ function submitSampleShipment(input, actor = null) {
   return run();
 }
 
-function listSampleShipments({ limit = 200 } = {}) {
+/**
+ * 並べ替えに使ってよい列。画面から来た文字列をそのままSQLに入れない
+ * （materialService.LEDGER_SORTABLE と同じ作法）。
+ */
+const SAMPLE_SORTABLE = {
+  shipped_on: 's.shipped_on',
+  sample_no: 's.sample_no',
+  customer_name: 'c.name',
+  contact_name: 's.contact_name',
+  product_name: 'p.name',
+  quantity: 's.quantity',
+};
+const SAMPLE_DEFAULT_SORT = 'shipped_on';
+
+/**
+ * サンプル・販促資料送付の一覧。
+ *
+ * **商品は LEFT JOIN。内部結合にしてはいけない。**
+ * 販促資料だけを送った行は product_id が空で、内部結合だと黙って落ちる。
+ * 実データ49件のうち S2603-0001 と S2603-0002 の2件がこれに当たり、
+ * **画面に一度も出ていなかった**（資材の入出庫履歴205件・操作ログと同じ形）。
+ * スキーマは最初から「販促資料だけの送付では空」と書いてあり、
+ * 移行ローダー（scripts/loaders/sampleShipments.js）も商品が無い行を落としていない。
+ * 結合だけが追いついていなかった。
+ *
+ * 送付先の絞り込みは**得意先名と備考の両方**を見る。
+ * 得意先マスタに無い送付先は customer_id が空で（実データ49件中12件）、
+ * 名前は備考の「送付先: …」に入っている。得意先名だけを見ると、
+ * この12件はどう打っても出てこない。
+ *
+ * @returns {{rows: object[], total: number}} total は同じ絞り込みでの全件数
+ */
+function listSampleShipments({
+  limit = 200,
+  offset = 0,
+  sort = SAMPLE_DEFAULT_SORT,
+  order = 'desc',
+  customer = null,
+  contact = null,
+  from = null,
+  to = null,
+} = {}) {
   const db = getConnection();
-  return db
-    .prepare(
-      `SELECT s.*, c.name AS customer_name, p.name AS product_name
+
+  const where = [];
+  const params = {};
+
+  if (customer) {
+    // 得意先マスタに無い送付先は備考の「送付先: …」に名前がある
+    where.push('(c.name LIKE @customer OR s.note LIKE @customer)');
+    params.customer = `%${customer}%`;
+  }
+  if (contact) {
+    where.push('s.contact_name LIKE @contact');
+    params.contact = `%${contact}%`;
+  }
+  if (from) {
+    where.push('s.shipped_on >= @from');
+    params.from = from;
+  }
+  if (to) {
+    where.push('s.shipped_on <= @to');
+    params.to = to;
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const column = SAMPLE_SORTABLE[sort] ?? SAMPLE_SORTABLE[SAMPLE_DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 同じ日付の行が実行のたびに入れ替わらないよう、idを第2キーにする
+  const orderSql = `${column} ${direction}, s.id ${direction}`;
+
+  const joins = `
        FROM sample_shipments s
        LEFT JOIN customers c ON c.id = s.customer_id
-       JOIN products p ON p.id = s.product_id
-       ORDER BY s.shipped_on DESC, s.id DESC
-       LIMIT ?`
+       LEFT JOIN products p ON p.id = s.product_id`;
+
+  const { total } = db.prepare(`SELECT COUNT(*) AS total ${joins} ${whereSql}`).get(params);
+
+  const rows = db
+    .prepare(
+      `SELECT s.*, c.name AS customer_name, p.name AS product_name
+       ${joins}
+       ${whereSql}
+       ORDER BY ${orderSql}
+       LIMIT @limit OFFSET @offset`
     )
-    .all(limit);
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
 }
 
 /**

@@ -83,11 +83,57 @@
       <div class="actions"><button type="submit" id="smpSubmit">サンプル送付を登録</button></div>
     </form>
     <h3>送付履歴</h3>
+
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="smpFCustomer">送付先</label>
+        <input type="text" id="smpFCustomer" placeholder="得意先名・備考の送付先">
+      </div>
+      <div>
+        <label for="smpFContact">担当者</label>
+        <input type="text" id="smpFContact" placeholder="先方担当者名">
+      </div>
+      <div>
+        <label for="smpFFrom">発送日（から）</label>
+        <input type="date" id="smpFFrom">
+      </div>
+      <div>
+        <label for="smpFTo">発送日（まで）</label>
+        <input type="date" id="smpFTo">
+      </div>
+      <div>
+        <label for="smpLimit">1ページの件数</label>
+        <select id="smpLimit">
+          <option value="10">10</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
+    </div>
+
     <div class="table-scroll">
       <table>
-        <thead><tr><th>サンプルID</th><th>発送日</th><th>送付先</th><th>担当者</th><th>商品</th><th class="num">本数</th><th>備考</th></tr></thead>
+        <thead>
+          <tr>
+            <th><button type="button" class="link" data-sort="sample_no">サンプルID</button></th>
+            <th><button type="button" class="link" data-sort="shipped_on">発送日</button></th>
+            <th><button type="button" class="link" data-sort="customer_name">送付先</button></th>
+            <th><button type="button" class="link" data-sort="contact_name">担当者</button></th>
+            <th><button type="button" class="link" data-sort="product_name">商品</button></th>
+            <th class="num"><button type="button" class="link" data-sort="quantity">本数</button></th>
+            <th>備考</th>
+          </tr>
+        </thead>
         <tbody id="sampleRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="smpPrev">前へ</button>
+      <button type="button" id="smpNext">次へ</button>
+      <span id="smpRange" class="hint"></span>
     </div>
   </section>
 
@@ -170,20 +216,44 @@ el('returnForm').addEventListener('submit', async (e) => {
   }
 });
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const sampleView = createListView('shipped_on');
+const SAMPLE_PAGER = { limit: 'smpLimit', prev: 'smpPrev', next: 'smpNext', range: 'smpRange' };
+
 async function loadSamples() {
-  const rows = await apiGet('/api/shipments/samples');
+  const params = listQuery(sampleView, SAMPLE_PAGER);
+  if (el('smpFCustomer').value.trim()) params.set('customer', el('smpFCustomer').value.trim());
+  if (el('smpFContact').value.trim()) params.set('contact', el('smpFContact').value.trim());
+  if (el('smpFFrom').value) params.set('from', el('smpFFrom').value);
+  if (el('smpFTo').value) params.set('to', el('smpFTo').value);
+
+  const { rows, total } = asListResult(
+    await apiGet(`/api/shipments/samples?${params}`), 'サンプル送付履歴');
+  sampleView.total = total;
+
   el('sampleRows').innerHTML = rows.length
     ? rows.map((s) => `<tr>
         <td>${escapeHtml(s.sample_no)}</td>
         <td>${escapeHtml(s.shipped_on)}</td>
         <td>${escapeHtml(s.customer_name ?? '')}</td>
         <td>${escapeHtml(s.contact_name ?? '')}</td>
-        <td>${escapeHtml(s.product_name)}</td>
-        <td class="num">${num(s.quantity)}</td>
+        <td>${s.product_name ? escapeHtml(s.product_name) : '<span class="muted">（販促資料のみ）</span>'}</td>
+        <td class="num">${s.quantity != null ? num(s.quantity) : ''}</td>
         <td>${escapeHtml(s.note ?? '')}</td>
       </tr>`).join('')
-    : '<tr><td colspan="7" class="empty">送付履歴がありません</td></tr>';
+    : '<tr><td colspan="7" class="empty">該当する送付履歴がありません</td></tr>';
+
+  renderSortMarks(sampleView, el('sampleRows').closest('table'));
+  renderPager(sampleView, SAMPLE_PAGER, rows.length);
 }
+
+const reloadSamples = () =>
+  loadSamples().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+// 絞り込みを変えたら1ページ目に戻す。文字の欄は change（入力のたびに投げない）
+wirePager(sampleView, SAMPLE_PAGER, reloadSamples,
+  ['smpFCustomer', 'smpFContact', 'smpFFrom', 'smpFTo']);
+wireSortHeaders(sampleView, 'sampleRows', reloadSamples);
 
 el('sampleForm').addEventListener('submit', async (e) => {
   e.preventDefault();

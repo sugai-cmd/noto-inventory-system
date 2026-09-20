@@ -56,11 +56,25 @@ router.get('/alerts', (req, res) => {
   res.json(distillationService.getStaleDistillationAlerts({ thresholdHours }));
 });
 
+// 絞り込みのプルダウンに出す値（実際に払出先になっているタンクだけ）。
+// `/:id` より前に置くこと（あとに置くと id='options' として拾われる）
+router.get('/options', (req, res) => {
+  res.json(distillationService.listFilterOptions());
+});
+
+/** 蒸留記録の一覧。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
 router.get('/', (req, res) => {
+  const q = req.query;
   res.json(
     distillationService.list({
-      status: req.query.status,
-      limit: Math.min(Number(req.query.limit) || 100, 500),
+      status: q.status,
+      outputTankId: q.outputTankId ? Number(q.outputTankId) : undefined,
+      from: q.from || undefined,
+      to: q.to || undefined,
+      limit: Math.min(Number(q.limit) || 100, 500),
+      offset: Math.max(Number(q.offset) || 0, 0),
+      sort: q.sort || undefined,
+      order: q.order || undefined,
     })
   );
 });

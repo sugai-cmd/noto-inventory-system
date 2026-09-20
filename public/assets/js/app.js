@@ -286,7 +286,7 @@ function createListView(sort, order = 'desc') {
 }
 
 /**
- * 一覧APIの返りを受け取る。**古い形（行の配列）なら、その場で気づける形で止める。**
+ * 一覧APIの返りを受け取る。**古い形（行の配列）で返ってきても、一覧は出す。**
  *
  * 一覧は `{rows, total}` を返すよう変えたが、`git pull` したあとサーバーを
  * 再起動していないと、画面だけが新しくなる（`public/` はディスクから毎回読まれるが、
@@ -294,18 +294,33 @@ function createListView(sort, order = 'desc') {
  * 古いサーバーは行の配列を返すので、`{rows, total}` に分解すると rows が undefined になり、
  * 利用者には「Cannot read properties of undefined」としか出ない（原因が分からない）。
  *
- * **存在しないAPIには src/app.js が同じ趣旨の案内を404で返している**が、
- * 形が変わっただけの場合は404にならず素通りしてしまう。ここで塞ぐ。
+ * **ここで止めてしまうと一覧が1行も出ず、仕事が止まる。**
+ * 行そのものは返ってきているのだから、更新前と同じ見え方で出す。
+ * ページ送りと総件数だけが効かないので、それは黄色の帯で知らせる。
+ *
+ * （存在しないAPIには src/app.js が同じ趣旨の案内を404で返しているが、
+ *   形が変わっただけの場合は404にならず素通りしてしまう。そこを塞ぐのがここ）
  */
 function asListResult(res, endpoint) {
-  if (Array.isArray(res)) {
-    throw new Error(
-      `一覧の形が古いままです（${endpoint}）。` +
-        '画面だけが新しく、サーバーが更新前のまま動いている可能性があります。' +
-        'サーバー機でアプリを再起動してください。'
-    );
-  }
-  return res;
+  if (!Array.isArray(res)) return res;
+
+  warnStaleServer(endpoint);
+  // 総件数が無いので、いま届いている行数を件数として扱う
+  return { rows: res, total: res.length, stale: true };
+}
+
+/** 再起動の案内。画面を開くたびに何度も出しても仕方ないので1回だけ */
+let staleServerWarned = false;
+function warnStaleServer(endpoint) {
+  if (staleServerWarned) return;
+  staleServerWarned = true;
+  showMessage(
+    'messages',
+    'warn',
+    `サーバーが更新前のまま動いています（${endpoint}）。一覧は表示できていますが、` +
+      'ページ送りと総件数、新しく足した絞り込みは効きません。' +
+      'サーバー機でアプリを再起動してください。'
+  );
 }
 
 /** limit / offset / sort / order を載せた URLSearchParams を作る（絞り込みは呼び手が足す） */

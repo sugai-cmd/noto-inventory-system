@@ -651,25 +651,40 @@ test('一覧APIは、画面が期待する {rows, total} の形で返る', async
   }
 });
 
-test('画面のヘルパは、古い形（配列）を原因の分かるメッセージで断る', () => {
-  // public/assets/js/app.js は素のスクリプト。試験からは読み込んで評価する
+test('画面のヘルパは、古い形（配列）でも一覧を出し、再起動を知らせる', () => {
+  // public/assets/js/app.js は素のスクリプト。試験からは読み込んで評価する。
+  // showMessage は DOM を触るので、呼ばれた内容だけ受け取れるように差し替える
   const src = require('node:fs').readFileSync(
     require('node:path').join(__dirname, '../../public/assets/js/app.js'),
     'utf8'
   );
-  const asListResult = new Function(`${src}; return asListResult;`)();
+  // showMessage は src 内の関数宣言なので差し替えられない（引数を上書きしてしまう）。
+  // 素の showMessage をそのまま走らせて、document だけ偽物にする
+  const box = { innerHTML: '', scrollIntoView() {} };
+  const asListResult = new Function(
+    'document',
+    `${src}; return asListResult;`
+  )({ getElementById: () => box });
+  const shown = () => box.innerHTML;
 
-  // 新しい形はそのまま通る
-  const ok = asListResult({ rows: [1, 2], total: 2 }, '資材の入出庫履歴');
-  assert.deepEqual(ok, { rows: [1, 2], total: 2 });
+  // 新しい形はそのまま通り、何も知らせない
+  assert.deepEqual(asListResult({ rows: [1, 2], total: 2 }, '資材の入出庫履歴'),
+    { rows: [1, 2], total: 2 });
+  assert.equal(shown(), '', '新しい形のときは何も出さないこと');
 
-  // 古い形は、何をすればよいかが書かれたメッセージで止まる
-  assert.throws(
-    () => asListResult([1, 2], '資材の入出庫履歴'),
-    (err) => {
-      assert.match(err.message, /資材の入出庫履歴/, 'どの一覧かが分かること');
-      assert.match(err.message, /再起動/, '何をすればよいかが書いてあること');
-      return true;
-    }
-  );
+  // **古い形でも一覧は出す。** ここで止めると1行も出ず、仕事が止まる
+  const old = asListResult([1, 2, 3], '受注一覧');
+  assert.deepEqual(old.rows, [1, 2, 3], '行はそのまま出せること');
+  assert.equal(old.total, 3, '総件数は、いま届いている行数で代用すること');
+  assert.equal(old.stale, true);
+
+  // 何をすればよいかが黄色の帯で出る
+  assert.match(shown(), /msg warn/, '赤いエラーではなく注意書きであること');
+  assert.match(shown(), /受注一覧/, 'どの一覧かが分かること');
+  assert.match(shown(), /再起動/, '何をすればよいかが書いてあること');
+
+  // 画面ごとに何度も出さない
+  const first = shown();
+  asListResult([1], '原料受払記録');
+  assert.equal(shown(), first, '2回目は出し直さないこと');
 });

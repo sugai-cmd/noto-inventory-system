@@ -113,7 +113,8 @@ test('未納税移出: 払出元が減り、搬出先が備考に残る', async 
 test('タンク入出庫履歴が取得できる', async () => {
   const { status, body } = await api('GET', '/api/tank-operations/ledger?tankId=1');
   assert.equal(status, 200);
-  const types = body.map((r) => r.txn_type);
+  assert.equal(body.total, body.rows.length);
+  const types = body.rows.map((r) => r.txn_type);
   assert.ok(types.includes('容器移動'));
   assert.ok(types.includes('未納税移出'));
 });
