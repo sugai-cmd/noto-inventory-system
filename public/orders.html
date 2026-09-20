@@ -74,7 +74,8 @@
           <div class="actions" style="margin-top:6px">
             <button type="button" class="secondary small" id="quoteBtn">送料を計算</button>
           </div>
-          <div class="hint" id="shippingHint"></div>
+          <!-- 送料の内訳を数行で出すので、改行をそのまま見せる -->
+          <div class="hint" id="shippingHint" style="white-space:pre-line"></div>
           <div id="cartonPickWrap" style="display:none;margin-top:6px">
             <select id="cartonPick"></select>
             <div class="actions" style="margin-top:6px">
@@ -893,6 +894,30 @@ el('itemRows').addEventListener('click', (e) => {
 
 // --- 送料の自動計算 ----------------------------------------------------------
 
+/**
+ * 送料の内訳。**金額だけ出すと利用者が検算できない。**
+ *
+ *   送料 ＝ 繰り上げ50円( (運賃 × 荷物の個数 ＋ 段ボールの税抜単価 × 枚数) × 1.1 )
+ *
+ * サイズが外寸から決まったのか、対応表の手入力なのかも出す
+ * （食い違っていると請求額が変わるので、その場で気づけるようにする）。
+ */
+function shippingBreakdown(q) {
+  const size = q.dimensionSum != null && q.sizeFrom === '外寸'
+    ? `${q.cartonSize}サイズ（外寸 計${num(q.dimensionSum, 1)}cm）`
+    : `${q.cartonSize}サイズ（${q.sizeFrom ?? '対応表'}）`;
+
+  const parts = [
+    `${q.prefecture}（${q.zone}）／ ${size} × ${num(q.parcels)}荷物 ＝ 運賃 ${yen(q.freight)}`,
+  ];
+  if (q.materialName) {
+    parts.push(`＋ ${q.materialName} ${q.materialUnitPrice}円 × ${num(q.sheets)}枚 ＝ ${yen(q.materialCost)}`);
+  }
+  parts.push(`→ 税抜 ${yen(q.subtotal)} → 税込 ${yen(q.taxed)} → 50円繰り上げ ${yen(q.fee)}`);
+  if (q.reasons.length) parts.push(`※ ${q.reasons.join(' / ')}`);
+  return parts.join('\n');
+}
+
 async function quoteShipping(cartonSize) {
   clearMessage('messages');
   const list = currentItems();
@@ -910,8 +935,7 @@ async function quoteShipping(cartonSize) {
 
     if (q.resolved) {
       el('shippingFee').value = q.fee;
-      el('shippingHint').textContent =
-        `${q.prefecture}（${q.zone}）× ${q.cartonSize} → ${yen(q.fee)}`;
+      el('shippingHint').textContent = shippingBreakdown(q);
       el('cartonPickWrap').style.display = 'none';
       recalcTotal();
       return;

@@ -256,9 +256,17 @@ test('段ボールを対応表に入れると送料が確定する', async () =>
   });
   assert.equal(body.zone, '県内');
   assert.equal(body.cartonSize, '100');
-  assert.equal(body.fee, 739);       // 県内 × 100サイズ
   assert.equal(body.resolved, true);
-  assert.deepEqual(body.reasons, []);
+
+  // 送料は「運賃 × 荷物 ＋ 段ボール代 × 枚数」の税込・50円繰り上げ。
+  // この行は段ボール資材が未設定なので、運賃だけで計算して断り書きが付く
+  assert.equal(body.freightPerParcel, 739); // 県内 × 100サイズ
+  assert.equal(body.parcels, 1);
+  assert.equal(body.freight, 739);
+  assert.equal(body.materialCost, 0);
+  assert.equal(body.taxed, 812.9);          // 739 × 1.1
+  assert.equal(body.fee, 850);              // 50円繰り上げ
+  assert.match(body.reasons.join(' '), /段ボール代は含んでいません/);
 });
 
 test('地帯が違えば料金も変わる', async () => {
@@ -267,24 +275,32 @@ test('地帯が違えば料金も変わる', async () => {
     items: [{ productId: 1, quantity: 12 }],
   });
   assert.equal(okinawa.body.zone, '第10地帯');
-  assert.equal(okinawa.body.fee, 1631); // 第10地帯 × 100サイズ
+  assert.equal(okinawa.body.freightPerParcel, 1631); // 第10地帯 × 100サイズ
+  assert.equal(okinawa.body.fee, 1800);              // 1631 × 1.1 = 1794.1 → 1800
 });
 
-test('対応表にない本数は段ボールを選べば計算でき、追加すると次回から自動になる', async () => {
-  const first = await api('POST', '/api/shipping/quote', {
+test('対応表にない本数でも、割り切れれば箱数を増やして計算する', async () => {
+  // 24本の行は無いが、12本用の行で割り切れるので「12本用 × 2」で決まる
+  const auto = await api('POST', '/api/shipping/quote', {
     prefecture: '石川県',
     items: [{ productId: 1, quantity: 24 }],
   });
-  assert.equal(first.body.resolved, false);
-  // 選択肢は料金表に載っているサイズ
-  assert.deepEqual(first.body.cartonOptions, ['100', '120', '140', '160', '170', '60', '80']);
+  assert.equal(auto.body.resolved, true);
+  assert.equal(auto.body.parcels, 2, '荷物が2つぶんになっていない');
+  assert.equal(auto.body.freight, 739 * 2, '運賃が箱数だけ掛かっていない');
+  assert.equal(auto.body.fee, 1650); // 1478 × 1.1 = 1625.8 → 1650
 
+  // 選択肢は料金表に載っているサイズ
+  assert.deepEqual(auto.body.cartonOptions, ['100', '120', '140', '160', '170', '60', '80']);
+
+  // 画面で段ボールを選んだときは、そちらを優先する
   const chosen = await api('POST', '/api/shipping/quote', {
     prefecture: '石川県',
     cartonSize: '120',
     items: [{ productId: 1, quantity: 24 }],
   });
-  assert.equal(chosen.body.fee, 901); // 県内 × 120サイズ
+  assert.equal(chosen.body.cartonSize, '120');
+  assert.equal(chosen.body.freightPerParcel, 901); // 県内 × 120サイズ
 
   await api('POST', '/api/shipping/carton-rules', {
     productId: 1, quantity: 24, cartonSize: '120',
@@ -293,8 +309,11 @@ test('対応表にない本数は段ボールを選べば計算でき、追加�
     prefecture: '石川県',
     items: [{ productId: 1, quantity: 24 }],
   });
+  // 24本ぴったりの行ができたので、そちらが使われて1荷物になる
   assert.equal(again.body.resolved, true);
-  assert.equal(again.body.fee, 901);
+  assert.equal(again.body.parcels, 1);
+  assert.equal(again.body.freight, 901);
+  assert.equal(again.body.fee, 1000); // 901 × 1.1 = 991.1 → 1000
 });
 
 test('住所から都道府県を読み取れなければその旨を返す', async () => {

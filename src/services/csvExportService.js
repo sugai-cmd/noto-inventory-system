@@ -307,7 +307,8 @@ function exportMoneyForward(filter = {}) {
     const shipping = lines.reduce((sum, l) => sum + (l.shipping_fee ?? 0), 0);
 
     const subtotal = items.reduce((sum, it) => sum + it.amount, 0) + shipping;
-    const tax = Math.round(subtotal * 0.1);
+    // 税率は送料の計算と同じ値を使う（2か所に書くと改定のときに片方だけ残る）
+    const tax = Math.round(subtotal * shippingFeeService.TAX_RATE);
     const total = subtotal + tax;
 
     const deliveryDateStr = head.delivered_on ? head.delivered_on.replace(/-/g, '/') : '';
