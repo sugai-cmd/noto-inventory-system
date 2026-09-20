@@ -5,6 +5,7 @@
 
 const { getConnection } = require('../db/connection');
 const tankService = require('./tankService');
+const shippingFeeService = require('./shippingFeeService');
 const { parseShippingAddress } = require('../utils/shippingAddress');
 
 /** CSV1セル分のエスケープ */
@@ -118,12 +119,58 @@ function groupByOrderNo(rows) {
   return map;
 }
 
-/** 商品×本数 → 段ボール（サイズ）。段ボール対応表から引く */
+/** 商品×本数 → 段ボール（サイズ）。**発送画面と同じ引き方**（割り算を含む） */
 function findCartonSize(db, productId, quantity) {
-  const rule = db
-    .prepare('SELECT carton_size, box_name FROM carton_rules WHERE product_id = ? AND quantity = ?')
-    .get(productId, quantity);
-  return rule ?? null;
+  return shippingFeeService.findCartonRule(db, productId, quantity);
+}
+
+/**
+ * 荷物1件ぶんの段ボールのサイズを決める。
+ *
+ * **以前は複数明細でも1行目の商品×本数で引いていた。**
+ * 対応表は商品×本数の1対1なので、「6本＋3本」の荷物が6本用のサイズで出ていた。
+ * 決められないものは決められないと返し、呼び手が要確認として知らせる。
+ */
+function resolveCartonSize(db, lines) {
+  if (lines.length > 1) {
+    return { size: null, reason: '複数明細の受注は段ボールが決まりません（対応表は商品×本数の1対1のため）' };
+  }
+  const rule = findCartonSize(db, lines[0].product_id, lines[0].quantity);
+  if (!rule) {
+    return { size: null, reason: 'この商品と本数の組み合わせが段ボール対応表にありません' };
+  }
+  return { size: String(rule.carton_size).padStart(3, '0'), reason: null };
+}
+
+/**
+ * 実際に使った段ボールの箱数。
+ *
+ * 発送済にしたときに選んだ段ボールが資材在庫変動履歴に残っている（出荷行に紐付く、
+ * 分類が「外箱」の消費行）ので、その合計を個数にする。
+ * 未発送や記録が無いものは 1（従来どおり）。
+ */
+function countShippedCartons(db, lines) {
+  const ids = lines.map((l) => l.id);
+  if (!ids.length) return null;
+  const placeholders = ids.map((_, i) => `@id${i}`).join(',');
+  const params = {};
+  ids.forEach((id, i) => { params[`id${i}`] = id; });
+
+  const { boxes } = db
+    .prepare(
+      `SELECT COALESCE(SUM(ml.quantity), 0) AS boxes
+         FROM material_stock_ledger ml
+         JOIN product_stock_ledger pl ON pl.id = ml.product_ledger_id
+         JOIN materials m ON m.id = ml.material_id
+        WHERE pl.order_id IN (${placeholders})
+          AND pl.txn_type = '出荷'
+          AND pl.is_cancelled = 0
+          AND ml.is_cancelled = 0
+          AND m.category = '外箱'`
+    )
+    .get(params);
+
+  return boxes > 0 ? boxes : null;
 }
 
 /**
@@ -144,7 +191,11 @@ function exportYuPack(filter = {}) {
     const head = lines[0];
     const parsed = parseShippingAddress(head.delivery_address || head.customer_address || '');
     if (parsed.unresolved) {
-      unresolved.push({ orderNo, raw: head.delivery_address || head.customer_address || '' });
+      unresolved.push({
+        orderNo,
+        reason: '住所を分解できませんでした',
+        raw: head.delivery_address || head.customer_address || '',
+      });
     }
 
     // 宛名が取れない場合は得意先名を法人名として使う
@@ -156,9 +207,14 @@ function exportYuPack(filter = {}) {
       ? head.requested_delivery_on.replace(/-/g, '')
       : '';
 
-    // 箱サイズ（送料計算と同じ対応表を使う）
-    const rule = findCartonSize(db, head.product_id, head.quantity);
-    const size = rule ? String(rule.carton_size).padStart(3, '0') : '';
+    // 箱サイズ（送料計算と同じ対応表を使う）。
+    // **決まらないときは黙って空欄にせず、要確認として知らせる**
+    const carton = resolveCartonSize(db, lines);
+    const size = carton.size ?? '';
+    if (!carton.size) unresolved.push({ orderNo, reason: carton.reason });
+
+    // 個数は、発送時に選んだ段ボールが分かっていればその箱数を使う
+    const boxes = countShippedCartons(db, lines);
 
     const row = new Array(72).fill('');
     row[0] = YUPACK_DEFAULTS.product;        // 1 商品
@@ -183,7 +239,7 @@ function exportYuPack(filter = {}) {
     row[31] = SENDER_INFO.corporateName;     // 32 ご依頼主の法人名
     row[32] = SENDER_INFO.department;        // 33 ご依頼主の部署名
     row[34] = YUPACK_DEFAULTS.goodsName;     // 35 品名
-    row[36] = '1';                           // 37 個数
+    row[36] = String(boxes ?? 1);            // 37 個数（実際に使った段ボールの箱数）
     row[38] = '0';                           // 39 発送予定時間帯
     row[39] = '0';                           // 40 セキュリティ
     row[42] = '0';                           // 43 保冷

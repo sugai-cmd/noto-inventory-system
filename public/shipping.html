@@ -70,21 +70,31 @@
   <section class="panel" data-panel="cartons" hidden>
     <h2>段ボール対応表（商品 × 本数）</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      受注画面で対応表にない組み合わせが出たときは、その場で段ボールを選んで「対応表に追加」できます。
-      ここでは既存の対応を確認・修正できます。
+      サイズは<strong>送料</strong>を決めるのに使い、<strong>段ボール資材</strong>は
+      発送したときに<strong>在庫から引く箱</strong>を決めるのに使います。
+      資材を設定しておくと、発送画面に「12本用を2箱」のように推奨が出ます
+      （設定していなくても、発送画面で手で選べば在庫は引けます）。
+    </p>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      選べるのは<strong>資材の分類が「外箱」のものだけ</strong>です。
+      化粧箱・桐箱・プラケースは箱詰めのときに引いているので、ここで選ぶと二重に引いてしまいます。
     </p>
     <form id="cartonForm">
       <div class="grid">
         <div><label for="cProduct">商品</label><select id="cProduct" required></select></div>
         <div><label for="cQty">本数</label><input type="number" id="cQty" min="1" step="1" required></div>
-        <div><label for="cSize">段ボール</label><input type="text" id="cSize" list="cartonList2" required></div>
+        <div><label for="cSize">サイズ（送料用）</label><input type="text" id="cSize" list="cartonList2" required></div>
+        <div><label for="cBoxName">呼び名</label><input type="text" id="cBoxName" placeholder="300ml12本用"></div>
+        <div><label for="cMaterial">段ボール資材（在庫用）</label><select id="cMaterial"></select></div>
       </div>
       <datalist id="cartonList2"></datalist>
       <div class="actions"><button type="submit">登録・更新</button></div>
     </form>
     <div class="table-scroll" style="margin-top:16px">
       <table>
-        <thead><tr><th>商品</th><th class="num">本数</th><th>段ボール</th><th></th></tr></thead>
+        <thead><tr>
+          <th>商品</th><th class="num">本数</th><th>サイズ</th><th>呼び名</th><th>段ボール資材</th><th></th>
+        </tr></thead>
         <tbody id="cartonRows"></tbody>
       </table>
     </div>
@@ -98,6 +108,7 @@ renderNav('shipping.html');
 let zones = [];
 let rates = [];
 let cartons = [];
+let cartonMaterials = [];
 let products = [];
 
 el('tabs').addEventListener('click', (e) => {
@@ -163,9 +174,21 @@ function renderCartons() {
         <td>${escapeHtml(c.product_name)}</td>
         <td class="num">${num(c.quantity)}</td>
         <td>${escapeHtml(c.carton_size)}</td>
+        <td>${escapeHtml(c.box_name ?? '')}</td>
+        <td>${c.material_name
+              ? escapeHtml(c.material_name)
+              : '<span class="badge warn">未設定</span>'}</td>
         <td><button type="button" class="danger small" data-carton-del="${c.id}">削除</button></td>
       </tr>`).join('')
-    : '<tr><td colspan="4" class="empty">対応表が登録されていません</td></tr>';
+    : '<tr><td colspan="6" class="empty">対応表が登録されていません</td></tr>';
+}
+
+/** 段ボール資材の選択肢。分類が「外箱」のものだけがサーバーから返る */
+function renderCartonMaterials() {
+  el('cMaterial').innerHTML = '<option value="">設定しない</option>' +
+    cartonMaterials.map((m) =>
+      `<option value="${m.id}">${escapeHtml(m.name)}（残 ${num(m.current_stock)}${escapeHtml(m.unit ?? '')}）</option>`
+    ).join('');
 }
 
 function refreshDatalists() {
@@ -204,10 +227,13 @@ el('cartonForm').addEventListener('submit', async (e) => {
       productId: Number(el('cProduct').value),
       quantity: Number(el('cQty').value),
       cartonSize: el('cSize').value.trim(),
+      boxName: el('cBoxName').value.trim() || undefined,
+      materialId: el('cMaterial').value ? Number(el('cMaterial').value) : null,
     });
     cartons = await apiGet('/api/shipping/carton-rules');
     renderCartons();
     refreshDatalists();
+    el('cBoxName').value = '';
     showMessage('messages', 'ok', '対応表に登録しました');
   } catch (err) {
     showMessage('messages', 'error', err.message, err.details);
@@ -238,17 +264,19 @@ document.addEventListener('click', async (e) => {
 
 (async () => {
   try {
-    [zones, rates, cartons, products] = await Promise.all([
+    [zones, rates, cartons, products, cartonMaterials] = await Promise.all([
       apiGet('/api/shipping/zones'),
       apiGet('/api/shipping/rates'),
       apiGet('/api/shipping/carton-rules'),
       apiGet('/api/products'),
+      apiGet('/api/shipping/carton-materials'),
     ]);
     el('cProduct').innerHTML = '<option value="">選択してください</option>' +
       products.map((p) => `<option value="${p.id}">${escapeHtml(p.name)}</option>`).join('');
     renderZones();
     renderRates();
     renderCartons();
+    renderCartonMaterials();
     refreshDatalists();
   } catch (err) {
     showMessage('messages', 'error', err.message);

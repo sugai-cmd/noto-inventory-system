@@ -7,6 +7,8 @@ const { calcPaymentDueOn, today } = require('../utils/dateUtil');
 const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
 const customerService = require('./customerService');
+const shippingFeeService = require('./shippingFeeService');
+const { consumeMaterials } = require('./materialConsumption');
 
 /**
  * 受注登録画面の初期値を返す（DB_SCHEMA_DESIGN.md 2.3）。
@@ -165,12 +167,39 @@ function normalizeItems(input) {
 }
 
 /**
+ * 出荷で使った段ボールを資材在庫変動履歴へ落とす。
+ *
+ * 分類が「外箱」の資材しか受け付けない。化粧箱・桐箱・プラケースは分類が「箱」で、
+ * **箱詰めのレシピで既に減らしている**ので、ここで通すと二重に減る。
+ * これが唯一のガードなので、資材の分類を変えると効かなくなる。
+ */
+function consumeCartons(db, cartons, { txnDate, productLedgerId, createdBy }) {
+  if (!cartons?.length) return [];
+
+  const items = cartons.map(({ materialId, quantity }) => {
+    const material = db
+      .prepare('SELECT id, name, category FROM materials WHERE id = ?')
+      .get(materialId);
+    if (!material) throw new NotFoundError(`資材が見つかりません (id=${materialId})`);
+    shippingFeeService.assertCartonMaterial(material);
+    return { materialId: material.id, materialName: material.name, quantity };
+  });
+
+  return consumeMaterials(db, items, {
+    txnDate,
+    productLedgerId,
+    note: '出荷による自動消費',
+    createdBy,
+  });
+}
+
+/**
  * 「発送済にする」（旧 markOrderAsShipped）。
  * 受注のステータス・納品日・入金予定日を更新し、同一トランザクション内で
  * 商品在庫変動履歴に出荷行を追加する（DATA_STRUCTURE.md 5章）。
  * order_id を必ずセットするので、6-3で課題だった受注との突合が新規データでは常に成立する。
  */
-function markOrderAsShipped(orderId, { deliveredOn, note } = {}, actor = null) {
+function markOrderAsShipped(orderId, { deliveredOn, note, cartons } = {}, actor = null) {
   const db = getConnection();
 
   const run = db.transaction(() => {
@@ -221,17 +250,39 @@ function markOrderAsShipped(orderId, { deliveredOn, note } = {}, actor = null) {
         createdBy: actor?.id ?? null,
       });
 
+    // 出荷に使った段ボールを資材から減らす。
+    //
+    // **product_ledger_id に出荷行を入れるのが肝。**
+    // ledgerCancelService は product_ledger_id で資材行を連動取消しており、
+    // txn_type を見ていないので、ここで紐付けておけば**取消は無改修で戻る**。
+    //
+    // 何を何箱使うかは画面で選んでもらう（推奨は shippingFeeService.suggestCartons）。
+    // 対応表に無い・複数明細・物でない商品（委託生産料など）は空で来るので、
+    // **減らさずに理由だけ残す**。資材不足でも止めない（既存の方針。在庫監査が後で拾う）。
+    const consumed = consumeCartons(db, cartons, {
+      txnDate: shippedOn,
+      productLedgerId: ledgerResult.lastInsertRowid,
+      createdBy: actor?.id ?? null,
+    });
+
+    const cartonSummary = consumed.length
+      ? `／段ボール: ${consumed.map((c) => `${c.materialName}${c.quantity}枚`).join('、')}`
+      : '／段ボールは減らしていません（発送画面で選ばれませんでした）';
+
     operationLogService.record({
       user: actor,
       action: 'order.ship',
       targetType: 'orders',
       targetId: orderId,
-      summary: `受注 ${order.order_no} を発送済にした（${order.product_name} ${order.quantity}本を出荷）`,
+      summary:
+        `受注 ${order.order_no} を発送済にした（${order.product_name} ${order.quantity}本を出荷）` +
+        cartonSummary,
     });
 
     return {
       order: orderModel.findById(orderId),
       stockLedgerId: ledgerResult.lastInsertRowid,
+      cartons: consumed,
     };
   });
 

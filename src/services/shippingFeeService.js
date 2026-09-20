@@ -11,6 +11,7 @@
 
 const { getConnection } = require('../db/connection');
 const { BusinessRuleError, NotFoundError } = require('../utils/errors');
+const operationLogService = require('./operationLogService');
 
 // 「石川県金沢市…」「北海道札幌市…」「〒920-3114 石川県…」いずれからも拾えるようにする。
 // 都・道・府・県で終わる最長一致を先頭付近から探す。
@@ -98,31 +99,186 @@ function quote(input) {
   };
 }
 
-/** 「対応表に追加」。次回から同じ商品×本数で自動判定できるようにする */
-function upsertCartonRule({ productId, quantity, cartonSize, note }, actor = null) {
+/** 出荷に使う段ボールの資材分類。個装（化粧箱・桐箱・プラケース）の「箱」とは別 */
+const CARTON_CATEGORY = '外箱';
+
+/**
+ * 出荷に使える段ボールの一覧（現在庫つき）。発送画面の選択肢に出す。
+ *
+ * **分類が「外箱」のものだけを返す。** 化粧箱・桐箱・プラケースは分類が「箱」で、
+ * 箱詰めのレシピで既に減らしている。ここに混ぜると二重に減る。
+ */
+function listCartonMaterials() {
+  const db = getConnection();
+  return db
+    .prepare(
+      `SELECT m.id, m.code, m.name, m.unit, s.current_stock
+         FROM materials m
+         JOIN v_material_stock s ON s.material_id = m.id
+        WHERE m.category = @category
+        ORDER BY m.name`
+    )
+    .all({ category: CARTON_CATEGORY });
+}
+
+/**
+ * 商品×本数から対応表の行を1つ選ぶ。**発送画面とゆうパックCSVで同じものを使う。**
+ *
+ * 完全一致だけだと、12本用の行があっても24本の注文に当たらない。
+ * **割り切れる行のうち一番大きい本数**（＝箱数が最少）を選び、箱数は quantity / rule.quantity。
+ * 24本なら「12本用を2箱」。端数の詰め合わせまではやらない
+ * （組み合わせの選び方に決まりが無く、推測で決めると実際の梱包とずれる）。
+ *
+ * ここを2か所に書くと、画面は「12本用×2箱」と言うのにCSVは「対応表にありません」と出る、
+ * という食い違いが起きる（実際に一度そうなった）。
+ */
+function findCartonRule(db, productId, quantity) {
+  const rules = db
+    .prepare('SELECT * FROM carton_rules WHERE product_id = ? ORDER BY quantity DESC')
+    .all(productId);
+  // ORDER BY quantity DESC なので、最初に割り切れたものが一番大きい本数
+  return rules.find((r) => r.quantity > 0 && quantity % r.quantity === 0) ?? null;
+}
+
+/**
+ * 出荷に使う段ボールの**推奨**を出す。あくまで推奨で、実際に使うものは発送画面で選ぶ。
+ *
+ * 対応表は「商品×本数」の完全一致だが、それだけだと 12本用の行があっても
+ * 24本の注文には当たらない（実データ111件のうち完全一致は69件）。
+ * **割り切れる行のうち一番大きい本数**を使って箱数を出すと86件まで届く。
+ * 24本なら「12本用×2箱」。端数の詰め合わせまではやらない（組み合わせの選び方に
+ * 決まりが無く、推測で決めると実際の梱包とずれるため）。
+ *
+ * @returns {{suggestion: object|null, reason: string|null}}
+ */
+function suggestCartons({ productId, quantity, orderId = null }) {
+  const db = getConnection();
+
+  // 複数明細の受注は対象外。対応表は商品×本数の1対1で、
+  // 明細ごとに箱を数えると1つの荷物に何箱も計上してしまう
+  if (orderId) {
+    const siblings = db
+      .prepare(
+        `SELECT COUNT(*) AS n FROM orders
+          WHERE order_no = (SELECT order_no FROM orders WHERE id = @orderId)`
+      )
+      .get({ orderId }).n;
+    if (siblings > 1) {
+      return { suggestion: null, reason: '複数明細の受注は段ボールを選んでください（対応表は商品×本数の1対1のため）' };
+    }
+  }
+
+  const rule = findCartonRule(db, productId, quantity);
+  if (!rule) {
+    return { suggestion: null, reason: 'この商品と本数の組み合わせが段ボール対応表にありません' };
+  }
+  if (rule.material_id == null) {
+    return {
+      suggestion: null,
+      reason: `対応表の「${rule.box_name ?? rule.carton_size}」に段ボールの資材が設定されていません（送料設定タブで設定してください）`,
+    };
+  }
+
+  const material = db.prepare('SELECT id, name, category FROM materials WHERE id = ?').get(rule.material_id);
+  if (!material) {
+    return { suggestion: null, reason: '対応表に設定された資材が見つかりません' };
+  }
+
+  return {
+    suggestion: {
+      materialId: material.id,
+      materialName: material.name,
+      boxes: quantity / rule.quantity,
+      ruleQuantity: rule.quantity,
+      boxName: rule.box_name ?? null,
+      cartonSize: rule.carton_size,
+    },
+    reason: null,
+  };
+}
+
+/**
+ * 「対応表に追加」。次回から同じ商品×本数で自動判定できるようにする。
+ *
+ * **呼び名（box_name）と段ボールの資材（material_id）も書く。**
+ * 以前は carton_size しか書いていなかったので、画面から足した行は呼び名が常に空になり、
+ * 資材とも繋がらないままだった（＝在庫が減らない）。
+ *
+ * 資材は**分類が「外箱」のものだけ**受ける。化粧箱・桐箱・プラケースは分類が「箱」で、
+ * 箱詰めのレシピで既に減らしている。ここで通すと出荷時に二重に減る。
+ */
+function upsertCartonRule({ productId, quantity, cartonSize, boxName, materialId, note }, actor = null) {
   const db = getConnection();
   const product = db.prepare('SELECT * FROM products WHERE id = ?').get(productId);
   if (!product) throw new NotFoundError(`商品が見つかりません (id=${productId})`);
   if (!cartonSize) throw new BusinessRuleError('段ボールを指定してください');
 
-  db.prepare(
-    `INSERT INTO carton_rules (product_id, quantity, carton_size, note)
-     VALUES (@productId, @quantity, @cartonSize, @note)
-     ON CONFLICT(product_id, quantity)
-     DO UPDATE SET carton_size = excluded.carton_size, note = excluded.note`
-  ).run({ productId, quantity, cartonSize, note: note ?? null });
+  let material = null;
+  if (materialId != null) {
+    material = db.prepare('SELECT id, name, category FROM materials WHERE id = ?').get(materialId);
+    if (!material) throw new NotFoundError(`資材が見つかりません (id=${materialId})`);
+    assertCartonMaterial(material);
+  }
 
-  return db
+  const before = db
     .prepare('SELECT * FROM carton_rules WHERE product_id = ? AND quantity = ?')
     .get(productId, quantity);
+
+  db.prepare(
+    `INSERT INTO carton_rules (product_id, quantity, carton_size, box_name, material_id, note)
+     VALUES (@productId, @quantity, @cartonSize, @boxName, @materialId, @note)
+     ON CONFLICT(product_id, quantity)
+     DO UPDATE SET carton_size = excluded.carton_size,
+                   box_name    = COALESCE(excluded.box_name, carton_rules.box_name),
+                   material_id = COALESCE(excluded.material_id, carton_rules.material_id),
+                   note        = excluded.note`
+  ).run({
+    productId,
+    quantity,
+    cartonSize,
+    boxName: boxName ?? null,
+    materialId: materialId ?? null,
+    note: note ?? null,
+  });
+
+  const row = db
+    .prepare('SELECT * FROM carton_rules WHERE product_id = ? AND quantity = ?')
+    .get(productId, quantity);
+
+  operationLogService.record({
+    user: actor,
+    action: 'carton.rule.upsert',
+    targetType: 'carton_rules',
+    targetId: row.id,
+    summary:
+      `段ボール対応表: ${product.name} ${quantity}本 → ${row.carton_size}サイズ` +
+      (row.box_name ? `（${row.box_name}）` : '') +
+      (material ? `／資材: ${material.name}` : '') +
+      (before ? '（上書き）' : '（新規）'),
+  });
+
+  return row;
+}
+
+/** 出荷で減らしてよい資材かを確かめる。ここが唯一のガードになる */
+function assertCartonMaterial(material) {
+  if (material.category !== CARTON_CATEGORY) {
+    throw new BusinessRuleError(
+      `「${material.name}」は出荷用の段ボールではありません（資材の分類が「${material.category ?? '未設定'}」）。` +
+        `分類が「${CARTON_CATEGORY}」の資材から選んでください。` +
+        '化粧箱・桐箱・プラケースは箱詰めのときに減らしているので、ここで減らすと二重になります。'
+    );
+  }
 }
 
 function listCartonRules() {
   const db = getConnection();
   return db
     .prepare(
-      `SELECT r.*, p.name AS product_name
-       FROM carton_rules r JOIN products p ON p.id = r.product_id
+      `SELECT r.*, p.name AS product_name, m.name AS material_name
+       FROM carton_rules r
+       JOIN products p ON p.id = r.product_id
+       LEFT JOIN materials m ON m.id = r.material_id
        ORDER BY p.name, r.quantity`
     )
     .all();
@@ -189,6 +345,11 @@ module.exports = {
   quote,
   upsertCartonRule,
   listCartonRules,
+  listCartonMaterials,
+  assertCartonMaterial,
+  suggestCartons,
+  findCartonRule,
+  CARTON_CATEGORY,
   deleteCartonRule,
   listZones,
   setZones,
