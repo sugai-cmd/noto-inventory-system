@@ -347,10 +347,15 @@ function loadOperableRow(db, ledgerId, { forCancel }) {
   if (!row) throw new NotFoundError(`資材の入出庫履歴が見つかりません (id=${ledgerId})`);
 
   if (row.product_ledger_id != null) {
+    // 出荷（段ボール）は受注タブ、瓶詰め・箱詰めは瓶詰めタブが親になる。
+    // 親を指さないと、利用者が無いタブを探しに行くことになる
+    const where = row.product_txn_type === '出荷'
+      ? '受注タブでその受注の発送を取り消してください'
+      : '瓶詰め・箱詰めタブでその記録を直してください';
     throw new BusinessRuleError(
       `${row.history_code} は ${row.product_history_code ?? '瓶詰め・箱詰め'}` +
         `（${row.product_txn_type ?? '作業'}）で消費した記録です。` +
-        '瓶詰め・箱詰めタブでその記録を直してください' +
+        where +
         '（こちらで直しても、あちらを直したときに上書きされます）'
     );
   }

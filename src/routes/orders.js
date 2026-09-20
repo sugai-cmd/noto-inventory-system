@@ -2,6 +2,7 @@ const express = require('express');
 const { z } = require('zod');
 const orderModel = require('../models/orderModel');
 const orderService = require('../services/orderService');
+const shippingFeeService = require('../services/shippingFeeService');
 const { validateRequest } = require('../middlewares/validateRequest');
 
 const router = express.Router();
@@ -44,9 +45,17 @@ const createSchema = z
     message: '商品と本数、または明細（items）を指定してください',
   });
 
+// 出荷に使った段ボール。画面で選ぶので任意。
+// 空で来たら減らさない（対応表に無い／複数明細／委託生産料のような物でない商品）。
+const cartonSchema = z.object({
+  materialId: z.number().int().positive(),
+  quantity: z.number().int().positive('箱数は1以上で入力してください'),
+});
+
 const shipSchema = z.object({
   deliveredOn: dateOnly.optional(),
   note: z.string().optional(),
+  cartons: z.array(cartonSchema).optional(),
 });
 
 /**
@@ -86,6 +95,25 @@ router.get('/', (req, res) => {
 // 請求対象の候補（納品済みかつ未請求）
 router.get('/pending-invoices', (req, res) => {
   res.json(orderService.listPendingInvoices({ to: req.query.to }));
+});
+
+/**
+ * 発送画面に出す段ボールの推奨と選択肢。
+ * 推奨はあくまで推奨で、実際に使うものは画面で選ぶ。
+ */
+router.get('/:id/carton-suggestion', (req, res, next) => {
+  try {
+    const order = orderModel.findById(Number(req.params.id));
+    if (!order) return res.status(404).json({ error: 'not_found' });
+    const { suggestion, reason } = shippingFeeService.suggestCartons({
+      productId: order.product_id,
+      quantity: order.quantity,
+      orderId: order.id,
+    });
+    res.json({ suggestion, reason, options: shippingFeeService.listCartonMaterials() });
+  } catch (err) {
+    next(err);
+  }
 });
 
 router.get('/:id', (req, res) => {

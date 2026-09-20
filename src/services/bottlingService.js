@@ -10,61 +10,13 @@ const { getConnection } = require('../db/connection');
 const wipLotService = require('./wipLotService');
 const tankService = require('./tankService');
 const operationLogService = require('./operationLogService');
-const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
+const { nextProductHistoryCode } = require('../utils/codeGenerator');
+// 資材を減らす型は出荷（段ボール）でも使うので、共通モジュールに出してある
+const { getRecipe, consumeRecipeMaterials } = require('./materialConsumption');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const { round6, assertNotWorseNegative } = require('../utils/stockGuard');
 
-/**
- * 指定商品・工程のレシピを取得する（旧 getRecipeForProduct_）
- */
-function getRecipe(db, productId, process) {
-  return db
-    .prepare(
-      `SELECT r.*, m.name AS material_name
-       FROM product_recipes r
-       JOIN materials m ON m.id = r.material_id
-       WHERE r.product_id = ? AND r.process = ?`
-    )
-    .all(productId, process);
-}
-
-/**
- * レシピに基づいて資材消費行を資材在庫変動履歴へ追加する。
- * どの瓶詰め/箱詰め作業による消費かを product_ledger_id で紐付ける（4-17 H列相当）。
- */
-function consumeRecipeMaterials(db, { productId, quantity, process, txnDate, productLedgerId }) {
-  const recipe = getRecipe(db, productId, process);
-  const consumed = [];
-
-  const stmt = db.prepare(
-    `INSERT INTO material_stock_ledger
-       (history_code, txn_date, material_id, txn_type, quantity, product_ledger_id, data_kind, note)
-     VALUES
-       (@historyCode, @txnDate, @materialId, '消費', @quantity, @productLedgerId,
-        '運用中（リアルタイム）', @note)`
-  );
-
-  for (const item of recipe) {
-    const consumeQty = item.qty_required * quantity;
-    const result = stmt.run({
-      historyCode: nextMaterialHistoryCode(db, txnDate),
-      txnDate,
-      materialId: item.material_id,
-      quantity: consumeQty,
-      productLedgerId,
-      note: `${process}による自動消費`,
-    });
-    consumed.push({
-      materialId: item.material_id,
-      materialName: item.material_name,
-      quantity: consumeQty,
-      ledgerId: result.lastInsertRowid,
-    });
-  }
-
-  return consumed;
-}
 
 /**
  * 瓶詰め登録。タンクから液を抜いて仕掛品を作る。

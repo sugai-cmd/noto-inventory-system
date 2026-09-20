@@ -236,6 +236,42 @@
     </div>
   </section>
 
+  <section class="panel" id="shipPanel" style="display:none">
+    <h2>発送済にする <span id="shipCode"></span></h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      商品在庫から出荷分が引かれます。<strong>使った段ボールを選ぶと、資材在庫からも引かれます。</strong>
+      段ボールは対応表から推奨を出しますが、違うものを使ったときはここで変えてください。
+    </p>
+
+    <div class="grid">
+      <div>
+        <label for="shDelivered">納品日</label>
+        <input type="date" id="shDelivered" required>
+      </div>
+      <div>
+        <label for="shNote">備考</label>
+        <input type="text" id="shNote">
+      </div>
+    </div>
+
+    <h3>使った段ボール</h3>
+    <p class="hint" id="shHint"></p>
+    <div id="shCartonRows"></div>
+    <div class="actions">
+      <button type="button" class="secondary small" id="shAddCarton">段ボールを追加</button>
+    </div>
+
+    <label id="shRememberWrap" style="display:none">
+      <input type="checkbox" id="shRemember">
+      この段ボールを対応表に覚えさせる（次回から推奨に出ます。同じ組み合わせが登録済みなら上書きします）
+    </label>
+
+    <div class="actions">
+      <button type="button" id="shSubmit">発送済にする</button>
+      <button type="button" class="secondary" id="shCancel">やめる</button>
+    </div>
+  </section>
+
   <section class="panel" id="editPanel" style="display:none">
     <h2>受注の編集 <span id="editCode"></span></h2>
     <p class="muted" style="margin-top:0;font-size:13px">
@@ -478,19 +514,151 @@ el('orderRows').addEventListener('click', async (e) => {
 
   const btn = e.target.closest('[data-ship]');
   if (!btn) return;
-  if (!confirm('この受注を発送済にします。商品在庫から出荷分が引かれます。よろしいですか？')) return;
+  try { await openShipPanel(Number(btn.dataset.ship)); }
+  catch (err) { showMessage('messages', 'error', err.message); }
+});
 
-  btn.disabled = true;
+// --- 発送 -------------------------------------------------------------------
+// 段ボールは**推奨を初期値に入れるだけ**で、実際に使ったものを選んでもらう。
+// 対応表は商品×本数の完全一致なので、割り切れる行から箱数を出して推奨にしている。
+// 決まらないとき（対応表に無い／複数明細／委託生産料のような物でない商品）は
+// 理由を出し、空のまま確定もできる（その場合は資材を減らさない）。
+
+let shipping = null;       // { orderId, order }
+let cartonOptions = [];    // 分類が「外箱」の資材
+
+async function openShipPanel(orderId) {
+  clearMessage('messages');
+  const [order, sug] = await Promise.all([
+    apiGet(`/api/orders/${orderId}`),
+    apiGet(`/api/orders/${orderId}/carton-suggestion`),
+  ]);
+  shipping = { orderId, order };
+  cartonOptions = sug.options ?? [];
+
+  el('shipCode').textContent =
+    `${order.order_no} … ${order.product_name ?? ''} ${order.quantity}本`;
+  el('shDelivered').value = todayStr();
+  el('shNote').value = '';
+  el('shRemember').checked = false;
+
+  el('shCartonRows').innerHTML = '';
+  if (sug.suggestion) {
+    const s = sug.suggestion;
+    el('shHint').textContent =
+      `推奨: ${s.materialName} を ${s.boxes}箱` +
+      `（対応表の「${s.boxName ?? s.cartonSize}」${s.ruleQuantity}本用を ${s.boxes}つ）。違うものを使ったときは変えてください。`;
+    addCartonRow(s.materialId, s.boxes);
+  } else {
+    el('shHint').textContent =
+      `${sug.reason ?? '段ボールが決まりませんでした'}。使ったものを選んでください（使っていなければ空のままで構いません）。`;
+    addCartonRow();
+  }
+
+  // 「対応表に覚えさせる」は**推奨が出ているときも出す。**
+  // 推奨と違う段ボールを実際に使ったなら、それを覚えさせられないと対応表が古いままになる。
+  // 複数明細だけは覚えさせられない（対応表が商品×本数の1対1のため）。
+  el('shRememberWrap').style.display = /複数明細/.test(sug.reason ?? '') ? 'none' : '';
+
+  el('shipPanel').style.display = '';
+  el('shipPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+function addCartonRow(materialId = '', boxes = 1) {
+  const row = document.createElement('div');
+  row.className = 'grid';
+  row.dataset.cartonRow = '1';
+  row.innerHTML =
+    `<div>
+       <label>段ボール</label>
+       <select data-carton-material>
+         <option value="">使っていない</option>
+         ${cartonOptions.map((o) =>
+            `<option value="${o.id}"${o.id === materialId ? ' selected' : ''}>` +
+            `${escapeHtml(o.name)}（残 ${num(o.current_stock)}${escapeHtml(o.unit ?? '')}）</option>`).join('')}
+       </select>
+     </div>
+     <div>
+       <label>箱数</label>
+       <input type="number" min="1" step="1" value="${boxes}" data-carton-qty>
+     </div>
+     <div style="align-self:end">
+       <button type="button" class="secondary small" data-carton-remove>この行を消す</button>
+     </div>`;
+  el('shCartonRows').append(row);
+}
+
+el('shAddCarton').addEventListener('click', () => addCartonRow());
+
+el('shCartonRows').addEventListener('click', (e) => {
+  if (e.target.closest('[data-carton-remove]')) e.target.closest('[data-carton-row]').remove();
+});
+
+/** 画面の行を API に渡す形にする。資材を選んでいない行は落とす */
+function collectCartons() {
+  return [...el('shCartonRows').querySelectorAll('[data-carton-row]')]
+    .map((row) => ({
+      materialId: Number(row.querySelector('[data-carton-material]').value),
+      quantity: Number(row.querySelector('[data-carton-qty]').value),
+    }))
+    .filter((c) => c.materialId > 0 && c.quantity > 0);
+}
+
+el('shCancel').addEventListener('click', () => {
+  el('shipPanel').style.display = 'none';
+  shipping = null;
+});
+
+el('shSubmit').addEventListener('click', async () => {
+  if (!shipping) return;
+  clearMessage('messages');
+  const cartons = collectCartons();
+
+  el('shSubmit').disabled = true;
   try {
-    const result = await apiPost(`/api/orders/${btn.dataset.ship}/ship`, {
-      deliveredOn: todayStr(),
+    const result = await apiPost(`/api/orders/${shipping.orderId}/ship`, {
+      deliveredOn: el('shDelivered').value || todayStr(),
+      note: el('shNote').value.trim() || undefined,
+      cartons,
     });
+
+    // 「対応表に覚えさせる」。段ボールが1種類のときだけ（対応表は1対1のため）
+    let remembered = '';
+    if (el('shRemember').checked && cartons.length === 1) {
+      const only = cartons[0];
+      const perBox = shipping.order.quantity / only.quantity;
+      if (Number.isInteger(perBox)) {
+        try {
+          await apiPost('/api/shipping/carton-rules', {
+            productId: shipping.order.product_id,
+            quantity: perBox,
+            cartonSize: String(perBox),
+            materialId: only.materialId,
+          });
+          remembered = `／対応表に「${perBox}本用」として覚えました`;
+        } catch (err) {
+          remembered = `／対応表には覚えられませんでした（${err.message}）`;
+        }
+      } else {
+        remembered = '／箱数で割り切れないので対応表には覚えていません';
+      }
+    }
+
+    const boxes = result.cartons?.length
+      ? `／段ボール ${result.cartons.map((c) => `${c.materialName}${c.quantity}枚`).join('、')} を引きました`
+      : '／段ボールは引いていません';
+
     showMessage('messages', 'ok',
-      `${result.order.order_no} を発送済にしました（出荷履歴を作成、入金予定日: ${result.order.payment_due_on ?? '-'}）`);
+      `${result.order.order_no} を発送済にしました（入金予定日: ${result.order.payment_due_on ?? '-'}）` +
+      boxes + remembered);
+
+    el('shipPanel').style.display = 'none';
+    shipping = null;
     await loadOrders();
   } catch (err) {
-    showMessage('messages', 'error', err.message);
-    btn.disabled = false;
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('shSubmit').disabled = false;
   }
 });
 
@@ -808,12 +976,50 @@ function currentFilterParams() {
   return params;
 }
 
-el('exportYupack').addEventListener('click', () => {
-  location.href = `/api/exports/yupack?${currentFilterParams()}`;
-});
-el('exportMf').addEventListener('click', () => {
-  location.href = `/api/exports/moneyforward?${currentFilterParams()}`;
-});
+/**
+ * CSVを落として、要確認があれば知らせる。
+ *
+ * **location.href では警告ヘッダを読めない。** サーバーは住所を分解できなかった受注や
+ * 段ボールが決まらなかった受注を X-Unresolved に載せているが、画面が遷移してしまうと
+ * 受け取る場所が無く、**黙って不完全なCSVが落ちていた**。
+ */
+async function downloadCsv(path, label) {
+  clearMessage('messages');
+  try {
+    const res = await fetch(`${path}?${currentFilterParams()}`, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`${label}の出力に失敗しました（HTTP ${res.status}）`);
+
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') ?? '';
+    const named = /filename\*=UTF-8''([^;]+)/.exec(disposition);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = named ? decodeURIComponent(named[1]) : `${label}.csv`;
+    a.click();
+    URL.revokeObjectURL(url);
+
+    const rows = res.headers.get('x-row-count');
+    const count = Number(res.headers.get('x-unresolved-count') || 0);
+    if (!count) return showMessage('messages', 'ok', `${label}を出力しました（${rows}件）`);
+
+    // ヘッダには先頭だけ載る（全部載せるとサイズ上限を超えて出力が失敗する）
+    const sample = JSON.parse(decodeURIComponent(res.headers.get('x-unresolved')));
+    // showMessage の details は {path, message} の形で受ける
+    const lines = sample.map((u) => ({ path: u.orderNo, message: u.reason ?? '要確認' }));
+    showMessage('messages', 'warn',
+      `${label}を出力しました（${rows}件）。ただし ${count}件は中身を確かめてください。` +
+      (count > sample.length ? `（最初の${sample.length}件を表示）` : ''),
+      lines);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+}
+
+el('exportYupack').addEventListener('click', () =>
+  downloadCsv('/api/exports/yupack', 'ゆうパックCSV'));
+el('exportMf').addEventListener('click', () =>
+  downloadCsv('/api/exports/moneyforward', 'マネーフォワードCSV'));
 
 el('resetBtn').addEventListener('click', resetForm);
 el('quantity').addEventListener('input', refreshDefaults);

@@ -201,8 +201,11 @@ test('住所を分解できない受注は、ヘッダで要確認として知�
     headers: { Cookie: harness.state.cookie },
   });
   const unresolved = JSON.parse(decodeURIComponent(res.headers.get('x-unresolved')));
-  assert.equal(unresolved.length, 1);
-  assert.equal(unresolved[0].orderNo, order.body.order_no);
+  // 段ボールが決まらない理由も同じ仕組みで載るので、住所のぶんを名指しで拾う
+  const address = unresolved.find((u) => /住所/.test(u.reason ?? ''));
+  assert.ok(address, '住所の要確認が載っていない');
+  assert.equal(address.orderNo, order.body.order_no);
+  assert.equal(res.headers.get('x-unresolved-count'), String(unresolved.length));
 });
 
 test('マネーフォワードCSVは csv_type 40202・横型明細7品目で出力される', async () => {

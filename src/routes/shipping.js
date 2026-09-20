@@ -20,6 +20,10 @@ const cartonRuleSchema = z.object({
   productId: z.number().int().positive(),
   quantity: z.number().int().positive(),
   cartonSize: z.string().min(1, '段ボールを指定してください'),
+  // 呼び名（300ml12本用 等）と、実際に減らす段ボールの資材。
+  // 資材が入っていないと、出荷のときに推奨が出ない（手で選べば減算はできる）
+  boxName: z.string().optional(),
+  materialId: z.number().int().positive().nullable().optional(),
   note: z.string().optional(),
 });
 
@@ -52,6 +56,10 @@ router.put('/zones', validateRequest(zonesSchema), (req, res, next) => {
 });
 
 router.get('/carton-rules', (req, res) => res.json(shippingFeeService.listCartonRules()));
+
+// 対応表と発送画面で選べる段ボール（資材の分類が「外箱」のものだけ）
+router.get('/carton-materials', (req, res) =>
+  res.json(shippingFeeService.listCartonMaterials()));
 
 router.post('/carton-rules', validateRequest(cartonRuleSchema), (req, res, next) => {
   try {
