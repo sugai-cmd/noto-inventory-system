@@ -163,7 +163,10 @@ const LOW_STOCK_THRESHOLD = 20;
     const shortages = materials.filter((m) => m.shortage);
 
     el('statPending').textContent = orders.length;
-    el('statDistilling').textContent = distillations.length;
+    // 蒸留記録の一覧は {rows,total} を返す。total を使うと、既定100件で
+    // 切れていても正しい件数が出る。古いサーバー（行の配列）でも数字が出るよう
+    // length に落とす
+    el('statDistilling').textContent = distillations.total ?? distillations.length;
     el('statShortage').textContent = shortages.length;
     el('statStock').textContent = num(
       products.reduce((sum, p) => sum + (p.product_stock ?? 0), 0)

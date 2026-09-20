@@ -100,17 +100,58 @@
         <label for="filterTank">タンクで絞り込む</label>
         <select id="filterTank"></select>
       </div>
+      <div>
+        <label for="lgType">受払区分</label>
+        <select id="lgType"></select>
+      </div>
+      <div>
+        <label for="lgFrom">日付（から）</label>
+        <input type="date" id="lgFrom">
+      </div>
+      <div>
+        <label for="lgTo">日付（まで）</label>
+        <input type="date" id="lgTo">
+      </div>
+      <div>
+        <label for="lgCancelled">取消済み</label>
+        <select id="lgCancelled">
+          <option value="">すべて</option>
+          <option value="0">取消していないもの</option>
+          <option value="1">取消済みのみ</option>
+        </select>
+      </div>
+      <div>
+        <label for="lgLimit">1ページの件数</label>
+        <select id="lgLimit">
+          <option value="10">10</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
     </div>
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            <th>日付</th><th>受払</th><th>移動元</th><th>移動先</th>
-            <th class="num">数量(L)</th><th class="num">度数</th><th>関連</th><th>備考</th>
+            <th><button type="button" class="link" data-sort="txn_date">日付</button></th>
+            <th><button type="button" class="link" data-sort="txn_type">受払</button></th>
+            <th><button type="button" class="link" data-sort="from_tank_name">移動元</button></th>
+            <th><button type="button" class="link" data-sort="to_tank_name">移動先</button></th>
+            <th class="num"><button type="button" class="link" data-sort="quantity_l">数量(L)</button></th>
+            <th class="num"><button type="button" class="link" data-sort="abv">度数</button></th>
+            <th>関連</th><th>備考</th>
           </tr>
         </thead>
         <tbody id="ledgerRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="lgPrev">前へ</button>
+      <button type="button" id="lgNext">次へ</button>
+      <span id="lgRange" class="hint"></span>
     </div>
   </section>
 </main>
@@ -166,10 +207,34 @@ el('tFrom').addEventListener('change', () => showTankHint('tFrom', 'tFromHint'))
 el('tTo').addEventListener('change', () => showTankHint('tTo', 'tToHint'));
 el('fFrom').addEventListener('change', () => showTankHint('fFrom', 'fFromHint'));
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const ledgerView = createListView('txn_date');
+const LEDGER_PAGER = { limit: 'lgLimit', prev: 'lgPrev', next: 'lgNext', range: 'lgRange' };
+
+/**
+ * 受払区分の選択肢は**実データにある値から作る**。
+ * 固定リストにすると、新しい区分を足したときに絞り込めない行が生まれる。
+ */
+async function loadLedgerOptions() {
+  const { txnTypes } = await apiGet('/api/tank-operations/ledger/options');
+  const keep = el('lgType').value;
+  el('lgType').innerHTML = '<option value="">すべて</option>' +
+    txnTypes.map((t) =>
+      `<option value="${escapeHtml(t)}"${t === keep ? ' selected' : ''}>${escapeHtml(t)}</option>`
+    ).join('');
+}
+
 async function loadLedger() {
-  const params = new URLSearchParams();
+  const params = listQuery(ledgerView, LEDGER_PAGER);
   if (el('filterTank').value) params.set('tankId', el('filterTank').value);
-  const rows = await apiGet(`/api/tank-operations/ledger?${params}`);
+  if (el('lgType').value) params.set('txnType', el('lgType').value);
+  if (el('lgFrom').value) params.set('from', el('lgFrom').value);
+  if (el('lgTo').value) params.set('to', el('lgTo').value);
+  if (el('lgCancelled').value) params.set('cancelled', el('lgCancelled').value);
+
+  const { rows, total } = asListResult(
+    await apiGet(`/api/tank-operations/ledger?${params}`), 'タンク入出庫履歴');
+  ledgerView.total = total;
 
   el('ledgerRows').innerHTML = rows.length
     ? rows.map((r) => `<tr class="${r.is_cancelled ? 'muted' : ''}">
@@ -182,10 +247,19 @@ async function loadLedger() {
         <td>${escapeHtml(r.product_name ?? r.distillation_code ?? '')}</td>
         <td>${escapeHtml(r.note ?? '')}</td>
       </tr>`).join('')
-    : '<tr><td colspan="8" class="empty">履歴がありません</td></tr>';
+    : '<tr><td colspan="8" class="empty">該当する履歴がありません</td></tr>';
+
+  renderSortMarks(ledgerView, el('ledgerRows').closest('table'));
+  renderPager(ledgerView, LEDGER_PAGER, rows.length);
 }
 
-el('filterTank').addEventListener('change', loadLedger);
+const reloadLedger = () =>
+  loadLedger().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+// 絞り込みを変えたら1ページ目に戻す
+wirePager(ledgerView, LEDGER_PAGER, reloadLedger,
+  ['filterTank', 'lgType', 'lgFrom', 'lgTo', 'lgCancelled']);
+wireSortHeaders(ledgerView, 'ledgerRows', reloadLedger);
 
 el('transferForm').addEventListener('submit', async (e) => {
   e.preventDefault();
@@ -251,6 +325,7 @@ el('fDate').value = todayStr();
 (async () => {
   try {
     await loadTanks();
+    await loadLedgerOptions();
     await loadLedger();
   } catch (err) {
     showMessage('messages', 'error', err.message);

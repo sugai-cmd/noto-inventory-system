@@ -584,21 +584,114 @@ function getStaleDistillationAlerts({ thresholdHours = 24 } = {}) {
     .all({ status: STATUS_IN_PROGRESS, thresholdDays: thresholdHours / 24 });
 }
 
-/** 一覧・詳細 */
-function list({ status, limit = 100 } = {}) {
+/**
+ * 並べ替えに使ってよい列。画面から来た文字列をそのままSQLに入れない
+ * （materialService.LEDGER_SORTABLE と同じ作法）。
+ */
+const LIST_SORTABLE = {
+  started_on: 'd.started_on',
+  distillation_code: 'd.distillation_code',
+  total_input_l: 'd.total_input_l',
+  status: 'd.status',
+  output_l: 'd.output_l',
+  output_tank_name: 't.name',
+};
+const LIST_DEFAULT_SORT = 'started_on';
+
+/**
+ * 蒸留記録の一覧。
+ *
+ * **この一覧は3箇所が使っている。**戻りの形を変えるときは全部直すこと。
+ *   画面の蒸留記録一覧（public/distillation.html）
+ *   明細追加の「蒸留ID」プルダウン（同 loadAddDetailOptions、status=蒸留中）
+ *   ダッシュボードの「蒸留中」の件数カード（public/index.html）
+ *
+ * @returns {{rows: object[], total: number}} total は同じ絞り込みでの全件数
+ */
+function list({
+  status,
+  outputTankId = null,
+  from = null,
+  to = null,
+  limit = 100,
+  offset = 0,
+  sort = LIST_DEFAULT_SORT,
+  order = 'desc',
+} = {}) {
   const db = getConnection();
-  const where = status ? 'WHERE d.status = @status' : '';
-  return db
+
+  const where = [];
+  const params = {};
+
+  if (status) {
+    where.push('d.status = @status');
+    params.status = status;
+  }
+  if (outputTankId) {
+    where.push('d.output_tank_id = @outputTankId');
+    params.outputTankId = outputTankId;
+  }
+  if (from) {
+    where.push('d.started_on >= @from');
+    params.from = from;
+  }
+  if (to) {
+    where.push('d.started_on <= @to');
+    params.to = to;
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const column = LIST_SORTABLE[sort] ?? LIST_SORTABLE[LIST_DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 同じ日の記録が実行のたびに入れ替わらないよう、時刻とidを続けて見る
+  const orderSql =
+    column === LIST_SORTABLE.started_on
+      ? `d.started_on ${direction}, d.started_time ${direction}, d.id ${direction}`
+      : `${column} ${direction}, d.id ${direction}`;
+
+  const { total } = db
+    .prepare(
+      `SELECT COUNT(*) AS total
+       FROM distillations d
+       LEFT JOIN tanks t ON t.id = d.output_tank_id
+       ${whereSql}`
+    )
+    .get(params);
+
+  const rows = db
     .prepare(
       `SELECT d.*, t.name AS output_tank_name
        FROM distillations d
        LEFT JOIN tanks t ON t.id = d.output_tank_id
-       ${where}
-       ORDER BY d.started_on DESC, d.started_time DESC
-       LIMIT @limit`
+       ${whereSql}
+       ORDER BY ${orderSql}
+       LIMIT @limit OFFSET @offset`
     )
-    .all({ status, limit });
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
 }
+
+/**
+ * 絞り込みのプルダウンに出す値。**実際に払出先になっているタンクだけ**を返す。
+ *
+ * タンクは全部で68本あるが、蒸留の払出先に使われるのはごく一部。
+ * 全部並べると、目当ての1本を探すのに逆に時間がかかる。
+ */
+function listFilterOptions() {
+  const db = getConnection();
+  return {
+    outputTanks: db
+      .prepare(
+        `SELECT DISTINCT t.id, t.code, t.name
+           FROM distillations d JOIN tanks t ON t.id = d.output_tank_id
+          ORDER BY t.code`
+      )
+      .all(),
+  };
+}
+
+/** 詳細 */
 
 function findById(id) {
   const db = getConnection();
@@ -1342,6 +1435,7 @@ module.exports = {
   cancelDistillationDetailItem,
   getStaleDistillationAlerts,
   list,
+  listFilterOptions,
   findById,
   DISTILLATION_PREFIX,
 };

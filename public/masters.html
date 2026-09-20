@@ -130,12 +130,13 @@
 
   <section class="panel" id="listPanel">
     <h2 id="listTitle">一覧</h2>
-    <div class="grid" style="margin-bottom:12px">
+    <div class="grid" style="margin-bottom:12px" id="listFilters">
       <div>
         <label for="listFilter">絞り込み</label>
         <input type="text" id="listFilter" placeholder="名称などで絞り込む">
       </div>
     </div>
+    <p class="hint" id="listCount" style="margin-top:0"></p>
     <div class="table-scroll">
       <table>
         <thead><tr id="listHead"></tr></thead>
@@ -250,10 +251,18 @@ const MASTERS = {
       { key: 'onboardedMonth', label: '取引開始月', type: 'month' },
       { key: 'note', label: '備考', type: 'text' },
     ],
+    // 項目別の絞り込み。選択肢は読み込んだ実データから作る（下の renderFilters）
+    filters: [
+      { key: 'segment', label: '区分' },
+      { key: 'business_type', label: '業態' },
+      { key: 'sales_rep', label: '担当者' },
+    ],
     columns: [
       { key: 'code', label: 'コード' },
       { key: 'name', label: '得意先名' },
       { key: 'segment', label: '区分' },
+      // 絞り込めるのに見えないと、何で絞ったのか分からなくなるので列にも出す
+      { key: 'business_type', label: '業態' },
       { key: 'markup_rate', label: '掛率', num: true, digits: 2 },
       { key: 'sales_rep', label: '担当者' },
       { key: 'parent_name', label: '本店' },
@@ -361,6 +370,7 @@ const MASTERS = {
         hint: '残量再計算の起点。登録後は入出庫の記録で増減します' },
       { key: 'note', label: '備考', type: 'text' },
     ],
+    filters: [{ key: 'container_type', label: 'タイプ' }],
     columns: [
       { key: 'code', label: '容器ID' },
       { key: 'name', label: '容器名称' },
@@ -915,6 +925,8 @@ async function loadList() {
   // 製品レシピタブの資材プルダウンは materials のキャッシュを見ている。
   // 資材タブで登録・編集したら、ここで入れ直しておく
   if (currentTab === 'materials') materials = records;
+  // 選択肢は実データから作るので、一覧を読み直すたびに作り直す
+  renderFilters();
   renderRows();
 }
 
@@ -932,13 +944,74 @@ function refreshParentOptions() {
   select.value = current;
 }
 
+/**
+ * 検索窓が見ない列。
+ *
+ * 以前は `Object.values(r)` で行の値を全部舐めていたので、
+ * **`2026` と打つと `created_at` に当たって全件出ていた**。
+ * 数字を打つと id にも当たる。
+ * かといって表示中の列だけに絞ると、住所や電話で探せなくなる（列に無いので）。
+ * 探す役に立たない列だけを外す。
+ */
+const SEARCH_SKIP = new Set(['id', 'uid', 'parent_id', 'created_at', 'updated_at']);
+
+/** 選択肢に出せない値（空欄）をまとめて指す印。実データの値と衝突しない文字にする */
+const UNSET = '__未設定__';
+
+/**
+ * 項目別の絞り込み（区分・業態・担当者・タイプ）を作る。
+ *
+ * **選択肢は読み込んだ実データの値から作る。**固定リストにすると、
+ * 新しい値が入ったときに絞り込めない行が生まれる
+ * （operationLogService.listFilterOptions と同じ考え方）。
+ *
+ * **空欄も選べるようにする。** 得意先156件のうち区分は123件が空、
+ * 担当者は156件すべてが空で、「すべて」しか無いとその行に辿り着けない。
+ */
+function renderFilters() {
+  const s = spec();
+  // 前のタブの select を消す（最初の1つ＝検索窓だけ残す）
+  for (const extra of [...el('listFilters').children].slice(1)) extra.remove();
+
+  for (const f of s.filters ?? []) {
+    const values = [...new Set(records.map((r) => r[f.key]))];
+    const hasUnset = values.some((v) => v == null || v === '');
+    const filled = values.filter((v) => v != null && v !== '').sort((a, b) =>
+      String(a).localeCompare(String(b), 'ja'));
+
+    const div = document.createElement('div');
+    div.innerHTML =
+      `<label for="mf_${f.key}">${escapeHtml(f.label)}</label>
+       <select id="mf_${f.key}" data-master-filter="${f.key}">
+         <option value="">すべて</option>
+         ${hasUnset ? `<option value="${UNSET}">（未設定）</option>` : ''}
+         ${filled.map((v) => `<option value="${escapeHtml(v)}">${escapeHtml(v)}</option>`).join('')}
+       </select>`;
+    el('listFilters').append(div);
+  }
+}
+
 function renderRows() {
   const s = spec();
   const q = el('listFilter').value.trim().toLowerCase();
-  const shown = q
-    ? records.filter((r) =>
-        Object.values(r).some((v) => v != null && String(v).toLowerCase().includes(q)))
-    : records;
+  const chosen = [...el('listFilters').querySelectorAll('[data-master-filter]')]
+    .map((sel) => [sel.dataset.masterFilter, sel.value])
+    .filter(([, v]) => v !== '');
+
+  const shown = records.filter((r) => {
+    for (const [key, want] of chosen) {
+      const v = r[key];
+      if (want === UNSET ? !(v == null || v === '') : String(v ?? '') !== want) return false;
+    }
+    if (!q) return true;
+    return Object.entries(r).some(([k, v]) =>
+      !SEARCH_SKIP.has(k) && v != null && String(v).toLowerCase().includes(q));
+  });
+
+  const narrowed = q || chosen.length;
+  el('listCount').textContent = records.length
+    ? (narrowed ? `${records.length}件中 ${shown.length}件` : `${records.length}件`)
+    : '';
 
   const span = s.columns.length + 1;
   el('listRows').innerHTML = shown.length
@@ -964,10 +1037,14 @@ function renderRows() {
             <button type="button" class="secondary small" data-edit="${r.id}">編集</button>${del}${extra}
           </div></td></tr>`;
       }).join('')
-    : `<tr><td colspan="${span}" class="empty">${q ? '該当するものがありません' : `${s.label}が登録されていません`}</td></tr>`;
+    : `<tr><td colspan="${span}" class="empty">${narrowed ? '該当するものがありません' : `${s.label}が登録されていません`}</td></tr>`;
 }
 
 el('listFilter').addEventListener('input', renderRows);
+// select は renderFilters で作り直すので、親でまとめて受ける
+el('listFilters').addEventListener('change', (e) => {
+  if (e.target.closest('[data-master-filter]')) renderRows();
+});
 
 el('listRows').addEventListener('click', async (e) => {
   const edit = e.target.closest('[data-edit]');

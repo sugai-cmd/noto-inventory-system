@@ -267,24 +267,116 @@ function pickTank(tank) {
   return { id: tank.id, code: tank.code, name: tank.name };
 }
 
-/** タンクの入出庫履歴（浄酎容器変動履歴） */
-function listLedger({ tankId, limit = 200 } = {}) {
-  const db = getConnection();
-  const where = tankId ? 'WHERE l.from_tank_id = @tankId OR l.to_tank_id = @tankId' : '';
-  return db
-    .prepare(
-      `SELECT l.*, ft.name AS from_tank_name, tt.name AS to_tank_name,
-              p.name AS product_name, d.distillation_code
+/**
+ * 並べ替えに使ってよい列。画面から来た文字列をそのままSQLに入れない
+ * （materialService.LEDGER_SORTABLE と同じ作法）。
+ */
+const TANK_LEDGER_SORTABLE = {
+  txn_date: 'l.txn_date',
+  txn_type: 'l.txn_type',
+  from_tank_name: 'ft.name',
+  to_tank_name: 'tt.name',
+  quantity_l: 'l.quantity_l',
+  abv: 'l.abv',
+  is_cancelled: 'l.is_cancelled',
+};
+const TANK_LEDGER_DEFAULT_SORT = 'txn_date';
+
+const TANK_LEDGER_JOINS = `
        FROM tank_ledger l
        LEFT JOIN tanks ft ON ft.id = l.from_tank_id
        LEFT JOIN tanks tt ON tt.id = l.to_tank_id
        LEFT JOIN products p ON p.id = l.product_id
-       LEFT JOIN distillations d ON d.id = l.distillation_id
-       ${where}
-       ORDER BY l.txn_date DESC, l.id DESC
-       LIMIT @limit`
+       LEFT JOIN distillations d ON d.id = l.distillation_id`;
+
+/**
+ * タンクの入出庫履歴（浄酎容器変動履歴）。
+ *
+ * **タンクの条件は必ず括弧でくくる。**
+ * 以前は `WHERE l.from_tank_id = @tankId OR l.to_tank_id = @tankId` と
+ * 裸で書いてあった。条件がこれ1つだけのうちは正しく動くが、AND を足した途端に
+ * `A AND B OR C` と読まれて（SQLでは AND が OR より強い）、
+ * **タンクで絞ったつもりが他のタンクの行まで混ざる**。
+ *
+ * @returns {{rows: object[], total: number}} total は同じ絞り込みでの全件数
+ */
+function listLedger({
+  tankId,
+  limit = 200,
+  offset = 0,
+  sort = TANK_LEDGER_DEFAULT_SORT,
+  order = 'desc',
+  txnType = null,
+  cancelled = null,
+  from = null,
+  to = null,
+} = {}) {
+  const db = getConnection();
+
+  const where = [];
+  const params = {};
+
+  if (tankId) {
+    // 括弧を外さないこと（上のコメント参照）
+    where.push('(l.from_tank_id = @tankId OR l.to_tank_id = @tankId)');
+    params.tankId = tankId;
+  }
+  if (txnType) {
+    where.push('l.txn_type = @txnType');
+    params.txnType = txnType;
+  }
+  if (cancelled !== null) {
+    where.push('l.is_cancelled = @cancelled');
+    params.cancelled = cancelled ? 1 : 0;
+  }
+  if (from) {
+    where.push('l.txn_date >= @from');
+    params.from = from;
+  }
+  if (to) {
+    where.push('l.txn_date <= @to');
+    params.to = to;
+  }
+  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+  const column = TANK_LEDGER_SORTABLE[sort] ?? TANK_LEDGER_SORTABLE[TANK_LEDGER_DEFAULT_SORT];
+  const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
+  // 同じ日付の行が実行のたびに入れ替わらないよう、idを第2キーにする
+  const orderSql = `${column} ${direction}, l.id ${direction}`;
+
+  const { total } = db
+    .prepare(`SELECT COUNT(*) AS total ${TANK_LEDGER_JOINS} ${whereSql}`)
+    .get(params);
+
+  const rows = db
+    .prepare(
+      `SELECT l.*, ft.name AS from_tank_name, tt.name AS to_tank_name,
+              p.name AS product_name, d.distillation_code
+       ${TANK_LEDGER_JOINS}
+       ${whereSql}
+       ORDER BY ${orderSql}
+       LIMIT @limit OFFSET @offset`
     )
-    .all({ tankId, limit });
+    .all({ ...params, limit, offset });
+
+  return { rows, total };
+}
+
+/**
+ * 絞り込みのプルダウンに出す値。**実データにあるものだけ**を返す。
+ *
+ * 受払区分はスキーマの CHECK に7種あるが、`取消戻し` のように実データが
+ * 1件も無いものを並べても選べるだけ無駄になる
+ * （operationLogService.listFilterOptions と同じ考え方）。
+ */
+function listLedgerFilterOptions() {
+  const db = getConnection();
+  return {
+    txnTypes: db
+      .prepare('SELECT DISTINCT txn_type FROM tank_ledger WHERE txn_type IS NOT NULL ORDER BY txn_type')
+      .all()
+      .map((r) => r.txn_type),
+  };
 }
 
 /**
@@ -530,6 +622,7 @@ module.exports = {
   submitTankTransfer,
   submitTaxFreeTransfer,
   listLedger,
+  listLedgerFilterOptions,
   registerTank,
   updateTank,
   listTanks,

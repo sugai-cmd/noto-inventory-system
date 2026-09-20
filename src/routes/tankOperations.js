@@ -27,12 +27,27 @@ const taxFreeSchema = z.object({
   note: z.string().optional(),
 });
 
-// 浄酎容器変動履歴の一覧（tankId指定でそのタンクの入出庫だけに絞れる）
+// 絞り込みのプルダウンに出す値（実データにあるものだけ）。
+// `/ledger/:何か` より先に置かないと、`/ledger` のあとに付く語として拾われる
+router.get('/ledger/options', (req, res) => {
+  res.json(tankService.listLedgerFilterOptions());
+});
+
+/** 浄酎容器変動履歴の一覧。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
 router.get('/ledger', (req, res) => {
+  const q = req.query;
   res.json(
     tankService.listLedger({
-      tankId: req.query.tankId ? Number(req.query.tankId) : undefined,
-      limit: Math.min(Number(req.query.limit) || 200, 1000),
+      tankId: q.tankId ? Number(q.tankId) : undefined,
+      txnType: q.txnType || undefined,
+      // '' は「指定なし」。'0' を false と読み違えないよう三値で扱う
+      cancelled: q.cancelled === '' || q.cancelled === undefined ? null : q.cancelled === '1',
+      from: q.from || undefined,
+      to: q.to || undefined,
+      limit: Math.min(Number(q.limit) || 200, 1000),
+      offset: Math.max(Number(q.offset) || 0, 0),
+      sort: q.sort || undefined,
+      order: q.order || undefined,
     })
   );
 });

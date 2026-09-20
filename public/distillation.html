@@ -290,18 +290,51 @@
           <option value="完了">完了</option>
         </select>
       </div>
+      <div>
+        <label for="dsTank">払出先タンク</label>
+        <select id="dsTank"></select>
+      </div>
+      <div>
+        <label for="dsFrom">開始日（から）</label>
+        <input type="date" id="dsFrom">
+      </div>
+      <div>
+        <label for="dsTo">開始日（まで）</label>
+        <input type="date" id="dsTo">
+      </div>
+      <div>
+        <label for="dsLimit">1ページの件数</label>
+        <select id="dsLimit">
+          <option value="10">10</option>
+          <option value="50" selected>50</option>
+          <option value="100">100</option>
+          <option value="200">200</option>
+          <option value="500">500</option>
+        </select>
+      </div>
     </div>
     <div class="table-scroll">
       <table>
         <thead>
           <tr>
-            <th>蒸留ID</th><th>開始</th><th>使用原酒</th>
-            <th class="num">投入量(L)</th><th>状態</th>
-            <th class="num">蒸留量(L)</th><th>払出先</th><th>操作</th>
+            <th><button type="button" class="link" data-sort="distillation_code">蒸留ID</button></th>
+            <th><button type="button" class="link" data-sort="started_on">開始</button></th>
+            <th>使用原酒</th>
+            <th class="num"><button type="button" class="link" data-sort="total_input_l">投入量(L)</button></th>
+            <th><button type="button" class="link" data-sort="status">状態</button></th>
+            <th class="num"><button type="button" class="link" data-sort="output_l">蒸留量(L)</button></th>
+            <th><button type="button" class="link" data-sort="output_tank_name">払出先</button></th>
+            <th>操作</th>
           </tr>
         </thead>
         <tbody id="distillationRows"></tbody>
       </table>
+    </div>
+
+    <div class="actions">
+      <button type="button" id="dsPrev">前へ</button>
+      <button type="button" id="dsNext">次へ</button>
+      <span id="dsRange" class="hint"></span>
     </div>
   </section>
 
@@ -950,14 +983,37 @@ el('alerts').addEventListener('click', async (e) => {
   }
 });
 
+// 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
+const distView = createListView('started_on');
+const DIST_PAGER = { limit: 'dsLimit', prev: 'dsPrev', next: 'dsNext', range: 'dsRange' };
+
+/** 払出先の選択肢は、実際に払出先になっているタンクだけ（全68本は並べない） */
+async function loadDistillationOptions() {
+  const { outputTanks } = await apiGet('/api/distillations/options');
+  const keep = el('dsTank').value;
+  el('dsTank').innerHTML = '<option value="">すべて</option>' +
+    outputTanks.map((t) =>
+      `<option value="${t.id}"${String(t.id) === keep ? ' selected' : ''}>` +
+      `${escapeHtml(t.code)} ${escapeHtml(t.name)}</option>`).join('');
+}
+
 async function loadDistillations() {
-  const params = new URLSearchParams();
+  const params = listQuery(distView, DIST_PAGER);
   if (el('filterStatus').value) params.set('status', el('filterStatus').value);
-  const rows = await apiGet(`/api/distillations?${params}`);
+  if (el('dsTank').value) params.set('outputTankId', el('dsTank').value);
+  if (el('dsFrom').value) params.set('from', el('dsFrom').value);
+  if (el('dsTo').value) params.set('to', el('dsTo').value);
+
+  const { rows, total } = asListResult(
+    await apiGet(`/api/distillations?${params}`), '蒸留記録');
+  distView.total = total;
+
   const tbody = el('distillationRows');
+  renderSortMarks(distView, tbody.closest('table'));
+  renderPager(distView, DIST_PAGER, rows.length);
 
   if (!rows.length) {
-    tbody.innerHTML = '<tr><td colspan="8" class="empty">蒸留記録がありません</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="8" class="empty">該当する蒸留記録がありません</td></tr>';
     return;
   }
 
@@ -1474,7 +1530,13 @@ el('startForm').addEventListener('submit', async (e) => {
   }
 });
 
-el('filterStatus').addEventListener('change', loadDistillations);
+const reloadDistillations = () =>
+  loadDistillations().catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+// 絞り込みを変えたら1ページ目に戻す
+wirePager(distView, DIST_PAGER, reloadDistillations,
+  ['filterStatus', 'dsTank', 'dsFrom', 'dsTo']);
+wireSortHeaders(distView, 'distillationRows', reloadDistillations);
 
 el('rDate').value = todayStr();
 el('sDate').value = todayStr();
@@ -1484,6 +1546,8 @@ el('sTime').value = nowTimeStr();
   try {
     await loadTanks();
     addInputRow();
+    // 絞り込みの選択肢を先に入れてから一覧を読む
+    await loadDistillationOptions();
     // 一覧と引き当ては折り畳んであるが、件数を summary に出すので最初から読む
     await Promise.all([loadDistillations(), loadAlerts(), refreshLedgerPanels()]);
   } catch (err) {
@@ -1493,10 +1557,12 @@ el('sTime').value = nowTimeStr();
 
 /** 蒸留中の投入明細を後から足す */
 async function loadAddDetailOptions() {
-  const [inProgress, tanks] = await Promise.all([
+  const [inProgressRes, tanks] = await Promise.all([
     apiGet('/api/distillations?status=' + encodeURIComponent('蒸留中')),
     apiGet('/api/raw-sake-receipts/tanks'),
   ]);
+  // 蒸留記録の一覧と同じ口なので、同じように {rows,total} を解く
+  const { rows: inProgress } = asListResult(inProgressRes, '蒸留中の記録');
   el('adDistillation').innerHTML = inProgress.length
     ? inProgress.map((d) =>
         `<option value="${d.id}">${escapeHtml(d.distillation_code)}（開始 ${escapeHtml(d.started_on)}）</option>`

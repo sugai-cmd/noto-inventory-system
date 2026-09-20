@@ -313,9 +313,10 @@ test('サンプル送付でサンプルIDが採番され、在庫が減る', asy
 
 test('サンプル送付の一覧が取得できる', async () => {
   const { body } = await api('GET', '/api/shipments/samples');
-  assert.equal(body.length, 1);
-  assert.equal(body[0].customer_name, '株式会社NOTO');
-  assert.equal(body[0].product_name, '浄酎 300ml');
+  assert.equal(body.total, 1);
+  assert.equal(body.rows.length, 1);
+  assert.equal(body.rows[0].customer_name, '株式会社NOTO');
+  assert.equal(body.rows[0].product_name, '浄酎 300ml');
 });
 
 // --- 委託販売実績報告 ---
