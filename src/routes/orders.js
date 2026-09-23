@@ -73,23 +73,35 @@ router.get('/defaults', (req, res) => {
   );
 });
 
-/** 受注の一覧。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
+/**
+ * 受注の一覧。`{rows, total, summary}` を返す。
+ *   total   … 同じ絞り込みでの全件数
+ *   summary … 同じ絞り込みでの合計（ページ送りとは関係なく全部を足したもの）
+ *
+ * **集計を別のエンドポイントにしていない。** 分けると、一覧と集計で絞り込みが
+ * 食い違って見える瞬間ができる（画面が2回叩く間に条件が変わる）。
+ * 同じ呼び出しで返せば、原理的にずれない。
+ */
 router.get('/', (req, res) => {
   const q = req.query;
-  res.json(
-    orderModel.list({
-      status: q.status,
-      customerId: q.customerId ? Number(q.customerId) : undefined,
-      productId: q.productId ? Number(q.productId) : undefined,
-      from: q.from,
-      to: q.to,
-      dateField: q.dateField || undefined,
-      limit: Math.min(Number(q.limit) || 200, 1000),
-      offset: Math.max(Number(q.offset) || 0, 0),
-      sort: q.sort || undefined,
-      order: q.order || undefined,
-    })
-  );
+  const filters = {
+    status: q.status,
+    customerId: q.customerId ? Number(q.customerId) : undefined,
+    productId: q.productId ? Number(q.productId) : undefined,
+    from: q.from,
+    to: q.to,
+    dateField: q.dateField || undefined,
+  };
+
+  const { rows, total } = orderModel.list({
+    ...filters,
+    limit: Math.min(Number(q.limit) || 200, 1000),
+    offset: Math.max(Number(q.offset) || 0, 0),
+    sort: q.sort || undefined,
+    order: q.order || undefined,
+  });
+
+  res.json({ rows, total, summary: orderModel.summary(filters) });
 });
 
 // 請求対象の候補（納品済みかつ未請求）

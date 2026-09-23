@@ -1,6 +1,8 @@
 // 受注リスト（orders）の読み取り系クエリ
 
 const { getConnection } = require('../db/connection');
+// 消費税率は送料の計算と同じ値を使う（2か所に書くと改定のときに片方だけ残る）
+const { TAX_RATE } = require('../services/shippingFeeService');
 
 const SELECT_WITH_NAMES = `
   SELECT o.*, c.name AS customer_name, p.name AS product_name
@@ -57,19 +59,19 @@ const DATE_FIELDS = {
   payment_due_on: 'o.payment_due_on',
 };
 
-function list({
-  status,
-  customerId,
-  productId,
-  from,
-  to,
-  dateField = 'ordered_on',
-  limit = 200,
-  offset = 0,
-  sort = DEFAULT_SORT,
-  order = 'desc',
-} = {}) {
-  const db = getConnection();
+const FROM_JOINS = `
+  FROM orders o
+  JOIN customers c ON c.id = o.customer_id
+  JOIN products  p ON p.id = o.product_id
+`;
+
+/**
+ * 絞り込みの WHERE を組み立てる。
+ *
+ * **1か所にまとめてある。** 一覧の本体・件数・合計の3つが同じ条件を使うので、
+ * 別々に書くと必ずずれる（絞り込んだ一覧と合計が食い違って見える）。
+ */
+function buildFilter({ status, customerId, productId, from, to, dateField = 'ordered_on' } = {}) {
   const where = [];
   const params = {};
 
@@ -97,7 +99,18 @@ function list({
     params.to = to;
   }
 
-  const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+  return { whereSql: where.length ? `WHERE ${where.join(' AND ')}` : '', params };
+}
+
+function list({
+  limit = 200,
+  offset = 0,
+  sort = DEFAULT_SORT,
+  order = 'desc',
+  ...filters
+} = {}) {
+  const db = getConnection();
+  const { whereSql, params } = buildFilter(filters);
 
   const column = SORTABLE[sort] ?? SORTABLE[DEFAULT_SORT];
   const direction = String(order).toLowerCase() === 'asc' ? 'ASC' : 'DESC';
@@ -105,13 +118,7 @@ function list({
   const orderSql = `${column} ${direction}, o.order_no ${direction}`;
 
   const { total } = db
-    .prepare(
-      `SELECT COUNT(*) AS total
-       FROM orders o
-       JOIN customers c ON c.id = o.customer_id
-       JOIN products  p ON p.id = o.product_id
-       ${whereSql}`
-    )
+    .prepare(`SELECT COUNT(*) AS total ${FROM_JOINS} ${whereSql}`)
     .get(params);
 
   const rows = db
@@ -123,4 +130,40 @@ function list({
   return { rows, total };
 }
 
-module.exports = { findById, findByOrderNo, list, SORTABLE, DATE_FIELDS };
+/**
+ * 絞り込んだ結果の合計。**一覧のページ送りとは関係なく、条件に当たる全部を足す。**
+ *
+ * 画面に出ている行を足しても答えにならないので、サーバーで出す。
+ *
+ * **保存されている合計欄（total_amount）は読まない。** 式が揃っていないため。
+ *   移行データ103件 … 売価 × 1.1（送料を含んでいない）
+ *   移行データ  14件 … (売価 + 送料) × 1.1
+ *   いまのコード      … 売価 + 送料（税を足さない。orderService.submitOrder）
+ * 足すと何の数字か言えなくなるので、売価と送料から出し直す。
+ *
+ * **消費税は売価にだけ掛ける。** 送料は #54 以降、税込・50円繰り上げ後の金額が入っている。
+ * 丸めは合計に対して一度だけなので、受注ごとに丸めて足したものとは数円ずれうる。
+ *
+ * @returns {{orders:number, lines:number, quantity:number, salesAmount:number,
+ *            salesTax:number, shippingFee:number, total:number}}
+ */
+function summary(filters = {}) {
+  const db = getConnection();
+  const { whereSql, params } = buildFilter(filters);
+
+  const row = db
+    .prepare(
+      `SELECT COUNT(*)                         AS lines,
+              COUNT(DISTINCT o.order_no)       AS orders,
+              COALESCE(SUM(o.quantity), 0)     AS quantity,
+              COALESCE(SUM(o.sales_amount), 0) AS salesAmount,
+              COALESCE(SUM(o.shipping_fee), 0) AS shippingFee
+       ${FROM_JOINS} ${whereSql}`
+    )
+    .get(params);
+
+  const salesTax = Math.round(row.salesAmount * TAX_RATE);
+  return { ...row, salesTax, total: row.salesAmount + salesTax + row.shippingFee };
+}
+
+module.exports = { findById, findByOrderNo, list, summary, buildFilter, SORTABLE, DATE_FIELDS };

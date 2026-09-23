@@ -206,6 +206,43 @@
         </select>
       </div>
     </div>
+
+    <!-- 絞り込み結果の合計。**ページ送りとは関係なく、条件に当たる全部**を足している -->
+    <div id="orderSummary" style="display:none">
+      <div class="stat-row" style="margin-bottom:8px">
+        <div class="stat">
+          <div class="label">件数</div>
+          <div class="value" id="sumOrders">-</div>
+          <div class="label" id="sumLines"></div>
+        </div>
+        <div class="stat">
+          <div class="label">本数</div>
+          <div class="value" id="sumQuantity">-</div>
+        </div>
+        <div class="stat">
+          <div class="label">売価（税抜）</div>
+          <div class="value" id="sumSales">-</div>
+        </div>
+        <div class="stat">
+          <div class="label">消費税</div>
+          <div class="value" id="sumTax">-</div>
+        </div>
+        <div class="stat">
+          <div class="label">送料（税込）</div>
+          <div class="value" id="sumShipping">-</div>
+        </div>
+        <div class="stat">
+          <div class="label">合計（税込）</div>
+          <div class="value" id="sumTotal">-</div>
+        </div>
+      </div>
+      <p class="hint" style="margin-bottom:12px">
+        ※ ページ送りに関係なく、いまの絞り込み全体の合計です。
+        消費税は売価に対して計算しています（送料は税込の金額が入っています）。
+        受注の「合計」欄は古いデータで式が揃っていないため使わず、売価と送料から出し直しています。
+      </p>
+    </div>
+
     <div class="table-scroll">
       <table>
         <thead>
@@ -460,13 +497,38 @@ function recalcTotal() {
 const orderView = createListView('ordered_on');
 const ORDER_PAGER = { limit: 'oLimit', prev: 'oPrev', next: 'oNext', range: 'oRange' };
 
+/**
+ * 絞り込み結果の合計。**サーバーが条件に当たる全部を足して返している。**
+ * 画面に出ている行を足しても、ページ送りがあるので答えにならない。
+ *
+ * 古いサーバーは summary を返さないので、そのときはカードごと隠す
+ * （画面だけ新しくても一覧は出る。asListResult と同じ考え方）。
+ */
+function renderSummary(summary) {
+  if (!summary) {
+    el('orderSummary').style.display = 'none';
+    return;
+  }
+  el('orderSummary').style.display = '';
+  el('sumOrders').textContent = `${num(summary.orders)}件`;
+  // 一覧は明細1行が1行。複数商品の受注は2行に見えるので、行数も小さく添える
+  el('sumLines').textContent =
+    summary.lines === summary.orders ? '' : `明細 ${num(summary.lines)}行`;
+  el('sumQuantity').textContent = num(summary.quantity);
+  el('sumSales').textContent = yen(summary.salesAmount);
+  el('sumTax').textContent = yen(summary.salesTax);
+  el('sumShipping').textContent = yen(summary.shippingFee);
+  el('sumTotal').textContent = yen(summary.total);
+}
+
 async function loadOrders() {
   const params = listQuery(orderView, ORDER_PAGER);
   for (const [key, value] of currentFilterParams()) params.set(key, value);
 
-  const { rows: orders, total } = asListResult(
+  const { rows: orders, total, summary } = asListResult(
     await apiGet(`/api/orders?${params}`), '受注一覧');
   orderView.total = total;
+  renderSummary(summary);
   const tbody = el('orderRows');
 
   if (!orders.length) {
