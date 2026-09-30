@@ -19,7 +19,10 @@ const createSchema = z.object({
   janCode: z.string().optional(),
   targetExtractSpec: z.string().optional(),
   category: z.string().optional(),
+  // 課税額(tax_per_unit)は**もう読んでいない**（容量を掛けていない値だった）。
+  // 酒税は酒類区分(taxCategory)の税率と容量・度数から出す（liquorTaxService）
   taxPerUnit: z.number().nonnegative().optional(),
+  taxCategory: z.string().optional(),
   initialProductStock: z.number().int().optional(),
   initialWipStock: z.number().int().optional(),
   note: z.string().optional(),

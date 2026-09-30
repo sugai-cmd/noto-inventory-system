@@ -6,6 +6,7 @@
 const { getConnection } = require('../db/connection');
 const tankService = require('./tankService');
 const shippingFeeService = require('./shippingFeeService');
+const liquorTaxService = require('./liquorTaxService');
 const { parseShippingAddress } = require('../utils/shippingAddress');
 
 /** CSV1セル分のエスケープ */
@@ -446,10 +447,64 @@ function exportTankMonitor() {
   };
 }
 
+/**
+ * 酒税の月次内訳のCSV出力（申告書への転記用）。
+ *
+ * 課税移出の内訳を並べ、そのあとに合計行。
+ * **税率が引けなかった商品も同じ表に出す**（金額は空、理由つき）。
+ * 別ファイルにすると転記のときに見落とす。
+ */
+function exportLiquorTax(month) {
+  const report = liquorTaxService.monthlyReport(month);
+
+  const rows = report.taxable.rows.map((r) => [
+    r.productName,
+    r.taxCategory ?? '',
+    r.abv ?? '',
+    r.volumeMl ?? '',
+    r.quantity,
+    r.totalVolumeL,
+    r.yenPerKl ?? '',
+    r.taxAmount,
+    '',
+  ]);
+
+  rows.push(['合計', '', '', '', report.taxable.totals.quantity,
+    report.taxable.totals.totalVolumeL, '', report.taxable.totals.taxAmount, '']);
+
+  for (const r of report.unresolved) {
+    rows.push([
+      r.productName, r.taxCategory ?? '', r.abv ?? '', r.volumeMl ?? '',
+      r.quantity, r.totalVolumeL, '', '', `要確認: ${r.reason}`,
+    ]);
+  }
+
+  // 参考。未納税移出は課税対象外、返品は今回は控除していない
+  for (const [type, ref] of Object.entries(report.reference)) {
+    for (const r of ref.rows) {
+      rows.push([
+        r.productName, r.taxCategory ?? '', r.abv ?? '', r.volumeMl ?? '',
+        r.quantity, r.totalVolumeL, r.yenPerKl ?? '', r.taxAmount ?? '',
+        `参考（${type}／課税額には入れていません）`,
+      ]);
+    }
+  }
+
+  return {
+    csv: toCsv(
+      ['商品名称', '酒類区分', '度数', '容量(ml)', '本数', '数量計(L)', '円/kl', '酒税額(円)', '備考'],
+      rows
+    ),
+    count: report.taxable.rows.length,
+    filename: `liquor_tax_${month}_${stamp()}.csv`,
+  };
+}
+
 module.exports = {
   exportYuPack,
   exportMoneyForward,
   exportProductStock,
   exportMaterialStock,
   exportTankMonitor,
+  exportLiquorTax,
 };

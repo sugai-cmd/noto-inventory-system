@@ -130,6 +130,18 @@ CREATE TABLE distillations (                     -- 蒸留記録（ヘッダ）
   completed_time        TEXT CHECK (completed_time IS NULL OR completed_time GLOB '[0-9][0-9]:[0-9][0-9]')  -- 完了時刻（HH:MM）
 , created_by INTEGER REFERENCES users(id), alert_acknowledged_on TEXT CHECK (alert_acknowledged_on IS NULL OR alert_acknowledged_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), alert_acknowledged_by INTEGER REFERENCES users(id), alert_acknowledged_note TEXT, note TEXT);
 
+CREATE TABLE liquor_tax_rates (
+  id              INTEGER PRIMARY KEY,
+  category        TEXT NOT NULL,                   -- 酒類区分（スピリッツ／単式蒸留焼酎 など）
+  base_abv        REAL NOT NULL,                   -- 基準となるアルコール度数
+  base_yen_per_kl REAL NOT NULL,                   -- 基準度数での1klあたりの税額
+  step_yen_per_kl REAL NOT NULL DEFAULT 0,         -- 基準を1度超えるごとの加算（1klあたり）
+  effective_from  TEXT CHECK (effective_from IS NULL OR effective_from GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
+  note            TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at      TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE login_attempts (
   id         INTEGER PRIMARY KEY,
   username   TEXT NOT NULL,
@@ -288,7 +300,7 @@ CREATE TABLE products (
   note                   TEXT,
   created_at             TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at             TEXT NOT NULL DEFAULT (datetime('now'))
-);
+, tax_category TEXT);
 
 CREATE TABLE quotations (
   id             INTEGER PRIMARY KEY,
@@ -526,6 +538,9 @@ CREATE UNIQUE INDEX ux_carton_rules ON carton_rules(product_id, quantity);
 
 CREATE UNIQUE INDEX ux_distillation_details_code
   ON distillation_details(detail_code) WHERE detail_code IS NOT NULL;
+
+CREATE UNIQUE INDEX ux_liquor_tax_rates
+  ON liquor_tax_rates(category, COALESCE(effective_from, ''));
 
 CREATE UNIQUE INDEX ux_orders_line ON orders(order_no, line_no);
 

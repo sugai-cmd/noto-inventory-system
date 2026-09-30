@@ -24,11 +24,11 @@ function registerProductWithRecipe(input, actor = null) {
       .prepare(
         `INSERT INTO products
            (uid, code, name, volume_ml, abv, container_type, unit, list_price, jan_code,
-            target_extract_spec, category, tax_per_unit,
+            target_extract_spec, category, tax_per_unit, tax_category,
             initial_product_stock, initial_wip_stock, note)
          VALUES
            (@uid, @code, @name, @volumeMl, @abv, @containerType, @unit, @listPrice, @janCode,
-            @targetExtractSpec, @category, @taxPerUnit,
+            @targetExtractSpec, @category, @taxPerUnit, @taxCategory,
             @initialProductStock, @initialWipStock, @note)`
       )
       .run({
@@ -44,6 +44,7 @@ function registerProductWithRecipe(input, actor = null) {
         targetExtractSpec: input.targetExtractSpec ?? null,
         category: input.category ?? null,
         taxPerUnit: input.taxPerUnit ?? null,
+        taxCategory: input.taxCategory ?? null,
         initialProductStock: input.initialProductStock ?? 0,
         initialWipStock: input.initialWipStock ?? 0,
         note: input.note ?? null,
@@ -140,6 +141,9 @@ function updateProduct(id, input, actor = null) {
        target_extract_spec = COALESCE(@targetExtractSpec, target_extract_spec),
        category = COALESCE(@category, category),
        tax_per_unit = COALESCE(@taxPerUnit, tax_per_unit),
+       -- 酒類区分だけは COALESCE にしない。**空に戻せる必要がある**。
+       -- 区分を間違えたまま消せないと、その商品の酒税が延々と違う率で計算される
+       tax_category = CASE WHEN @taxCategoryGiven = 1 THEN @taxCategory ELSE tax_category END,
        note = COALESCE(@note, note),
        updated_at = datetime('now')
      WHERE id = @id`
@@ -156,6 +160,8 @@ function updateProduct(id, input, actor = null) {
     targetExtractSpec: input.targetExtractSpec ?? null,
     category: input.category ?? null,
     taxPerUnit: input.taxPerUnit ?? null,
+    taxCategoryGiven: Object.prototype.hasOwnProperty.call(input, 'taxCategory') ? 1 : 0,
+    taxCategory: String(input.taxCategory ?? '').trim() || null,
     note: input.note ?? null,
   });
 
@@ -220,6 +226,8 @@ function duplicateProduct(sourceId, overrides = {}, actor = null) {
     targetExtractSpec: overrides.targetExtractSpec ?? source.target_extract_spec ?? undefined,
     category: overrides.category ?? source.category ?? undefined,
     taxPerUnit: overrides.taxPerUnit ?? source.tax_per_unit ?? undefined,
+    // 酒類区分は引き継ぐ。容量違い・ラベル違いなら酒税の区分は同じ
+    taxCategory: overrides.taxCategory ?? source.tax_category ?? undefined,
     // 在庫の起点は引き継がない。複製した瞬間に在庫があることになってしまう。
     initialProductStock: 0,
     initialWipStock: 0,

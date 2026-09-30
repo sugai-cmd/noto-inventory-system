@@ -6,6 +6,7 @@ const { nextProductHistoryCode, nextSampleNo } = require('../utils/codeGenerator
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
+const liquorTaxService = require('./liquorTaxService');
 
 /**
  * 返品。得意先から戻ってきた商品を在庫に戻す。
@@ -146,7 +147,8 @@ function submitSampleShipment(input, actor = null) {
         counterparty: customer?.name ?? input.customerName ?? null,
         sampleShipmentId: sampleId,
         volumeMl: product.volume_ml != null ? product.volume_ml * input.quantity : null,
-        taxAmount: product.tax_per_unit != null ? product.tax_per_unit * input.quantity : null,
+        // 無償でも課税移出。容量(ml)×本数×税率で出す（tax_per_unit は読まない）
+        taxAmount: liquorTaxService.ledgerTaxAmount(db, product, input.quantity, shippedOn),
         storagePlace: '浄溜所',
         note: `サンプル送付 ${sampleNo}`,
         createdBy: actor?.id ?? null,

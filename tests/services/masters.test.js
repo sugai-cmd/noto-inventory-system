@@ -376,7 +376,7 @@ test('資材・商品・レシピの見出しもシートの列そのもの', as
   assert.equal(
     product.body.header,
     '商品名称,容量(ml),規定度数,容器タイプ,単位,上代,JAN,目標エキス分基準,備考,' +
-      '商品カテゴリ,商品ID,初期商品在庫数,初期仕掛品在庫数,課税額'
+      '商品カテゴリ,商品ID,初期商品在庫数,初期仕掛品在庫数,課税額,酒類区分'
   );
 
   const recipe = await api('GET', '/api/master-import/template/productRecipes');
