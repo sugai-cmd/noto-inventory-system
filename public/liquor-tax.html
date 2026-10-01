@@ -1,0 +1,370 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>酒税 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>酒税の月次算出</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      発送済にした商品（サンプル送付も含む）の <strong>容量(ml) × 本数 × 税率</strong> で計算します。
+      既定は<strong>前月</strong>です（月初に前月分を申告するため）。
+      未納税移出は課税対象から除き、返品は控除していません（どちらも下に参考として出します）。
+    </p>
+    <div class="grid" style="margin-bottom:12px">
+      <div><label for="month">対象月</label><input type="month" id="month"></div>
+      <div style="display:flex;align-items:flex-end;gap:8px">
+        <button type="button" id="reloadBtn" class="secondary">再計算</button>
+        <button type="button" id="exportBtn" class="secondary">CSV出力</button>
+      </div>
+    </div>
+    <div id="summaryBox"></div>
+  </section>
+
+  <section class="panel" id="unresolvedPanel" style="display:none">
+    <h2>税率が出せなかった商品</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      <strong>合計には入っていません。</strong>このままだと申告額が足りません。
+      商品マスタの酒類区分・容量・度数を入れるか、下の表に税率を登録してください。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>商品名称</th><th>酒類区分</th><th class="num">度数</th>
+          <th class="num">本数</th><th class="num">数量計(L)</th><th>足りないもの</th>
+        </tr></thead>
+        <tbody id="unresolvedRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>課税移出の内訳</h2>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>商品名称</th><th>酒類区分</th><th class="num">度数</th><th class="num">容量(ml)</th>
+          <th class="num">本数</th><th class="num">数量計(L)</th>
+          <th class="num">円/kl</th><th class="num">酒税額</th>
+        </tr></thead>
+        <tbody id="taxableRows"></tbody>
+        <tfoot id="taxableFoot"></tfoot>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>参考（課税額には入れていません）</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      未納税移出は相手先で課税されるため対象外です。
+      返品（戻入）の控除は、酒税法の扱いを確かめてから判断するため、いまは金額だけ出しています。
+    </p>
+    <div id="referenceBox"></div>
+  </section>
+
+  <section class="panel">
+    <h2>酒類区分と税率</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      <strong>1klあたりの税額</strong>を、区分ごとに登録します。計算は
+      <code>円/kl = 基準の税額 + max(0, 切り捨て(度数 − 基準度数)) × 1度ごとの加算</code> です。<br>
+      例）スピリッツ: 基準度数 <code>37</code>／基準の税額 <code>370,000</code>／1度ごと <code>10,000</code>
+      → 35度・36度・37度はどれも 370,000円/kl、38度で 380,000円/kl、41度で 410,000円/kl。<br>
+      税率が改正されたら、<strong>適用開始日を入れて新しい行を足してください</strong>（過去の月は古い率のまま計算されます）。
+      同じ区分・同じ適用開始日で登録すると上書きになります。
+    </p>
+    <form id="rateForm">
+      <div class="grid">
+        <div><label for="rCategory">酒類区分</label>
+          <input type="text" id="rCategory" list="categoryList" placeholder="スピリッツ" required>
+          <datalist id="categoryList"></datalist>
+        </div>
+        <div><label for="rBaseAbv">基準度数</label><input type="number" id="rBaseAbv" step="0.1" min="0" required></div>
+        <div><label for="rBaseYen">基準の税額（円/kl）</label><input type="number" id="rBaseYen" step="1" min="0" required></div>
+        <div><label for="rStepYen">1度ごとの加算（円/kl）</label><input type="number" id="rStepYen" step="1" min="0" value="0"></div>
+        <div><label for="rFrom">適用開始日（空ならずっと）</label><input type="date" id="rFrom"></div>
+        <div><label for="rNote">備考</label><input type="text" id="rNote" placeholder="酒税法第23条 等"></div>
+      </div>
+      <div class="actions"><button type="submit" id="rSubmit">税率を登録</button></div>
+    </form>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>酒類区分</th><th class="num">基準度数</th><th class="num">基準の税額(円/kl)</th>
+          <th class="num">1度ごと(円/kl)</th><th>適用開始日</th><th>備考</th><th></th>
+        </tr></thead>
+        <tbody id="rateRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>過去の課税額を入れ直す</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      移行前の課税額は<strong>容量を掛けずに</strong>記録されていたため、桁が違います
+      （300ml×12本が 4.44円になっていた。正しくは 1,332円）。
+      いまの計算（容量 × 本数 × その出荷日の税率）で台帳の課税額を入れ直します。
+      <strong>先に何件どう変わるかを出します。</strong>
+    </p>
+    <div class="actions">
+      <button type="button" id="previewBtn" class="secondary">何件変わるか調べる</button>
+      <button type="button" id="applyBtn" style="display:none">この内容で入れ直す</button>
+    </div>
+    <div id="backfillBox"></div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('liquor-tax.html');
+
+/** 円/kl は整数で持つが、円/ml も併記する（利用者が覚えていた 0.37 の形） */
+function perMl(yenPerKl) {
+  if (yenPerKl == null) return '';
+  return (yenPerKl / 1000000).toFixed(2);
+}
+
+function statRow(stats) {
+  return `<div class="stat-row">${stats
+    .map((s) => `<div class="stat"><div class="label">${escapeHtml(s.label)}</div>` +
+                `<div class="value">${s.value}${s.unit ? `<span class="unit">${escapeHtml(s.unit)}</span>` : ''}</div></div>`)
+    .join('')}</div>`;
+}
+
+function renderReport(report) {
+  const t = report.taxable.totals;
+
+  el('summaryBox').innerHTML =
+    statRow([
+      { label: `${report.month} の酒税`, value: yen(t.taxAmount) },
+      { label: '本数', value: num(t.quantity), unit: '本' },
+      { label: '数量計', value: num(t.totalVolumeL, 2), unit: 'L' },
+      { label: '商品数', value: num(t.productCount), unit: '件' },
+    ]) +
+    // 円未満を丸めない。申告書の端数処理をこちらで決めてしまうと、
+    // 丸めた額がそのまま申告額として写される。計算した値をそのまま出す
+    `<p class="hint">税率は ${escapeHtml(report.rateAsOf)} 時点で有効なものを使っています` +
+    '／金額は計算どおりで、円未満の端数処理はしていません' +
+    (report.unresolved.length
+      ? `／<strong>${report.unresolved.length}件の商品が合計に入っていません（下を確認してください）</strong>`
+      : '') + '</p>';
+
+  el('taxableRows').innerHTML = report.taxable.rows.length
+    ? report.taxable.rows.map((r) => `<tr>
+        <td>${escapeHtml(r.productName)}</td>
+        <td>${escapeHtml(r.taxCategory ?? '')}</td>
+        <td class="num">${num(r.abv, 1)}</td>
+        <td class="num">${num(r.volumeMl)}</td>
+        <td class="num">${num(r.quantity)}</td>
+        <td class="num">${num(r.totalVolumeL, 2)}</td>
+        <td class="num">${num(r.yenPerKl)}<span class="unit"> (${perMl(r.yenPerKl)}円/ml)</span></td>
+        <td class="num">${yen(r.taxAmount)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="8" class="empty">この月の出荷はありません</td></tr>';
+
+  el('taxableFoot').innerHTML = report.taxable.rows.length
+    ? `<tr><th colspan="4">合計</th>
+         <th class="num">${num(t.quantity)}</th>
+         <th class="num">${num(t.totalVolumeL, 2)}</th>
+         <th></th>
+         <th class="num">${yen(t.taxAmount)}</th></tr>`
+    : '';
+
+  // 税率が出せなかった商品。**黙って0円にしない**（申告額が過少になる）
+  el('unresolvedPanel').style.display = report.unresolved.length ? '' : 'none';
+  el('unresolvedRows').innerHTML = report.unresolved.map((r) => `<tr>
+      <td>${escapeHtml(r.productName)}</td>
+      <td>${escapeHtml(r.taxCategory ?? '（未設定）')}</td>
+      <td class="num">${r.abv == null ? '—' : num(r.abv, 1)}</td>
+      <td class="num">${num(r.quantity)}</td>
+      <td class="num">${num(r.totalVolumeL, 2)}</td>
+      <td class="warn-text">${escapeHtml(r.reason)}</td>
+    </tr>`).join('');
+
+  el('referenceBox').innerHTML = Object.entries(report.reference).map(([type, ref]) => {
+    const rows = ref.rows.length
+      ? ref.rows.map((r) => `<tr>
+          <td>${escapeHtml(r.productName)}</td>
+          <td class="num">${num(r.quantity)}</td>
+          <td class="num">${num(r.totalVolumeL, 2)}</td>
+          <td class="num">${r.taxAmount == null ? '—' : yen(r.taxAmount)}</td>
+        </tr>`).join('')
+      : `<tr><td colspan="4" class="empty">この月は該当なし</td></tr>`;
+    return `<h3 style="margin-bottom:6px">${escapeHtml(type)}</h3>
+      <div class="table-scroll"><table>
+        <thead><tr><th>商品名称</th><th class="num">本数</th><th class="num">数量計(L)</th><th class="num">相当する酒税額</th></tr></thead>
+        <tbody>${rows}</tbody>
+      </table></div>`;
+  }).join('');
+}
+
+async function loadReport() {
+  const month = el('month').value;
+  const report = await apiGet(`/api/liquor-tax/monthly${month ? `?month=${month}` : ''}`);
+  // 既定（前月）はサーバー側で決めるので、返ってきた月を画面に反映する
+  el('month').value = report.month;
+  renderReport(report);
+}
+
+async function loadRates() {
+  const rates = await apiGet('/api/liquor-tax/rates');
+  el('rateRows').innerHTML = rates.length
+    ? rates.map((r) => `<tr>
+        <td>${escapeHtml(r.category)}</td>
+        <td class="num">${num(r.base_abv, 1)}</td>
+        <td class="num">${num(r.base_yen_per_kl)}</td>
+        <td class="num">${num(r.step_yen_per_kl)}</td>
+        <td>${escapeHtml(r.effective_from ?? '（ずっと）')}</td>
+        <td>${escapeHtml(r.note ?? '')}</td>
+        <td><button type="button" class="secondary small" data-rate-del="${r.id}">削除</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">税率が登録されていません。登録するまで酒税は計算できません</td></tr>';
+
+  const categories = [...new Set(rates.map((r) => r.category))];
+  el('categoryList').innerHTML = categories
+    .map((c) => `<option value="${escapeHtml(c)}"></option>`).join('');
+}
+
+el('rateForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  el('rSubmit').disabled = true;
+  try {
+    const payload = {
+      category: el('rCategory').value.trim(),
+      baseAbv: Number(el('rBaseAbv').value),
+      baseYenPerKl: Number(el('rBaseYen').value),
+      stepYenPerKl: Number(el('rStepYen').value || 0),
+    };
+    if (el('rFrom').value) payload.effectiveFrom = el('rFrom').value;
+    if (el('rNote').value.trim()) payload.note = el('rNote').value.trim();
+
+    const saved = await apiPost('/api/liquor-tax/rates', payload);
+    showMessage('messages', 'ok',
+      `${saved.category} の税率を登録しました（${num(saved.base_abv, 1)}度まで ${num(saved.base_yen_per_kl)}円/kl）`);
+    el('rateForm').reset();
+    el('rStepYen').value = '0';
+    await Promise.all([loadRates(), loadReport()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('rSubmit').disabled = false;
+  }
+});
+
+el('rateRows').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-rate-del]');
+  if (!btn) return;
+  if (!confirm('この税率を削除しますか？（この区分の商品は酒税が計算できなくなります）')) return;
+  clearMessage('messages');
+  try {
+    await api('DELETE', `/api/liquor-tax/rates/${btn.dataset.rateDel}`);
+    showMessage('messages', 'ok', '税率を削除しました');
+    await Promise.all([loadRates(), loadReport()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+});
+
+function renderBackfill(result) {
+  if (!result.changedCount) {
+    el('applyBtn').style.display = 'none';
+    el('backfillBox').innerHTML =
+      `<p class="hint">入れ直す必要のある行はありません（出荷の記録 ${num(result.totalLedgerRows)}件を調べました）。</p>` +
+      skippedHtml(result);
+    return;
+  }
+
+  const rows = result.changes.map((c) => `<tr>
+      <td>${escapeHtml(c.txnDate)}</td>
+      <td>${escapeHtml(c.productName)}</td>
+      <td class="num">${num(c.quantity)}</td>
+      <td class="num">${c.before == null ? '（空）' : yen(c.before)}</td>
+      <td class="num">${yen(c.after)}</td>
+    </tr>`).join('');
+
+  el('backfillBox').innerHTML =
+    `<p class="hint">${result.applied ? '入れ直しました' : '入れ直す対象'}: <strong>${num(result.changedCount)}件</strong>` +
+    `（出荷の記録 ${num(result.totalLedgerRows)}件のうち）` +
+    (result.changedCount > result.changes.length ? `／下は先頭${result.changes.length}件` : '') + '</p>' +
+    skippedHtml(result) +
+    `<div class="table-scroll"><table>
+       <thead><tr><th>日付</th><th>商品名称</th><th class="num">本数</th><th class="num">いまの課税額</th><th class="num">直したあと</th></tr></thead>
+       <tbody>${rows}</tbody>
+     </table></div>`;
+
+  el('applyBtn').style.display = result.applied ? 'none' : '';
+}
+
+function skippedHtml(result) {
+  if (!result.skipped.length) return '';
+  return `<p class="hint warn-text">税率が出せず飛ばした商品: ` +
+    result.skipped.map((s) => `${escapeHtml(s.productName)}（${escapeHtml(s.reason)}／${s.count}件）`).join('、') +
+    `</p>`;
+}
+
+el('previewBtn').addEventListener('click', async () => {
+  clearMessage('messages');
+  el('previewBtn').disabled = true;
+  try {
+    renderBackfill(await apiPost('/api/liquor-tax/backfill', {}));
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  } finally {
+    el('previewBtn').disabled = false;
+  }
+});
+
+el('applyBtn').addEventListener('click', async () => {
+  if (!confirm('台帳の課税額を入れ直します。よろしいですか？')) return;
+  clearMessage('messages');
+  el('applyBtn').disabled = true;
+  try {
+    const result = await apiPost('/api/liquor-tax/backfill', { apply: true });
+    renderBackfill(result);
+    showMessage('messages', 'ok', `課税額を ${num(result.changedCount)}件 入れ直しました`);
+    await loadReport();
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  } finally {
+    el('applyBtn').disabled = false;
+  }
+});
+
+el('exportBtn').addEventListener('click', async () => {
+  clearMessage('messages');
+  try {
+    const res = await fetch(`/api/exports/liquor-tax?month=${el('month').value}`, { credentials: 'same-origin' });
+    if (!res.ok) throw new Error(`酒税CSVの出力に失敗しました（HTTP ${res.status}）`);
+    const blob = await res.blob();
+    const disposition = res.headers.get('content-disposition') ?? '';
+    const named = /filename\*=UTF-8''([^;]+)/.exec(disposition);
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = named ? decodeURIComponent(named[1]) : 'liquor_tax.csv';
+    a.click();
+    URL.revokeObjectURL(url);
+    showMessage('messages', 'ok', `酒税の内訳を出力しました（${res.headers.get('x-row-count')}件）`);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+});
+
+const reload = () => Promise.all([loadRates(), loadReport()])
+  .catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+el('month').addEventListener('change', () =>
+  loadReport().catch((err) => showMessage('messages', 'error', err.message)));
+el('reloadBtn').addEventListener('click', reload);
+
+reload();
+</script>
+</body>
+</html>

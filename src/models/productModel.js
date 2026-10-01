@@ -52,11 +52,11 @@ function create(input) {
     .prepare(
       `INSERT INTO products
          (uid, code, name, volume_ml, abv, container_type, unit, list_price, jan_code,
-          target_extract_spec, category, tax_per_unit,
+          target_extract_spec, category, tax_per_unit, tax_category,
           initial_product_stock, initial_wip_stock, note)
        VALUES
          (@uid, @code, @name, @volumeMl, @abv, @containerType, @unit, @listPrice, @janCode,
-          @targetExtractSpec, @category, @taxPerUnit,
+          @targetExtractSpec, @category, @taxPerUnit, @taxCategory,
           @initialProductStock, @initialWipStock, @note)`
     )
     .run({
@@ -72,6 +72,7 @@ function create(input) {
       targetExtractSpec: input.targetExtractSpec ?? null,
       category: input.category ?? null,
       taxPerUnit: input.taxPerUnit ?? null,
+      taxCategory: input.taxCategory ?? null,
       initialProductStock: input.initialProductStock ?? 0,
       initialWipStock: input.initialWipStock ?? 0,
       note: input.note ?? null,

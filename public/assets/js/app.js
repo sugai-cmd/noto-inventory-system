@@ -225,6 +225,7 @@ function renderNav(current) {
     ['stocktaking.html', '棚卸'],
     ['audit.html', '在庫監査'],
     ['sales-targets.html', '売上目標'],
+    ['liquor-tax.html', '酒税'],
     ['quotations.html', '見積'],
     ['masters.html', 'マスタ'],
     ['shipping.html', '送料設定'],

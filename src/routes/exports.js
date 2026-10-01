@@ -103,6 +103,16 @@ router.get('/material-stock', (req, res, next) => {
   }
 });
 
+// 酒税の月次内訳（申告書への転記用）
+router.get('/liquor-tax', (req, res, next) => {
+  try {
+    const month = String(req.query.month ?? '');
+    sendCsv(res, `liquor_tax_${month}`, csvExportService.exportLiquorTax(month));
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/tank-monitor', (req, res, next) => {
   try {
     sendCsv(res, 'tank_monitor', csvExportService.exportTankMonitor());

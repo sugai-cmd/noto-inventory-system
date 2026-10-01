@@ -20,6 +20,9 @@ test.before(async () => {
                 VALUES (?, '300ml瓶', '本', 100, 500, 1000, 200, 'ガラス商事')`).run(generateUid(db, 'materials'));
     db.prepare(`INSERT INTO materials (uid, name, unit, unit_price, initial_stock)
                 VALUES (?, 'キャップ', '個', 20, 500)`).run(generateUid(db, 'materials'));
+    // 酒税の税率。サンプル送付も課税移出なので、税率が無いと課税額が出ない
+    db.prepare(`INSERT INTO liquor_tax_rates (category, base_abv, base_yen_per_kl, step_yen_per_kl)
+                VALUES ('スピリッツ', 37, 370000, 10000)`).run();
   }));
 });
 
@@ -154,8 +157,10 @@ test('商品とレシピを同時に登録できる', async () => {
   const { status, body } = await api('POST', '/api/products', {
     name: '浄酎 300ml',
     volumeMl: 300,
+    abv: 41,
     listPrice: 3000,
     taxPerUnit: 300,
+    taxCategory: 'スピリッツ',
     initialProductStock: 50,
     initialWipStock: 0,
     recipe: [
@@ -308,7 +313,9 @@ test('サンプル送付でサンプルIDが採番され、在庫が減る', asy
     .get(body.stockLedgerId);
   assert.equal(ledger.sample_shipment_id, body.sampleId);
   assert.equal(ledger.order_id, null, '受注とは紐付かないこと');
-  assert.equal(ledger.tax_amount, 600, '課税額が計算されること（300円×2本）');
+  // 300ml × 2本 = 600ml。41度は 410,000円/kl ＝ 0.41円/ml なので 246円。
+  // **tax_per_unit(300円)×2本 = 600円ではない**（あちらは容量を掛けていない値）
+  assert.equal(ledger.tax_amount, 246, '課税額が容量×本数×税率で計算されること');
 });
 
 test('サンプル送付の一覧が取得できる', async () => {

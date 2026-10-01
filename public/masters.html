@@ -289,7 +289,14 @@ const MASTERS = {
       { key: 'janCode', label: 'JANコード', type: 'text' },
       { key: 'category', label: '商品カテゴリ', type: 'text' },
       { key: 'targetExtractSpec', label: '目標エキス分基準', type: 'text' },
-      { key: 'taxPerUnit', label: '課税額(円)', type: 'number', step: '1' },
+      // 酒税の税率を引く区分。酒税タブで登録した区分が候補に出る。
+      // **容量と規定度数も要る**（酒税 = 容量 × 本数 × 区分と度数から決まる税率）
+      { key: 'taxCategory', label: '酒類区分', type: 'taxCategory',
+        hint: '酒税の計算に使います。候補は酒税タブで登録した区分です（空欄だとその商品の酒税が出せません）' },
+      // 移行時の列。**酒税の計算には使っていない**（容量を掛けていない値だったため）。
+      // 過去データを読めるように残してあるだけなので、新しく入れる必要はない
+      { key: 'taxPerUnit', label: '課税額(円)（旧・未使用）', type: 'number', step: '1',
+        hint: '移行前の列です。酒税は上の酒類区分から計算するので、ここは使っていません' },
       { key: 'initialProductStock', label: '初期商品在庫数', type: 'int',
         hint: '在庫は履歴から再計算されます。ここは その起点 なので、運用開始後は基本さわらないでください' },
       { key: 'initialWipStock', label: '初期仕掛品在庫数', type: 'int' },
@@ -302,6 +309,9 @@ const MASTERS = {
       { key: 'abv', label: '度数', format: (r) => (r.abv != null ? `${num(r.abv, 1)}%` : '') },
       { key: 'list_price', label: '上代', num: true, yen: true },
       { key: 'category', label: 'カテゴリ' },
+      // 空欄が目につくようにしておく。空のままだとその商品の酒税が出ない
+      // （列の中身はescapeHtmlを通るので、装飾ではなく文字で気づかせる）
+      { key: 'tax_category', label: '酒類区分', format: (r) => r.tax_category ?? '⚠ 未設定' },
     ],
     extraActions: [{ action: 'duplicate', label: '複製' }],
   },
@@ -454,6 +464,8 @@ let editingId = null;
 let records = [];
 let breweries = [];
 let tankPrefixes = [];
+// 商品の「酒類区分」の候補。酒税タブで登録した区分（liquor_tax_rates）
+let liquorTaxCategories = [];
 let materials = [];
 // 「本店」欄の選択肢。得意先タブを開いたときに読み込む
 let customersForParent = [];
@@ -656,6 +668,16 @@ function renderForm() {
                .join('')}
            </select>
            <div class="hint" id="f_${f.key}_inherited"></div>`;
+      } else if (f.type === 'taxCategory') {
+        // 候補は出すが、一覧に無い値も入力できるようにしている。
+        // 選択式にすると、税率の行をあとで消したり区分名を変えたときに、
+        // その商品の編集画面を**開いただけで区分が消える**（tankTypeと同じ理由）。
+        // 酒税の区分が黙って消えるのは、申告額が過少になるということ
+        control =
+          `<input type="text" id="f_${f.key}" list="dl_${f.key}"${disabled}${ph}>
+           <datalist id="dl_${f.key}">
+             ${liquorTaxCategories.map((c) => `<option value="${escapeHtml(c)}">`).join('')}
+           </datalist>`;
       } else if (f.type === 'brewery') {
         control =
           `<select id="f_${f.key}"${disabled}>
@@ -1380,16 +1402,18 @@ el('importRun').addEventListener('click', () => runImport(false));
 (async () => {
   // 補助的な取得（酒蔵・資材・タンク種別・CSVの見出し）は、
   // 失敗しても得意先・商品の登録はできるので、ここで画面を止めない。
-  const [b, m, t] = await Promise.allSettled([
+  const [b, m, t, lt] = await Promise.allSettled([
     apiGet('/api/breweries'),
     apiGet('/api/materials'),
     apiGet('/api/tanks/prefixes'),
+    apiGet('/api/liquor-tax/categories'),
   ]);
   breweries = b.status === 'fulfilled' ? b.value : [];
   materials = m.status === 'fulfilled' ? m.value : [];
   tankPrefixes = t.status === 'fulfilled' ? t.value : [];
+  liquorTaxCategories = lt.status === 'fulfilled' ? lt.value : [];
 
-  let failure = [b, m, t].find((r) => r.status === 'rejected')?.reason ?? null;
+  let failure = [b, m, t, lt].find((r) => r.status === 'rejected')?.reason ?? null;
   await loadImportTemplate().catch((err) => { failure = failure ?? err; });
 
   // switchTabがメッセージ欄を消すので、警告はその後に出す

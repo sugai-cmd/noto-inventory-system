@@ -8,6 +8,7 @@ const { NotFoundError, ConflictError, BusinessRuleError } = require('../utils/er
 const operationLogService = require('./operationLogService');
 const customerService = require('./customerService');
 const shippingFeeService = require('./shippingFeeService');
+const liquorTaxService = require('./liquorTaxService');
 const { consumeMaterials } = require('./materialConsumption');
 
 /**
@@ -244,7 +245,9 @@ function markOrderAsShipped(orderId, { deliveredOn, note, cartons } = {}, actor 
         counterparty: customer?.name ?? null,
         orderId,
         volumeMl: product?.volume_ml != null ? product.volume_ml * order.quantity : null,
-        taxAmount: product?.tax_per_unit != null ? product.tax_per_unit * order.quantity : null,
+        // 容量(ml)×本数×税率。**tax_per_unit は読まない**（容量を掛けていない値で、桁が違う）。
+        // 税率が引けなければ空で入り、酒税タブが名指しで出す。出荷は止めない
+        taxAmount: liquorTaxService.ledgerTaxAmount(db, product, order.quantity, shippedOn),
         storagePlace: '浄溜所',
         note: note ?? null,
         createdBy: actor?.id ?? null,
@@ -503,7 +506,13 @@ function updateOrder(orderId, patch = {}, actor = null) {
           txnDate: after.delivered_on ?? ledger.txn_date,
           quantity: after.quantity,
           volumeMl: product?.volume_ml != null ? product.volume_ml * after.quantity : null,
-          taxAmount: product?.tax_per_unit != null ? product.tax_per_unit * after.quantity : null,
+          // 本数が変わったら酒税額も変わる。日付も変わりうるので、その日の税率で出し直す
+          taxAmount: liquorTaxService.ledgerTaxAmount(
+            db,
+            product,
+            after.quantity,
+            after.delivered_on ?? ledger.txn_date
+          ),
         });
       }
     }

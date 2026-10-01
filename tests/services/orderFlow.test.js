@@ -20,10 +20,15 @@ test.before(async () => {
      VALUES (?, '株式会社NOTO', 0.7, 1, '末日')`
   ).run(generateUid(db, 'customers'));
   db.prepare(
-    `INSERT INTO products (uid, name, volume_ml, list_price, tax_per_unit,
+    `INSERT INTO products (uid, name, volume_ml, abv, list_price, tax_per_unit, tax_category,
                            initial_product_stock, initial_wip_stock)
-     VALUES (?, '浄酎 300ml', 300, 3000, 300, 0, 0)`
+     VALUES (?, '浄酎 300ml', 300, 41, 3000, 300, 'スピリッツ', 0, 0)`
   ).run(generateUid(db, 'products'));
+  // 酒税は容量×本数×税率で出す。税率はマスタから引く（tax_per_unit は読まない）
+  db.prepare(
+    `INSERT INTO liquor_tax_rates (category, base_abv, base_yen_per_kl, step_yen_per_kl)
+     VALUES ('スピリッツ', 37, 370000, 10000)`
+  ).run();
   db.prepare(
     `INSERT INTO materials (uid, name, unit, unit_price, proper_stock_qty, initial_stock)
      VALUES (?, '300ml瓶', '本', 100, 1000, 500)`
@@ -133,7 +138,8 @@ test('発送済にすると在庫が減り、出荷履歴にorder_idが紐付く
   assert.equal(ledger.txn_type, '出荷');
   assert.equal(ledger.order_id, 1); // 6-3で課題だった受注との突合が新規データでは常に成立する
   assert.equal(ledger.quantity, 10);
-  assert.equal(ledger.tax_amount, 3000); // 課税額300 * 10本
+  // 300ml × 10本 = 3,000ml。41度は 370,000 + 4×10,000 = 410,000円/kl ＝ 0.41円/ml
+  assert.equal(ledger.tax_amount, 1230);
 
   const stock = await api('GET', '/api/products/1/stock');
   assert.equal(stock.body.product_stock, 40); // 50 - 出荷10

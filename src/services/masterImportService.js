@@ -103,7 +103,10 @@ const TEMPLATES = {
       商品ID: { key: 'code' },
       初期商品在庫数: { key: 'initialProductStock', type: 'int' },
       初期仕掛品在庫数: { key: 'initialWipStock', type: 'int' },
+      // 課税額は移行時の列。**酒税の計算には使っていない**（容量を掛けていない値だった）。
+      // 過去のCSVをそのまま取り込めるように受け付けるだけで、酒税は酒類区分から出す
       課税額: { key: 'taxPerUnit', type: 'number' },
+      酒類区分: { key: 'taxCategory' },
     },
   },
 

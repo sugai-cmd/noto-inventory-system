@@ -23,10 +23,14 @@ test.before(async () => {
        VALUES (?, 'プリスリゾート株式会社', 0.8)`
     ).run(generateUid(db, 'customers'));
     db.prepare(
-      `INSERT INTO products (uid, name, volume_ml, list_price, tax_per_unit,
+      `INSERT INTO products (uid, name, volume_ml, abv, list_price, tax_per_unit, tax_category,
                              initial_product_stock, initial_wip_stock)
-       VALUES (?, 'JOCHU White NOTO 35 300ml', 300, 3300, 300, 500, 0)`
+       VALUES (?, 'JOCHU White NOTO 35 300ml', 300, 35, 3300, 300, 'スピリッツ', 500, 0)`
     ).run(generateUid(db, 'products'));
+    db.prepare(
+      `INSERT INTO liquor_tax_rates (category, base_abv, base_yen_per_kl, step_yen_per_kl)
+       VALUES ('スピリッツ', 37, 370000, 10000)`
+    ).run();
   }));
 });
 
@@ -102,7 +106,8 @@ test('発送済の受注で本数を直すと、商品在庫の出荷履歴も�
   // 直前のテストで12→24に直しているので、履歴側も24になっていること
   assert.equal(ledger.quantity, 24);
   assert.equal(ledger.volume_ml, 300 * 24);
-  assert.equal(ledger.tax_amount, 300 * 24);
+  // 酒税も本数に追従する。35度は基準(37度)以下なので 370,000円/kl ＝ 0.37円/ml
+  assert.equal(ledger.tax_amount, 7200 * 0.37);
 });
 
 test('納品日を直すと出荷履歴の日付も動く', async () => {
