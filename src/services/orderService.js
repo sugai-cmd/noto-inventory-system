@@ -206,6 +206,10 @@ function markOrderAsShipped(orderId, { deliveredOn, note, cartons } = {}, actor 
   const run = db.transaction(() => {
     const order = orderModel.findById(orderId);
     if (!order) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+    // 取消済みを出荷すると、取り消した受注の在庫が減り、酒税にも乗る
+    if (order.is_cancelled) {
+      throw new ConflictError(`受注 ${order.order_no} は取消済みです。発送できません`);
+    }
     if (order.status === '発送済') {
       throw new ConflictError(`受注 ${order.order_no} は既に発送済です`);
     }
@@ -297,6 +301,9 @@ function markInvoiceSent(orderId, { invoicedOn } = {}) {
   const db = getConnection();
   const order = orderModel.findById(orderId);
   if (!order) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+  if (order.is_cancelled) {
+    throw new ConflictError(`受注 ${order.order_no} は取消済みです。請求できません`);
+  }
 
   db.prepare(
     `UPDATE orders SET invoiced_on = @invoicedOn, updated_at = datetime('now') WHERE id = @id`
@@ -310,6 +317,9 @@ function markPaid(orderId, { paidOn } = {}) {
   const db = getConnection();
   const order = orderModel.findById(orderId);
   if (!order) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+  if (order.is_cancelled) {
+    throw new ConflictError(`受注 ${order.order_no} は取消済みです。入金を記録できません`);
+  }
 
   db.prepare(
     `UPDATE orders SET paid_on = @paidOn, updated_at = datetime('now') WHERE id = @id`
@@ -342,6 +352,10 @@ function markInvoicesSent(orderIds, { invoicedOn } = {}, actor = null) {
         skipped.push({ id, reason: '受注が見つかりません' });
         continue;
       }
+      if (order.is_cancelled) {
+        skipped.push({ id, orderNo: order.order_no, reason: '取消済みです' });
+        continue;
+      }
       if (order.invoiced_on) {
         skipped.push({ id, orderNo: order.order_no, reason: `既に請求済み（${order.invoiced_on}）` });
         continue;
@@ -370,7 +384,8 @@ function markInvoicesSent(orderIds, { invoicedOn } = {}, actor = null) {
  */
 function listPendingInvoices({ to } = {}) {
   const db = getConnection();
-  const where = ['o.delivered_on IS NOT NULL', 'o.invoiced_on IS NULL'];
+  // 取消済みは請求の候補に出さない（0026）
+  const where = ['o.is_cancelled = 0', 'o.delivered_on IS NOT NULL', 'o.invoiced_on IS NULL'];
   const params = {};
   if (to) { where.push('o.delivered_on <= @to'); params.to = to; }
 
@@ -401,7 +416,11 @@ function listPendingInvoices({ to } = {}) {
  */
 
 // 編集できる項目と、DBの列名の対応。ここに無い項目は書き換えない。
+//
+// 得意先は変えられない（別の得意先なら掛率も請求も別件なので、登録し直すほうが正しい）。
+// **商品だけは変えられる**（誤登録の直しとして一番多いため）。ただし未発送に限る。
 const EDITABLE_COLUMNS = {
+  productId: 'product_id',
   orderedOn: 'ordered_on',
   requestedDeliveryOn: 'requested_delivery_on',
   deliveredOn: 'delivered_on',
@@ -421,6 +440,7 @@ const EDITABLE_COLUMNS = {
 
 // 操作ログに出すときの日本語名
 const EDITABLE_LABELS = {
+  product_id: '商品',
   ordered_on: '受注日',
   requested_delivery_on: '納入希望日',
   delivered_on: '納品日',
@@ -461,6 +481,40 @@ function updateOrder(orderId, patch = {}, actor = null) {
     }
     if (next.ordered_on === null) {
       throw new BusinessRuleError('受注日は空にできません');
+    }
+    if (before.is_cancelled) {
+      throw new BusinessRuleError(
+        `受注 ${before.order_no} は取消済みです。直すなら、もう一度登録してください`
+      );
+    }
+
+    // 商品の差し替え（誤登録の直し）。
+    //
+    // **未発送に限る。** 出荷が済んでいると、商品在庫変動履歴の出荷行の商品まで
+    // 差し替えることになり、引き当て・酒税・在庫監査に波及する（別の機能になる）。
+    // 先に出荷を取り消してもらう。status ではなく台帳を見るのは cancelOrder と同じ理由
+    let productChange = null;
+    if (next.product_id != null && next.product_id !== before.product_id) {
+      const shipments = liveShipmentLedgerRows(db, orderId);
+      if (shipments.length) {
+        throw new BusinessRuleError(
+          `受注 ${before.order_no} には出荷の記録が残っているため、商品は変えられません。` +
+            '在庫監査タブの「記録の取り消し」で先に出荷を取り消してください'
+        );
+      }
+      const product = db.prepare('SELECT * FROM products WHERE id = ?').get(next.product_id);
+      if (!product) throw new NotFoundError(`商品が見つかりません (id=${next.product_id})`);
+
+      // 単価が指定されていなければ、新しい商品の上代を入れる
+      // （登録時 getOrderDefaults と同じ考え方。古い商品の単価が残るほうが危ない）
+      if (!Object.hasOwn(patch, 'unitPrice') && product.list_price != null) {
+        next.unit_price = product.list_price;
+      }
+      productChange = { from: before.product_name, to: product.name };
+    } else {
+      // 同じ商品を送ってきただけなら、変更として扱わない（操作ログを汚さない）
+      delete next.product_id;
+      if (!Object.keys(next).length) return before;
     }
 
     // 金額は「単価×本数×掛率」で計算し直す。画面から送られた売価・合計は使わない。
@@ -517,9 +571,15 @@ function updateOrder(orderId, patch = {}, actor = null) {
       }
     }
 
+    // 商品だけは**名前で**出す。他と同じ扱いにすると「商品: 3 → 7」になり、
+    // 操作ログを後から読んだときに何が何に変わったのか分からない
     const changes = Object.keys(next)
       .filter((c) => String(before[c] ?? '') !== String(after[c] ?? ''))
-      .map((c) => `${EDITABLE_LABELS[c] ?? c }: ${before[c] ?? '(空)'} → ${after[c] ?? '(空)'}`);
+      .map((c) =>
+        c === 'product_id' && productChange
+          ? `商品: ${productChange.from} → ${productChange.to}`
+          : `${EDITABLE_LABELS[c] ?? c }: ${before[c] ?? '(空)'} → ${after[c] ?? '(空)'}`
+      );
 
     operationLogService.record({
       user: actor,
@@ -537,6 +597,127 @@ function updateOrder(orderId, patch = {}, actor = null) {
   return run();
 }
 
+// ---------------------------------------------------------------------------
+// 受注の取消
+// ---------------------------------------------------------------------------
+
+/**
+ * 生きている出荷・返品の台帳行を返す（なければ空配列）。
+ *
+ * **status ではなく台帳を見る。** status は編集で手で変えられるので、
+ * `未着手` に戻してあっても出荷行が生きていることがありうる。
+ * そのまま受注を取り消すと、在庫監査が「出荷行はあるのに発送済でない」と
+ * 鳴り続ける（stockAuditService.auditOrderShipments）。
+ */
+function liveShipmentLedgerRows(db, orderId) {
+  return db
+    .prepare(
+      `SELECT id, history_code, txn_type, quantity, txn_date
+         FROM product_stock_ledger
+        WHERE order_id = @orderId AND is_cancelled = 0
+        ORDER BY id`
+    )
+    .all({ orderId });
+}
+
+/**
+ * 紐付いている委託販売実績報告（なければ空配列）。
+ *
+ * **report_no はいまのところ採番されていない**（submitConsignmentReport が入れていない。
+ * 列もUNIQUEのまま空）。idは画面に出ないので、利用者が委託販売報告の一覧で
+ * 突き合わせられる「報告月と本数」で名指しする。
+ */
+function linkedConsignmentReports(db, orderId) {
+  return db
+    .prepare(
+      `SELECT id, report_no, report_month, quantity
+         FROM consignment_reports WHERE order_id = @orderId ORDER BY id`
+    )
+    .all({ orderId })
+    .map((r) => ({
+      ...r,
+      label: r.report_no
+        ? `${r.report_no}（${r.report_month}）`
+        : `${r.report_month} 分 ${r.quantity}本`,
+    }));
+}
+
+/**
+ * 誤登録した受注を取り消す。
+ *
+ * 行は消さず、取消フラグと理由を立てる（0026のコメント参照）。
+ * 一覧の既定・集計・ダッシュボード・CSV・売上目標・在庫監査から外れるのは、
+ * それぞれの読み取り側が `is_cancelled = 0` で絞っているため。
+ *
+ * ledgerCancelService.cancelProductLedger と同じ作法:
+ * 理由必須／二重取消は409／前段の取消を先に求める。
+ *
+ * **請求済み・入金済みは止めない**（利用者の判断）。請求を間違えたときに
+ * 直せなくなるため。代わりに warnings に入れて画面で確認させる。
+ */
+function cancelOrder(orderId, { reason } = {}, actor = null) {
+  const db = getConnection();
+  if (!reason || !String(reason).trim()) {
+    throw new BusinessRuleError('取消理由は必須です');
+  }
+
+  const run = db.transaction(() => {
+    const order = orderModel.findById(orderId);
+    if (!order) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+    if (order.is_cancelled) {
+      throw new ConflictError(`受注 ${order.order_no} は既に取消済みです`);
+    }
+
+    const shipments = liveShipmentLedgerRows(db, orderId);
+    if (shipments.length) {
+      throw new ConflictError(
+        `受注 ${order.order_no} には出荷の記録が残っています` +
+          `（${shipments.map((r) => `${r.history_code ?? `id=${r.id}`} ${r.txn_type}${r.quantity}`).join('、')}）。` +
+          '在庫監査タブの「記録の取り消し」で先に出荷を取り消してください'
+      );
+    }
+
+    // 報告が親の受注を失うと、売上目標の委託分と合わなくなる。
+    // **委託報告には取消の手段がまだ無い**ので、どの報告が邪魔しているかを必ず出す
+    const reports = linkedConsignmentReports(db, orderId);
+    if (reports.length) {
+      throw new ConflictError(
+        `受注 ${order.order_no} には委託販売実績報告が紐付いています` +
+          `（${reports.map((r) => r.label).join('、')}）。` +
+          'この受注は取り消せません'
+      );
+    }
+
+    // 止めないが、気づかずに取り消すと困るもの
+    const warnings = [];
+    if (order.invoiced_on) warnings.push(`請求済みです（請求日 ${order.invoiced_on}）`);
+    if (order.paid_on) warnings.push(`入金済みです（入金日 ${order.paid_on}）`);
+
+    db.prepare(
+      `UPDATE orders
+          SET is_cancelled = 1, cancel_reason = @reason, cancelled_at = datetime('now'),
+              cancelled_by = @by, updated_at = datetime('now')
+        WHERE id = @id`
+    ).run({ id: orderId, reason: String(reason).trim(), by: actor?.id ?? null });
+
+    operationLogService.record({
+      user: actor,
+      action: 'order.cancel',
+      targetType: 'orders',
+      targetId: orderId,
+      summary:
+        `受注 ${order.order_no} を取消（${order.customer_name} / ${order.product_name} ${order.quantity}本）` +
+        (warnings.length ? `／${warnings.join('、')}` : '') +
+        `／理由: ${String(reason).trim()}`,
+      detail: { warnings },
+    });
+
+    return { order: orderModel.findById(orderId), warnings };
+  });
+
+  return run();
+}
+
 module.exports = {
   getOrderDefaults,
   submitOrder,
@@ -546,4 +727,5 @@ module.exports = {
   markInvoicesSent,
   listPendingInvoices,
   markPaid,
+  cancelOrder,
 };

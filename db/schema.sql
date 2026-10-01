@@ -235,7 +235,7 @@ CREATE TABLE "orders" (
   created_by         INTEGER REFERENCES users(id),
   created_at         TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
-, legacy_order_no TEXT);
+, legacy_order_no TEXT, is_cancelled  INTEGER NOT NULL DEFAULT 0, cancel_reason TEXT, cancelled_at  TEXT, cancelled_by  INTEGER REFERENCES users(id));
 
 CREATE TABLE prefecture_zones (
   prefecture TEXT PRIMARY KEY,                  -- 都道府県名（「石川県」のように県まで含む）

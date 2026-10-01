@@ -280,12 +280,14 @@ function suggestCartons({ productId, quantity, orderId = null }) {
   const db = getConnection();
 
   // 複数明細の受注は対象外。対応表は商品×本数の1対1で、
-  // 明細ごとに箱を数えると1つの荷物に何箱も計上してしまう
+  // 明細ごとに箱を数えると1つの荷物に何箱も計上してしまう。
+  // 取消済みの明細は数えない（1明細を取り消して1行だけ残った受注は、1明細として扱う）
   if (orderId) {
     const siblings = db
       .prepare(
         `SELECT COUNT(*) AS n FROM orders
-          WHERE order_no = (SELECT order_no FROM orders WHERE id = @orderId)`
+          WHERE order_no = (SELECT order_no FROM orders WHERE id = @orderId)
+            AND is_cancelled = 0`
       )
       .get({ orderId }).n;
     if (siblings > 1) {

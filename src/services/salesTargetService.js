@@ -93,7 +93,7 @@ function getMonthlyProgress(targetMonth, { basis = DEFAULT_BASIS } = {}) {
     .prepare('SELECT * FROM sales_targets WHERE target_month = ?')
     .get(targetMonth);
 
-  // 買取分。基準の日付がその月にある受注
+  // 買取分。基準の日付がその月にある受注（取消済みは実績に数えない。0026）
   const purchaseRows = db
     .prepare(
       `SELECT o.id, o.order_no, o.line_no, o.ordered_on, o.delivered_on,
@@ -103,7 +103,8 @@ function getMonthlyProgress(targetMonth, { basis = DEFAULT_BASIS } = {}) {
          FROM orders o
          JOIN customers c ON c.id = o.customer_id
          JOIN products  p ON p.id = o.product_id
-        WHERE o.${column} IS NOT NULL
+        WHERE o.is_cancelled = 0
+          AND o.${column} IS NOT NULL
           AND substr(o.${column}, 1, 7) = @month
           AND (o.sales_method IS NULL OR o.sales_method <> '委託')
         ORDER BY o.${column}, o.order_no, o.line_no`

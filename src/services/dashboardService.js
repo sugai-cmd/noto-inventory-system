@@ -2,6 +2,9 @@
 //
 // 未入金アラート／本日の出荷予定／次回注文予測。
 // 在庫や売上の集計は既存のビュー・サービスがあるので、ここには重複させない。
+//
+// 3つとも**取消済みの受注を数えない**（0026）。誤登録を取り消しても
+// ここに残っていると、未入金の催促や出荷の準備をしてしまう。
 
 const { getConnection } = require('../db/connection');
 const { today } = require('../utils/dateUtil');
@@ -18,7 +21,8 @@ function listUnpaidOrders({ asOf } = {}) {
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        JOIN products  p ON p.id = o.product_id
-       WHERE o.paid_on IS NULL
+       WHERE o.is_cancelled = 0
+         AND o.paid_on IS NULL
          AND o.payment_due_on IS NOT NULL
          AND o.payment_due_on < @base
        ORDER BY o.payment_due_on`
@@ -37,7 +41,8 @@ function listShipmentsDue({ onDate } = {}) {
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        JOIN products  p ON p.id = o.product_id
-       WHERE o.status <> '発送済' AND o.requested_delivery_on = @target
+       WHERE o.is_cancelled = 0
+         AND o.status <> '発送済' AND o.requested_delivery_on = @target
        ORDER BY o.order_no, o.line_no`
     )
     .all({ target });
@@ -58,6 +63,7 @@ function forecastNextOrders({ limitPerCustomer = 5, minOrders = 3 } = {}) {
       `SELECT c.id AS customer_id, c.name AS customer_name, o.order_no, MIN(o.ordered_on) AS ordered_on
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
+       WHERE o.is_cancelled = 0
        GROUP BY c.id, o.order_no
        ORDER BY c.id, ordered_on DESC`
     )

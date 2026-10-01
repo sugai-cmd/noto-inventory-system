@@ -165,6 +165,14 @@
         </select>
       </div>
       <div>
+        <label for="filterCancelled">取消済み</label>
+        <label style="display:flex;align-items:center;gap:6px;font-weight:400">
+          <input type="checkbox" id="filterCancelled">
+          取り消した受注も表示する
+        </label>
+        <div class="hint">既定では隠しています（集計・CSV・ダッシュボードにも入りません）</div>
+      </div>
+      <div>
         <label for="filterCustomerSearch">得意先</label>
         <div class="search-wrap">
           <input type="text" id="filterCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
@@ -310,15 +318,52 @@
     </div>
   </section>
 
+  <section class="panel" id="cancelPanel" style="display:none">
+    <h2>受注の取消 <span id="cancelCode"></span></h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      誤って登録した受注を取り消します。<strong>行は消さずに「取消済み」の印をつけます</strong>
+      （受注番号が使い回されず、あとから何を取り消したか追えるようにするため）。
+      取り消すと一覧の既定表示・集計・ダッシュボード・CSV・売上目標から外れます。
+    </p>
+    <div id="cancelDetail"></div>
+    <div id="cancelWarnings"></div>
+    <form id="cancelForm">
+      <div class="grid">
+        <div>
+          <label for="cReason">取消理由 <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="cReason" required placeholder="商品を間違えて登録した 等">
+          <div class="hint">修正履歴に残ります（在庫監査タブ）</div>
+        </div>
+      </div>
+      <div class="actions">
+        <button type="submit" class="danger" id="cSubmit">取り消す</button>
+        <button type="button" class="secondary" id="cCancel">やめる</button>
+      </div>
+    </form>
+  </section>
+
   <section class="panel" id="editPanel" style="display:none">
     <h2>受注の編集 <span id="editCode"></span></h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      日付や本数を間違えて登録したときに直します。得意先と商品は変えられません
-      （変える場合は登録し直してください）。金額は単価×本数×掛率で計算し直します。
+      日付や本数を間違えて登録したときに直します。<strong>商品は未発送のうちだけ差し替えられます</strong>
+      （得意先は変えられません。変える場合は登録し直してください）。
+      金額は単価×本数×掛率で計算し直します。
       発送済の受注で本数や納品日を直すと、商品在庫の出荷履歴も同じ内容に直します。
     </p>
     <form id="editForm">
       <div class="grid">
+        <div>
+          <label for="eProductSearch">商品</label>
+          <div class="search-wrap">
+            <input type="text" id="eProductSearch" placeholder="商品名で検索" autocomplete="off">
+            <div class="search-results" id="eProductResults"></div>
+          </div>
+          <div class="chosen" id="eProductChosen">
+            <span class="name"></span>
+            <button type="button" class="secondary small">変更</button>
+          </div>
+          <div class="hint" id="eProductHint"></div>
+        </div>
         <div>
           <label for="eOrderedOn">受注日</label>
           <input type="date" id="eOrderedOn" required>
@@ -432,7 +477,7 @@
 <script>
 renderNav('orders.html');
 
-let customerSelect, productSelect;
+let customerSelect, productSelect, editProductSelect;
 
 /** 得意先・商品・本数が揃ったら、サーバー側で初期値（売価・入金予定日）を計算して反映する */
 /**
@@ -524,6 +569,8 @@ function renderSummary(summary) {
 async function loadOrders() {
   const params = listQuery(orderView, ORDER_PAGER);
   for (const [key, value] of currentFilterParams()) params.set(key, value);
+  // CSVには送らない（CSVは取消済みを必ず外す。currentFilterParams はCSVと共用）
+  if (el('filterCancelled').checked) params.set('includeCancelled', '1');
 
   const { rows: orders, total, summary } = asListResult(
     await apiGet(`/api/orders?${params}`), '受注一覧');
@@ -540,25 +587,28 @@ async function loadOrders() {
 
   tbody.innerHTML = orders
     .map((o) => {
-      const badge = o.status === '発送済' ? 'ok' : 'warn';
-      const shipBtn =
-        o.status === '発送済'
-          ? ''
-          : `<button class="small" data-ship="${o.id}">発送済にする</button>`;
-      return `<tr>
+      // 取消済みは状態だけ見せて、操作はさせない（発送・編集・再取消のどれもしない）
+      const stateBadge = o.is_cancelled
+        ? '<span class="badge danger">取消済み</span>'
+        : `<span class="badge ${o.status === '発送済' ? 'ok' : 'warn'}">${escapeHtml(o.status)}</span>`;
+      const actions = o.is_cancelled
+        ? `<span class="muted" title="${escapeHtml(o.cancel_reason ?? '')}">理由: ${escapeHtml(o.cancel_reason ?? '')}</span>`
+        : `<button class="secondary small" data-edit="${o.id}">編集</button>` +
+          (o.status === '発送済'
+            ? ''
+            : `<button class="small" data-ship="${o.id}">発送済にする</button>`) +
+          `<button class="danger small" data-cancel="${o.id}">取消</button>`;
+      return `<tr class="${o.is_cancelled ? 'muted' : ''}">
         <td>${escapeHtml(o.order_no)}</td>
         <td>${escapeHtml(o.ordered_on)}</td>
         <td>${escapeHtml(o.customer_name)}</td>
         <td>${escapeHtml(o.product_name)}</td>
         <td class="num">${num(o.quantity)}</td>
         <td class="num">${yen(o.total_amount)}</td>
-        <td><span class="badge ${badge}">${escapeHtml(o.status)}</span></td>
+        <td>${stateBadge}</td>
         <td>${escapeHtml(o.delivered_on ?? '')}</td>
         <td>${escapeHtml(o.payment_due_on ?? '')}</td>
-        <td><div class="row-actions">
-          <button class="secondary small" data-edit="${o.id}">編集</button>
-          ${shipBtn}
-        </div></td>
+        <td><div class="row-actions">${actions}</div></td>
       </tr>`;
     })
     .join('');
@@ -571,6 +621,13 @@ el('orderRows').addEventListener('click', async (e) => {
   const editBtn = e.target.closest('[data-edit]');
   if (editBtn) {
     try { await openEditForm(Number(editBtn.dataset.edit)); }
+    catch (err) { showMessage('messages', 'error', err.message); }
+    return;
+  }
+
+  const cancelBtn = e.target.closest('[data-cancel]');
+  if (cancelBtn) {
+    try { await openCancelPanel(Number(cancelBtn.dataset.cancel)); }
     catch (err) { showMessage('messages', 'error', err.message); }
     return;
   }
@@ -764,10 +821,87 @@ async function openEditForm(id) {
       : 'この行は明細2行目以降のため、送料は1行目で直してください';
   el('eShippingFee').disabled = order.line_no !== 1;
 
+  // 商品の差し替え。**いまの商品を選んだ状態から始める**（空だと必ず選び直すことになる）。
+  // 発送済は差し替えられないので、触らせずに理由を出す
+  //（サーバー側でも断っているが、押してから断られるのは分かりにくい）
+  editProductSelect.choose({ id: order.product_id, name: order.product_name });
+  const shipped = order.status === '発送済' || order.delivered_on;
+  el('eProductChosen').querySelector('button').disabled = Boolean(shipped);
+  el('eProductHint').textContent = shipped
+    ? '発送済の受注は商品を変えられません。在庫監査タブの「記録の取り消し」で先に出荷を取り消してください'
+    : '商品を変えると、単価は新しい商品の上代に入れ替わります。送料は自動では変わらないので確認してください';
+
   updateEditPreview();
   el('editPanel').style.display = '';
   el('editPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
+
+// --- 取消 -------------------------------------------------------------------
+// 誤登録の取り消し。**confirm() ではなくパネルで理由を書かせる**
+// （理由はサーバー側でも必須。修正履歴に残る唯一の手がかりになる）。
+
+let cancelling = null;
+
+async function openCancelPanel(id) {
+  const order = await apiGet(`/api/orders/${id}`);
+  cancelling = order;
+
+  el('cancelCode').textContent = order.order_no;
+  el('cancelDetail').innerHTML =
+    `<div class="stat-row">
+       <div class="stat"><div class="label">得意先</div><div class="value" style="font-size:16px">${escapeHtml(order.customer_name)}</div></div>
+       <div class="stat"><div class="label">商品</div><div class="value" style="font-size:16px">${escapeHtml(order.product_name)}</div></div>
+       <div class="stat"><div class="label">本数</div><div class="value">${num(order.quantity)}<span class="unit">本</span></div></div>
+       <div class="stat"><div class="label">合計</div><div class="value">${yen(order.total_amount)}</div></div>
+     </div>`;
+
+  // 止めはしないが、気づかずに取り消すと困るもの（サーバーも warnings で返す）
+  const warnings = [];
+  if (order.invoiced_on) warnings.push(`請求済みです（請求日 ${order.invoiced_on}）`);
+  if (order.paid_on) warnings.push(`入金済みです（入金日 ${order.paid_on}）`);
+  if (order.status === '発送済') {
+    warnings.push('発送済です。先に在庫監査タブの「記録の取り消し」で出荷を取り消してください');
+  }
+  el('cancelWarnings').innerHTML = warnings.length
+    ? `<div class="msg warn">取り消す前に確認してください<ul>${
+        warnings.map((w) => `<li>${escapeHtml(w)}</li>`).join('')}</ul></div>`
+    : '';
+
+  el('cReason').value = '';
+  el('cancelPanel').style.display = '';
+  el('cancelPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+el('cCancel').addEventListener('click', () => {
+  cancelling = null;
+  el('cancelPanel').style.display = 'none';
+});
+
+el('cancelForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!cancelling) return;
+  clearMessage('messages');
+
+  el('cSubmit').disabled = true;
+  try {
+    const { order, warnings } = await apiPost(`/api/orders/${cancelling.id}/cancel`, {
+      reason: el('cReason').value.trim(),
+    });
+    showMessage(
+      'messages',
+      warnings.length ? 'warn' : 'ok',
+      `${order.order_no} を取り消しました（${order.product_name} ${order.quantity}本）` +
+        (warnings.length ? `／${warnings.join('、')}` : ''),
+    );
+    cancelling = null;
+    el('cancelPanel').style.display = 'none';
+    await Promise.all([loadOrders(), loadPendingInvoices()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('cSubmit').disabled = false;
+  }
+});
 
 /** 直したあとの金額をその場で見せる（サーバーと同じ式で計算する） */
 function updateEditPreview() {
@@ -815,6 +949,12 @@ el('editForm').addEventListener('submit', async (e) => {
     } else {
       patch[key] = raw;
     }
+  }
+
+  // 商品を変えていたら足す（単価を手で入れていなければ、サーバーが新しい上代を入れる）
+  const chosenProduct = editProductSelect.value;
+  if (chosenProduct && chosenProduct.id !== editing.product_id) {
+    patch.productId = chosenProduct.id;
   }
 
   if (!Object.keys(patch).length) {
@@ -1117,7 +1257,8 @@ const reloadOrders = () =>
 // 絞り込みを変えたら1ページ目に戻す（3ページ目で絞ると、該当0件なのに
 // 「次へ」だけ押せる状態になる）
 wirePager(orderView, ORDER_PAGER, reloadOrders,
-  ['filterStatus', 'filterProduct', 'filterDateField', 'filterFrom', 'filterTo']);
+  ['filterStatus', 'filterCancelled', 'filterProduct', 'filterDateField',
+   'filterFrom', 'filterTo']);
 wireSortHeaders(orderView, 'orderRows', reloadOrders);
 
 /** 一覧の絞り込み用の得意先検索。登録フォームのものとは別に持つ */
@@ -1156,6 +1297,28 @@ customerSelect = createSearchSelect({
   onSelect: (c) => {
     applyCustomer(c);
     refreshDefaults();
+  },
+});
+
+/**
+ * 受注の編集で商品を差し替えるための検索欄。
+ * **登録フォームのものとは別に持つ**（同じ物を使い回すと、編集を開いた時点で
+ * 登録フォームの選択が書き換わる）。一覧の得意先検索を別に持っているのと同じ理由。
+ */
+editProductSelect = createSearchSelect({
+  inputId: 'eProductSearch',
+  resultsId: 'eProductResults',
+  chosenId: 'eProductChosen',
+  endpoint: '/api/products/search',
+  renderLabel: (p) => p.name,
+  renderSub: (p) => `上代 ${yen(p.list_price)} / 在庫 ${p.product_stock ?? 0}本`,
+  onSelect: (p) => {
+    // 単価は保存時にサーバーが新しい商品の上代を入れる。
+    // 画面でも先に見せておかないと、合計がいくらになるのか分からないまま押すことになる
+    if (p && editing && p.id !== editing.product_id && p.list_price != null) {
+      el('eUnitPrice').value = p.list_price;
+    }
+    updateEditPreview();
   },
 });
 

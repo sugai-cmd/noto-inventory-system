@@ -27,6 +27,12 @@ test.before(async () => {
                              initial_product_stock, initial_wip_stock)
        VALUES (?, 'JOCHU White NOTO 35 300ml', 300, 35, 3300, 300, 'スピリッツ', 500, 0)`
     ).run(generateUid(db, 'products'));
+    // 差し替え先の商品（これが無いと「商品が無い」で弾かれ、狙った確認にならない）
+    db.prepare(
+      `INSERT INTO products (uid, name, volume_ml, abv, list_price, tax_category,
+                             initial_product_stock, initial_wip_stock)
+       VALUES (?, 'JOCHU White NOTO 35 500ml', 500, 35, 4800, 'スピリッツ', 500, 0)`
+    ).run(generateUid(db, 'products'));
     db.prepare(
       `INSERT INTO liquor_tax_rates (category, base_abv, base_yen_per_kl, step_yen_per_kl)
        VALUES ('スピリッツ', 37, 370000, 10000)`
@@ -136,15 +142,24 @@ test('受注日は空にできない', async () => {
   assert.equal(status, 400);
 });
 
-test('得意先や商品は編集で変えられない（送っても無視される）', async () => {
+test('得意先は編集で変えられない（送っても無視される）', async () => {
   const { body } = await api('PATCH', '/api/orders/1', {
     customerId: 1,
-    productId: 999,
     note: '得意先の変更は受け付けない',
   });
   assert.equal(body.customer_id, 2);
-  assert.equal(body.product_id, 1);
   assert.equal(body.note, '得意先の変更は受け付けない');
+});
+
+test('発送済の受注は商品を差し替えられない（先に出荷を取り消す）', async () => {
+  // 商品の差し替えは未発送のみ（0026）。出荷が済んでいると、在庫変動履歴の
+  // 出荷行の商品まで差し替えることになる
+  const { status, body } = await api('PATCH', '/api/orders/1', { productId: 2 });
+  assert.equal(status, 422);
+  assert.match(body.message, /出荷の記録が残っている/);
+
+  const after = await api('GET', '/api/orders/1');
+  assert.equal(after.body.product_id, 1, '商品が変わっていないこと');
 });
 
 test('存在しない受注の編集は404', async () => {
