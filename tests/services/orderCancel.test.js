@@ -133,6 +133,41 @@ test('includeCancelled を付けると取消済みも出る', async () => {
   assert.ok(shown.total > hidden.total);
 });
 
+test('取消済みを表示しても、集計には足されない', async () => {
+  // 画面に「集計・CSV・ダッシュボードには入りません」と書いてある。
+  // 以前は一覧と同じ条件を集計にも渡していたので、チェックを入れると
+  // 合計金額が跳ね上がっていた。
+  //
+  // **行が増えるのに合計が変わらない**ことを対で見る。合計だけを見ると、
+  // そもそも行が増えていない条件でも通ってしまう
+  const id = await makeOrder({ quantity: 9, unitPrice: 5000, orderedOn: '2026-10-25' });
+
+  const beforeHidden = await listOf();
+  const beforeShown = await listOf('?includeCancelled=1');
+
+  await api('POST', `/api/orders/${id}/cancel`, { reason: '集計に足されないことの確認' });
+
+  const hidden = await listOf();
+  const shown = await listOf('?includeCancelled=1');
+
+  // 取り消しても「含める」側の件数は変わらない（隠す側からだけ消える）。
+  // 他の試験でも取り消しているので、件数そのものではなく**差**で見る
+  assert.equal(shown.total, beforeShown.total, '含める側には残ること');
+  assert.equal(hidden.total, beforeHidden.total - 1, '隠す側からは消えること');
+  assert.equal(
+    shown.total - hidden.total,
+    beforeShown.total - beforeHidden.total + 1,
+    '隠れている件数が1件増えること'
+  );
+  assert.ok(shown.rows.some((r) => r.id === id && r.is_cancelled === 1));
+
+  assert.deepEqual(
+    shown.summary,
+    hidden.summary,
+    '取消済みを表示しても集計は変わらないこと'
+  );
+});
+
 test('1件だけ引くときは取消済みも返る（画面で状態を出すため）', async () => {
   const id = await makeOrder();
   await api('POST', `/api/orders/${id}/cancel`, { reason: '詳細は引けること' });
