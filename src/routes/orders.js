@@ -91,7 +91,7 @@ router.get('/', (req, res) => {
     from: q.from,
     to: q.to,
     dateField: q.dateField || undefined,
-    // 既定は取消済みを隠す。合計も同じ filters を通るので、一覧と集計がずれない
+    // 既定は取消済みを隠す。これが効くのは**一覧だけ**（集計は下で必ず外す）
     includeCancelled: q.includeCancelled === '1',
   };
 
@@ -103,7 +103,11 @@ router.get('/', (req, res) => {
     order: q.order || undefined,
   });
 
-  res.json({ rows, total, summary: orderModel.summary(filters) });
+  // **集計は取消済みを必ず外す。** 一覧は includeCancelled で出し分けるが、
+  // 同じ filters を渡していたため、チェックを入れると合計金額に取消分が
+  // 足されて跳ね上がっていた（画面には「集計には入りません」と書いてある）
+  const { includeCancelled, ...summaryFilters } = filters;
+  res.json({ rows, total, summary: orderModel.summary(summaryFilters) });
 });
 
 // 請求対象の候補（納品済みかつ未請求）

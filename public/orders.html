@@ -165,14 +165,6 @@
         </select>
       </div>
       <div>
-        <label for="filterCancelled">取消済み</label>
-        <label style="display:flex;align-items:center;gap:6px;font-weight:400">
-          <input type="checkbox" id="filterCancelled">
-          取り消した受注も表示する
-        </label>
-        <div class="hint">既定では隠しています（集計・CSV・ダッシュボードにも入りません）</div>
-      </div>
-      <div>
         <label for="filterCustomerSearch">得意先</label>
         <div class="search-wrap">
           <input type="text" id="filterCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
@@ -251,6 +243,17 @@
       </p>
     </div>
 
+    <!-- 取消済みの出し分けは、絞り込みのグリッドではなく表のすぐ上に置く。
+         グリッドに入れると他の入力欄と高さが揃わず、そこだけ背が高くなる
+         （ロット追跡タブの「空のタンクも出す」と同じ置き方） -->
+    <div class="actions" style="margin-top:0;margin-bottom:12px">
+      <label class="check-inline">
+        <input type="checkbox" id="filterCancelled">
+        取り消した受注も表示する
+      </label>
+      <span class="hint" style="margin-top:0">集計・CSV・ダッシュボードには入りません</span>
+    </div>
+
     <div class="table-scroll">
       <table>
         <thead>
@@ -307,7 +310,8 @@
       <button type="button" class="secondary small" id="shAddCarton">段ボールを追加</button>
     </div>
 
-    <label id="shRememberWrap" style="display:none">
+    <!-- display を JS で '' に戻すと、.check-inline の display:flex が効く -->
+    <label id="shRememberWrap" class="check-inline" style="display:none">
       <input type="checkbox" id="shRemember">
       この段ボールを対応表に覚えさせる（次回から推奨に出ます。同じ組み合わせが登録済みなら上書きします）
     </label>
@@ -457,7 +461,7 @@
       <table>
         <thead>
           <tr>
-            <th><input type="checkbox" id="invoiceAll" style="width:auto"></th>
+            <th><input type="checkbox" id="invoiceAll"></th>
             <th>受注番号</th><th>納品日</th><th>得意先</th><th>商品</th>
             <th class="num">合計</th><th>請求日送付期日</th>
           </tr>
@@ -587,28 +591,34 @@ async function loadOrders() {
 
   tbody.innerHTML = orders
     .map((o) => {
-      // 取消済みは状態だけ見せて、操作はさせない（発送・編集・再取消のどれもしない）
+      // 取消済みは状態だけ見せて、操作はさせない（発送・編集・再取消のどれもしない）。
+      // バッジは資材タブ・蒸留タブと同じグレーの「取消済」。取り消した記録は
+      // 「危険」ではなく「終わったもの」なので、一覧の中で赤く主張させない
       const stateBadge = o.is_cancelled
-        ? '<span class="badge danger">取消済み</span>'
+        ? '<span class="badge muted">取消済</span>'
         : `<span class="badge ${o.status === '発送済' ? 'ok' : 'warn'}">${escapeHtml(o.status)}</span>`;
+      // 理由は文字だけなので .row-actions（ボタンを並べる箱）には入れない
       const actions = o.is_cancelled
-        ? `<span class="muted" title="${escapeHtml(o.cancel_reason ?? '')}">理由: ${escapeHtml(o.cancel_reason ?? '')}</span>`
-        : `<button class="secondary small" data-edit="${o.id}">編集</button>` +
+        ? `<span class="hint">${escapeHtml(o.cancel_reason ?? '')}</span>`
+        : '<div class="row-actions">' +
+          `<button class="secondary small" data-edit="${o.id}">編集</button>` +
           (o.status === '発送済'
             ? ''
             : `<button class="small" data-ship="${o.id}">発送済にする</button>`) +
-          `<button class="danger small" data-cancel="${o.id}">取消</button>`;
-      return `<tr class="${o.is_cancelled ? 'muted' : ''}">
-        <td>${escapeHtml(o.order_no)}</td>
+          `<button class="danger small" data-cancel="${o.id}">取消</button></div>`;
+      // 取り消し線を引く列は struck で指定する（列を足しても狂わない）
+      const struck = o.is_cancelled ? ' struck' : '';
+      return `<tr class="${o.is_cancelled ? 'muted cancelled' : ''}">
+        <td class="${struck.trim()}">${escapeHtml(o.order_no)}</td>
         <td>${escapeHtml(o.ordered_on)}</td>
         <td>${escapeHtml(o.customer_name)}</td>
-        <td>${escapeHtml(o.product_name)}</td>
+        <td class="${struck.trim()}">${escapeHtml(o.product_name)}</td>
         <td class="num">${num(o.quantity)}</td>
-        <td class="num">${yen(o.total_amount)}</td>
+        <td class="num${struck}">${yen(o.total_amount)}</td>
         <td>${stateBadge}</td>
         <td>${escapeHtml(o.delivered_on ?? '')}</td>
         <td>${escapeHtml(o.payment_due_on ?? '')}</td>
-        <td><div class="row-actions">${actions}</div></td>
+        <td>${actions}</td>
       </tr>`;
     })
     .join('');
@@ -1348,7 +1358,7 @@ async function loadPendingInvoices() {
   const rows = await apiGet('/api/orders/pending-invoices');
   el('invoiceRows').innerHTML = rows.length
     ? rows.map((o) => `<tr>
-        <td><input type="checkbox" class="invoice-check" value="${o.id}" style="width:auto"></td>
+        <td><input type="checkbox" class="invoice-check" value="${o.id}"></td>
         <td>${escapeHtml(o.order_no)}</td>
         <td>${escapeHtml(o.delivered_on ?? '')}</td>
         <td>${escapeHtml(o.customer_name)}</td>
