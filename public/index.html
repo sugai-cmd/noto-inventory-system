@@ -153,8 +153,15 @@ const LOW_STOCK_THRESHOLD = 20;
         failures.push(result.reason.message);
       }
     });
-    const { orders, products, materials, distillations, staleDistillations, progress,
+    const { products, materials, distillations, staleDistillations, progress,
             shipmentsDue, unpaid, forecast, staleLots } = data;
+
+    // 受注一覧は {rows, total} を返す。**ここで分解していなかったため、
+    // 「未着手の受注」が常に空欄・一覧も「ありません」になっていた**
+    // （orders.length が undefined になる）。古いサーバー（行の配列）でも
+    // 出るように asListResult を通す。orders.html と同じ扱い
+    const orderList = asListResult(data.orders, 'ダッシュボードの未着手受注');
+    const orders = orderList.rows;
 
     if (failures.length) {
       showMessage('messages', 'error', [...new Set(failures)].join(' / '));
@@ -162,7 +169,8 @@ const LOW_STOCK_THRESHOLD = 20;
 
     const shortages = materials.filter((m) => m.shortage);
 
-    el('statPending').textContent = orders.length;
+    // 既定200件で切れても正しい件数が出るよう total を使う
+    el('statPending').textContent = orderList.total ?? orders.length;
     // 蒸留記録の一覧は {rows,total} を返す。total を使うと、既定100件で
     // 切れていても正しい件数が出る。古いサーバー（行の配列）でも数字が出るよう
     // length に落とす

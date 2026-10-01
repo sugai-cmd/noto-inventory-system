@@ -36,7 +36,9 @@ const DATE_FIELDS = {
 };
 
 function fetchOrders(db, { orderIds, from, to, status, customerId, productId, dateField }) {
-  const where = [];
+  // 取消済みの受注は出さない（0026）。送り状やマネーフォワードに
+  // 誤登録が混ざると、出荷も売上計上もしてしまう
+  const where = ['o.is_cancelled = 0'];
   const params = {};
 
   if (orderIds?.length) {

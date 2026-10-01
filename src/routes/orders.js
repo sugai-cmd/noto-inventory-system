@@ -91,6 +91,8 @@ router.get('/', (req, res) => {
     from: q.from,
     to: q.to,
     dateField: q.dateField || undefined,
+    // 既定は取消済みを隠す。合計も同じ filters を通るので、一覧と集計がずれない
+    includeCancelled: q.includeCancelled === '1',
   };
 
   const { rows, total } = orderModel.list({
@@ -147,6 +149,8 @@ router.post('/', validateRequest(createSchema), (req, res, next) => {
 const editableDate = z.union([dateOnly, z.literal('')]);
 
 const updateSchema = z.object({
+  // 商品の差し替え（誤登録の直し）。未発送のみ。得意先は変えられない
+  productId: z.number().int().positive().optional(),
   orderedOn: dateOnly.optional(),
   requestedDeliveryOn: editableDate.optional(),
   deliveredOn: editableDate.optional(),
@@ -199,6 +203,27 @@ router.post(
   (req, res, next) => {
     try {
       res.json(orderService.markPaid(Number(req.params.id), req.body));
+    } catch (err) {
+      next(err);
+    }
+  }
+);
+
+/**
+ * 誤登録した受注の取消。
+ *
+ * 行は消さず、取消フラグと理由を立てる（0026）。理由は必須。
+ * 発送済（出荷の台帳行が生きている）・委託販売実績報告ありは断る。
+ * 請求済み・入金済みは通し、warnings で知らせる。
+ */
+router.post(
+  '/:id/cancel',
+  // trim してから判定する。空欄と空白だけで返る status が変わると、
+  // 画面側が「なぜ断られたか」を出し分けられない（サービス側の判定も残してある）
+  validateRequest(z.object({ reason: z.string().trim().min(1, '取消理由は必須です') })),
+  (req, res, next) => {
+    try {
+      res.json(orderService.cancelOrder(Number(req.params.id), req.body, req.user));
     } catch (err) {
       next(err);
     }

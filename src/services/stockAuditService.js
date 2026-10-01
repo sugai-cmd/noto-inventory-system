@@ -70,6 +70,9 @@ function findNegativeStock(db) {
  * 新スキーマでは出荷行に order_id が入るので、旧実装の「日付×商品名」の集計比較
  * （6-3で移行期の妥協とされていた方法）ではなく厳密に突合できる。
  * ただし移行した過去データは order_id が NULL のことがあるため、それは別枠で報告する。
+ *
+ * **取消済みの受注は突合しない**（0026）。取り消した受注に出荷行が無いのは
+ * 当たり前なので、数えると毎回その件数だけ鳴り続ける。
  */
 function auditOrderShipments(db) {
   // 発送済なのに出荷行がない受注
@@ -79,7 +82,8 @@ function auditOrderShipments(db) {
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        JOIN products p ON p.id = o.product_id
-       WHERE o.status = '発送済'
+       WHERE o.is_cancelled = 0
+         AND o.status = '発送済'
          AND NOT EXISTS (
            SELECT 1 FROM product_stock_ledger l
            WHERE l.order_id = o.id AND l.txn_type = '出荷' AND l.is_cancelled = 0
@@ -95,7 +99,8 @@ function auditOrderShipments(db) {
        FROM product_stock_ledger l
        JOIN orders o ON o.id = l.order_id
        JOIN products p ON p.id = l.product_id
-       WHERE l.txn_type = '出荷' AND l.is_cancelled = 0 AND o.status <> '発送済'
+       WHERE l.txn_type = '出荷' AND l.is_cancelled = 0
+         AND o.is_cancelled = 0 AND o.status <> '発送済'
        ORDER BY l.txn_date DESC`
     )
     .all();
@@ -108,7 +113,7 @@ function auditOrderShipments(db) {
        FROM orders o
        JOIN product_stock_ledger l ON l.order_id = o.id
        JOIN products p ON p.id = o.product_id
-       WHERE l.txn_type = '出荷' AND l.is_cancelled = 0
+       WHERE l.txn_type = '出荷' AND l.is_cancelled = 0 AND o.is_cancelled = 0
        GROUP BY o.id
        HAVING SUM(l.quantity) <> o.quantity`
     )

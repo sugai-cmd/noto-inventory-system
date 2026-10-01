@@ -207,6 +207,9 @@ function createSearchSelect(opts) {
   return {
     get value() { return selected; },
     reset,
+    // 既存の値を初期選択するため（受注の編集で、いまの商品を選んだ状態から始める）。
+    // 渡すのは endpoint が返すのと同じ形の物（renderLabel が読める物）
+    choose,
   };
 }
 

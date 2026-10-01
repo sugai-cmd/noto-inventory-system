@@ -25,6 +25,9 @@ function submitProductReturn(input, actor = null) {
     if (input.orderId) {
       order = db.prepare('SELECT * FROM orders WHERE id = ?').get(input.orderId);
       if (!order) throw new NotFoundError(`受注が見つかりません (id=${input.orderId})`);
+      if (order.is_cancelled) {
+        throw new ConflictError(`受注 ${order.order_no} は取消済みです。返品を紐付けられません`);
+      }
       if (order.product_id !== input.productId) {
         throw new BusinessRuleError('返品する商品が、指定した受注の商品と一致しません');
       }
@@ -280,6 +283,9 @@ function submitConsignmentReport(input, actor = null) {
   const run = db.transaction(() => {
     const order = db.prepare('SELECT * FROM orders WHERE id = ?').get(input.orderId);
     if (!order) throw new NotFoundError(`受注が見つかりません (id=${input.orderId})`);
+    if (order.is_cancelled) {
+      throw new ConflictError(`受注 ${order.order_no} は取消済みです。実績報告できません`);
+    }
     if (order.sales_method !== '委託') {
       throw new BusinessRuleError(
         `受注 ${order.order_no} は委託販売ではありません（販売方法: ${order.sales_method ?? '未設定'}）`
@@ -408,7 +414,7 @@ function listPendingConsignmentOrders() {
        JOIN customers c ON c.id = o.customer_id
        JOIN products p ON p.id = o.product_id
        LEFT JOIN consignment_reports r ON r.order_id = o.id
-       WHERE o.sales_method = '委託'
+       WHERE o.sales_method = '委託' AND o.is_cancelled = 0
        GROUP BY o.id
        HAVING remaining_quantity > 0
        ORDER BY o.ordered_on`

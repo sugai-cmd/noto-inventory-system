@@ -11,6 +11,13 @@ const SELECT_WITH_NAMES = `
   JOIN products  p ON p.id = o.product_id
 `;
 
+/**
+ * 1件引く。**取消済みも返す。**
+ *
+ * 編集・取消パネルで「取消済みです」と出すには、行そのものが取れないと困る。
+ * 数えない側（一覧・集計・ダッシュボード・CSV・売上目標・在庫監査）は
+ * それぞれで is_cancelled を見ている。
+ */
 function findById(id) {
   const db = getConnection();
   return db.prepare(`${SELECT_WITH_NAMES} WHERE o.id = ?`).get(id);
@@ -70,10 +77,24 @@ const FROM_JOINS = `
  *
  * **1か所にまとめてある。** 一覧の本体・件数・合計の3つが同じ条件を使うので、
  * 別々に書くと必ずずれる（絞り込んだ一覧と合計が食い違って見える）。
+ *
+ * **取消済みは既定で外す。** 誤登録を取り消したのに一覧や合計に残っていては
+ * 取り消した意味がない。`includeCancelled` で出せるようにしてあるのは、
+ * 「何を取り消したか」を画面で確かめられるようにするため。
  */
-function buildFilter({ status, customerId, productId, from, to, dateField = 'ordered_on' } = {}) {
+function buildFilter({
+  status,
+  customerId,
+  productId,
+  from,
+  to,
+  dateField = 'ordered_on',
+  includeCancelled = false,
+} = {}) {
   const where = [];
   const params = {};
+
+  if (!includeCancelled) where.push('o.is_cancelled = 0');
 
   if (status) {
     where.push('o.status = @status');

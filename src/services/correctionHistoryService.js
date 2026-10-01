@@ -98,6 +98,18 @@ function list({
 
          UNION ALL
 
+         -- 誤登録した受注の取消（0026）
+         SELECT o.cancelled_at, u.display_name, '受注リスト', o.order_no,
+                '受注（' || p.name || ' ' || o.quantity || '本）を取消',
+                o.cancel_reason, c.name
+         FROM orders o
+         LEFT JOIN users u     ON u.id = o.cancelled_by
+         LEFT JOIN products p  ON p.id = o.product_id
+         LEFT JOIN customers c ON c.id = o.customer_id
+         WHERE o.is_cancelled = 1 AND o.cancelled_at IS NOT NULL
+
+         UNION ALL
+
          -- 蒸留明細の部分取消（理由は備考に残している）
          SELECT NULL, NULL, '蒸留明細', d.distillation_code,
                 '投入明細（' || t.name || ' ' || dd.input_l || 'L）を取消',
