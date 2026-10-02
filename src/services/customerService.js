@@ -72,6 +72,37 @@ function resolveBilling(customerId, db = getConnection()) {
   return { ...resolved, inheritedFrom, parentName: chain[1]?.name ?? null };
 }
 
+/**
+ * 同じ本店につながる得意先のidを全部返す（自分自身を含む）。
+ *
+ * **まとめ入金のため。** 本店の口座に振り込まれても、請求は支店ごとに立っている
+ * （カナカンのように支店が6つある得意先がある）。消し込みの候補を自分の行だけに
+ * 絞ると、本店への入金が1件も消し込めない。
+ *
+ * 根まで上って（lineage）、そこから下を辿る。輪になっていても止まらなくならないよう、
+ * 見たidを覚えて MAX_DEPTH で打ち切るのは lineage と同じ。
+ */
+function familyIds(db, customerId) {
+  const root = rootCustomer(customerId, db);
+  if (!root) return [];
+
+  const ids = new Set([root.id]);
+  let frontier = [root.id];
+
+  for (let depth = 0; depth < MAX_DEPTH && frontier.length; depth += 1) {
+    const placeholders = frontier.map(() => '?').join(',');
+    const children = db
+      .prepare(`SELECT id FROM customers WHERE parent_id IN (${placeholders})`)
+      .all(...frontier)
+      .map((r) => r.id)
+      .filter((id) => !ids.has(id));
+    for (const id of children) ids.add(id);
+    frontier = children;
+  }
+
+  return [...ids];
+}
+
 /** いちばん上の本店（親がいなければ自分自身） */
 function rootCustomer(customerId, db = getConnection()) {
   const chain = lineage(db, customerId);
@@ -117,6 +148,7 @@ module.exports = {
   INHERITED_COLUMNS,
   resolveBilling,
   rootCustomer,
+  familyIds,
   assertValidParent,
   findIdByName,
   lineage,

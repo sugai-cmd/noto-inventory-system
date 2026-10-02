@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>入金 | NOTO Naorai</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="assets/css/app.css">
+</head>
+<body>
+<main>
+  <div id="messages"></div>
+
+  <section class="panel">
+    <h2>入金を記録する</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      通帳を見ながら、入金を1件ずつ足します。登録するとそのまま消し込みの画面が開きます。
+      <strong>1回の振込で複数の請求をまとめて払われている場合も、まとめて消し込めます。</strong>
+    </p>
+    <form id="paymentForm">
+      <div class="grid">
+        <div>
+          <label for="pPaidOn">入金日 <span style="color:var(--danger)">*</span></label>
+          <input type="date" id="pPaidOn" required>
+        </div>
+        <div>
+          <label for="pAmount">入金額（円） <span style="color:var(--danger)">*</span></label>
+          <input type="number" id="pAmount" min="1" step="1" required>
+        </div>
+        <div>
+          <label for="pCustomerSearch">得意先</label>
+          <div class="search-wrap">
+            <input type="text" id="pCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
+            <div class="search-results" id="pCustomerResults"></div>
+          </div>
+          <div class="chosen" id="pCustomerChosen">
+            <span class="name"></span>
+            <button type="button" class="secondary small">変更</button>
+          </div>
+          <div class="hint">本店を選べば支店ぶんの請求も候補に出ます</div>
+        </div>
+        <div>
+          <label for="pPayerName">振込名義</label>
+          <input type="text" id="pPayerName" placeholder="通帳の表記">
+          <div class="hint">得意先名と違うときに残しておくと、次から照合しやすくなります</div>
+        </div>
+        <div>
+          <label for="pNote">備考</label>
+          <input type="text" id="pNote">
+        </div>
+      </div>
+      <div class="actions">
+        <button type="submit" id="pSubmit">入金を記録して消し込みへ</button>
+        <button type="button" class="secondary" id="pReset">クリア</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel" id="allocPanel" style="display:none">
+    <h2>消し込み <span id="allocCode"></span></h2>
+    <div id="allocSummary"></div>
+    <p class="muted" style="margin-top:12px;font-size:13px">
+      この入金を充てる請求にチェックを入れ、金額を入れてください。
+      「残額を入れる」で、その請求の残額をそのまま入れられます。
+      <strong>請求額は納品書（マネーフォワードCSV）と同じ計算</strong>です。
+    </p>
+    <div class="actions" style="margin-top:0;margin-bottom:12px">
+      <label class="check-inline">
+        <input type="checkbox" id="allocIncludeUnbilled">
+        まだ請求日を入れていないものも出す
+      </label>
+      <button type="button" class="secondary small" id="allocFillAll">上から順に埋める</button>
+      <button type="button" class="secondary small" id="allocClear">入力をすべて消す</button>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th></th><th>区分</th><th>番号</th><th>得意先</th><th>内容</th>
+          <th>請求日</th><th>入金予定</th>
+          <th class="num">請求額</th><th class="num">入金済</th><th class="num">残額</th>
+          <th class="num">今回あてる</th><th></th>
+        </tr></thead>
+        <tbody id="allocRows"></tbody>
+      </table>
+    </div>
+    <div class="actions">
+      <button type="button" id="allocSubmit">この内容で消し込む</button>
+      <button type="button" class="secondary" id="allocClose">閉じる</button>
+    </div>
+  </section>
+
+  <section class="panel">
+    <h2>入金の一覧</h2>
+    <div class="grid" style="margin-bottom:12px">
+      <div>
+        <label for="fCustomerSearch">得意先</label>
+        <div class="search-wrap">
+          <input type="text" id="fCustomerSearch" placeholder="得意先名で検索" autocomplete="off">
+          <div class="search-results" id="fCustomerResults"></div>
+        </div>
+        <div class="chosen" id="fCustomerChosen">
+          <span class="name"></span>
+          <button type="button" class="secondary small">変更</button>
+        </div>
+      </div>
+      <div><label for="fFrom">入金日（開始）</label><input type="date" id="fFrom"></div>
+      <div><label for="fTo">入金日（終了）</label><input type="date" id="fTo"></div>
+      <div>
+        <label for="fLimit">1ページの件数</label>
+        <select id="fLimit">
+          <option value="10">10</option><option value="50">50</option>
+          <option value="100" selected>100</option><option value="200">200</option>
+        </select>
+      </div>
+    </div>
+    <div class="actions" style="margin-top:0;margin-bottom:12px">
+      <label class="check-inline">
+        <input type="checkbox" id="fUnallocated">
+        割り当てが残っているものだけ
+      </label>
+      <label class="check-inline">
+        <input type="checkbox" id="fCancelled">
+        取り消した入金も表示する
+      </label>
+    </div>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th><button type="button" class="link" data-sort="payment_no">入金番号</button></th>
+          <th><button type="button" class="link" data-sort="paid_on">入金日</button></th>
+          <th><button type="button" class="link" data-sort="customer_name">得意先</button></th>
+          <th>振込名義</th>
+          <th class="num"><button type="button" class="link" data-sort="amount">入金額</button></th>
+          <th class="num">充当済</th><th class="num">未割当</th>
+          <th>備考</th><th>操作</th>
+        </tr></thead>
+        <tbody id="paymentRows"></tbody>
+        <tfoot id="paymentFoot"></tfoot>
+      </table>
+    </div>
+    <div class="actions">
+      <button type="button" id="fPrev">前へ</button>
+      <button type="button" id="fNext">次へ</button>
+      <span id="fRange" class="hint"></span>
+    </div>
+  </section>
+
+  <section class="panel" id="cancelPanel" style="display:none">
+    <h2>入金の取消 <span id="cancelCode"></span></h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      打ち間違えた入金を取り消します。<strong>割り当ても効かなくなり、請求の残額と入金日が戻ります。</strong>
+      記録は残ります（修正履歴に出ます）。
+    </p>
+    <div id="cancelDetail"></div>
+    <form id="cancelForm">
+      <div class="grid">
+        <div>
+          <label for="cReason">取消理由 <span style="color:var(--danger)">*</span></label>
+          <input type="text" id="cReason" required placeholder="金額を打ち間違えた 等">
+        </div>
+      </div>
+      <div class="actions">
+        <button type="submit" class="danger" id="cSubmit">取り消す</button>
+        <button type="button" class="secondary" id="cCancel">やめる</button>
+      </div>
+    </form>
+  </section>
+
+  <section class="panel">
+    <h2>未消し込みの請求</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      残額が残っている請求です。上の得意先で絞り込めます（本支店をまとめて出します）。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>区分</th><th>番号</th><th>得意先</th><th>内容</th>
+          <th>請求日</th><th>入金予定</th>
+          <th class="num">請求額</th><th class="num">入金済</th><th class="num">残額</th>
+        </tr></thead>
+        <tbody id="openRows"></tbody>
+        <tfoot id="openFoot"></tfoot>
+      </table>
+    </div>
+  </section>
+</main>
+
+<script src="assets/js/app.js"></script>
+<script>
+renderNav('payments.html');
+
+let payCustomerSelect, filterCustomerSelect;
+let current = null;        // 消し込み中の入金
+let openInvoices = [];     // 消し込みパネルに出している候補
+
+const key = (inv) => (inv.orderNo ? `o:${inv.orderNo}` : `c:${inv.reportId}`);
+
+// --- 入金の登録 -------------------------------------------------------------
+
+el('paymentForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  clearMessage('messages');
+  el('pSubmit').disabled = true;
+  try {
+    const payload = {
+      paidOn: el('pPaidOn').value,
+      amount: Number(el('pAmount').value),
+    };
+    if (payCustomerSelect.value) payload.customerId = payCustomerSelect.value.id;
+    if (el('pPayerName').value.trim()) payload.payerName = el('pPayerName').value.trim();
+    if (el('pNote').value.trim()) payload.note = el('pNote').value.trim();
+
+    const payment = await apiPost('/api/payments', payload);
+    showMessage('messages', 'ok',
+      `入金 ${payment.payment_no} を記録しました（${yen(payment.amount)}）。続けて消し込んでください`);
+    resetForm();
+    await Promise.all([loadPayments(), loadOpenInvoices()]);
+    await openAllocPanel(payment.id);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('pSubmit').disabled = false;
+  }
+});
+
+function resetForm() {
+  el('paymentForm').reset();
+  el('pPaidOn').value = todayStr();
+  payCustomerSelect.reset();
+}
+el('pReset').addEventListener('click', resetForm);
+
+// --- 消し込み ---------------------------------------------------------------
+
+/** いま画面に入っている割当の合計（端数は入金の金額を使わないので分けて数える） */
+function allocTotals() {
+  let used = 0;
+  let settled = 0;
+  // **請求1件につき入力欄は1つ。** 同じ請求を2行出すと二重に数えてしまう
+  const seen = new Set();
+  for (const inv of openInvoices) {
+    const k = key(inv);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const input = el(`alloc_${k}`);
+    if (!input) continue;
+    used += Number(input.value || 0);
+    settled += Number(input.dataset.settled || 0);
+  }
+  used = Math.round(used * 100) / 100;
+  return {
+    used,
+    settled: Math.round(settled * 100) / 100,
+    unallocated: Math.round((current.amount - used) * 100) / 100,
+  };
+}
+
+function renderAllocSummary() {
+  const t = allocTotals();
+  const over = t.unallocated < 0;
+  el('allocSummary').innerHTML =
+    `<div class="stat-row">
+       <div class="stat"><div class="label">入金額</div><div class="value">${yen(current.amount)}</div></div>
+       <div class="stat"><div class="label">入金日</div><div class="value" style="font-size:18px">${escapeHtml(current.paid_on)}</div></div>
+       <div class="stat"><div class="label">得意先</div><div class="value" style="font-size:16px">${escapeHtml(current.customer_name ?? '（未設定）')}</div></div>
+       <div class="stat"><div class="label">今回あてる</div><div class="value">${yen(t.used)}</div></div>
+       <div class="stat"><div class="label">未割当</div>
+         <div class="value" style="${over ? 'color:var(--danger)' : ''}">${yen(t.unallocated)}</div></div>
+     </div>` +
+    (over ? '<div class="msg error" style="margin-top:12px">入金額を超えています</div>' : '') +
+    (t.settled ? `<p class="hint">端数として締める分: ${yen(t.settled)}（入金額は使いません）</p>` : '');
+}
+
+async function openAllocPanel(paymentId) {
+  current = await apiGet(`/api/payments/${paymentId}`);
+  if (current.is_cancelled) {
+    return showMessage('messages', 'error', `入金 ${current.payment_no} は取消済みです`);
+  }
+  el('allocCode').textContent = current.payment_no;
+  await loadAllocCandidates();
+  el('allocPanel').style.display = '';
+  el('allocPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+/**
+ * この入金からの割当を、請求1件につき1つにまとめる。
+ *
+ * **1つの請求に「入金」と「端数」の2行が付きうる**（手数料を引かれた入金を
+ * 締めたとき）。行ごとに数えると、画面の入力欄を2回読んで**二重に計上する**。
+ * 入力欄が編集するのは「入金」のぶんだけで、端数は添えて出し、送るときに戻す。
+ */
+function groupMine(allocations) {
+  const mine = new Map();
+  for (const a of allocations) {
+    const k = a.order_no ? `o:${a.order_no}` : `c:${a.consignment_report_id}`;
+    const entry = mine.get(k) ?? { paid: 0, settled: 0, settledNote: null, sample: a };
+    if (a.kind === '端数') {
+      entry.settled = Math.round((entry.settled + a.amount) * 100) / 100;
+      entry.settledNote = a.note ?? entry.settledNote;
+    } else {
+      entry.paid = Math.round((entry.paid + a.amount) * 100) / 100;
+    }
+    mine.set(k, entry);
+  }
+  return mine;
+}
+
+async function loadAllocCandidates() {
+  const params = new URLSearchParams();
+  if (current.customer_id) params.set('customerId', current.customer_id);
+  if (el('allocIncludeUnbilled').checked) params.set('includeUnbilled', '1');
+  const { rows } = await apiGet(`/api/payments/open-invoices?${params}`);
+
+  const mine = groupMine(current.allocations);
+
+  // すでに満額になった請求は候補から外れるが、この入金から充てた分は
+  // 入れ直せるように出しておく（消したくなったときに触れないと直せない）
+  const extra = [...mine.entries()]
+    .filter(([k]) => !rows.some((r) => key(r) === k))
+    .map(([k, entry]) => {
+      const a = entry.sample;
+      return {
+        kind: a.order_no ? '受注' : '委託',
+        orderNo: a.order_no ?? undefined,
+        reportId: a.consignment_report_id ?? undefined,
+        reportNo: a.order_no ? undefined : a.label,
+        customerName: a.customerName,
+        productSummary: a.productSummary,
+        invoicedOn: null,
+        paymentDueOn: null,
+        total: a.invoiceTotal,
+        // 画面に出す「入金済」は、この入金ぶんも含めた請求全体の額
+        allocated: a.invoiceTotal,
+        remaining: 0,
+        settledHere: true,
+      };
+    });
+
+  openInvoices = [...rows, ...extra];
+  renderAllocRows(mine);
+  renderAllocSummary();
+}
+
+function renderAllocRows(mine = new Map()) {
+  el('allocRows').innerHTML = openInvoices.length
+    ? openInvoices.map((inv) => {
+        const k = key(inv);
+        const a = mine.get(k) ?? { paid: 0, settled: 0, settledNote: null };
+        // いまこの入金から充てている分は、残額に足し戻して「まだ充てられる額」にする
+        const assignable = Math.round((inv.remaining + a.paid) * 100) / 100;
+        const settledTag = a.settled
+          ? `<div class="hint">端数 ${yen(a.settled)}${a.settledNote ? `（${escapeHtml(a.settledNote)}）` : ''}</div>`
+          : '';
+        return `<tr data-key="${escapeHtml(k)}">
+          <td><input type="checkbox" class="alloc-check" data-key="${escapeHtml(k)}" ${a.paid ? 'checked' : ''}></td>
+          <td><span class="badge ${inv.kind === '委託' ? 'muted' : 'ok'}">${escapeHtml(inv.kind)}</span></td>
+          <td>${escapeHtml(inv.orderNo ?? inv.reportNo ?? '')}</td>
+          <td>${escapeHtml(inv.customerName ?? '')}</td>
+          <td>${escapeHtml(inv.productSummary ?? '')}</td>
+          <td>${escapeHtml(inv.invoicedOn ?? '')}</td>
+          <td>${escapeHtml(inv.paymentDueOn ?? '')}</td>
+          <td class="num">${yen(inv.total)}</td>
+          <td class="num">${inv.allocated ? yen(inv.allocated) : ''}</td>
+          <td class="num">${inv.settledHere ? '<span class="badge ok">消込済</span>' : yen(assignable)}</td>
+          <td class="num">
+            <input type="number" id="alloc_${escapeHtml(k)}" class="alloc-amount" min="0" step="1"
+                   data-key="${escapeHtml(k)}"
+                   data-settled="${a.settled}"
+                   data-settled-note="${escapeHtml(a.settledNote ?? '')}"
+                   data-assignable="${assignable}"
+                   value="${a.paid || ''}" style="max-width:120px">
+            ${settledTag}
+          </td>
+          <td><div class="row-actions">
+            <button type="button" class="secondary small" data-fill="${escapeHtml(k)}">残額を入れる</button>
+            ${inv.remaining > 0
+              ? `<button type="button" class="secondary small" data-settle="${escapeHtml(k)}">端数で締める</button>`
+              : ''}
+          </div></td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="12" class="empty">残額のある請求がありません</td></tr>';
+}
+
+/** 行の金額を入れる。チェックも連動させる */
+function setAmount(k, value) {
+  const input = el(`alloc_${k}`);
+  if (!input) return;
+  input.value = value > 0 ? value : '';
+  const check = document.querySelector(`.alloc-check[data-key="${CSS.escape(k)}"]`);
+  if (check) check.checked = value > 0;
+  renderAllocSummary();
+}
+
+el('allocRows').addEventListener('click', (e) => {
+  const fill = e.target.closest('[data-fill]');
+  if (fill) {
+    const k = fill.dataset.fill;
+    const input = el(`alloc_${k}`);
+    const t = allocTotals();
+    const room = Math.round((t.unallocated + Number(input.value || 0)) * 100) / 100;
+    // 入金額を超えないところまで（まとめ入金で足りなくなることがある）
+    setAmount(k, Math.min(Number(input.dataset.assignable), Math.max(room, 0)));
+    return;
+  }
+  const settle = e.target.closest('[data-settle]');
+  if (settle) settleRow(settle.dataset.settle);
+});
+
+el('allocRows').addEventListener('input', (e) => {
+  if (e.target.classList.contains('alloc-amount')) renderAllocSummary();
+});
+el('allocRows').addEventListener('change', (e) => {
+  if (!e.target.classList.contains('alloc-check')) return;
+  const k = e.target.dataset.key;
+  const input = el(`alloc_${k}`);
+  if (!e.target.checked) input.value = '';
+  renderAllocSummary();
+});
+
+/** 上から順に、入金額を使い切るまで埋める */
+el('allocFillAll').addEventListener('click', () => {
+  let room = current.amount;
+  const seen = new Set();
+  for (const inv of openInvoices) {
+    const k = key(inv);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const input = el(`alloc_${k}`);
+    if (!input) continue;
+    const take = Math.min(Number(input.dataset.assignable), room);
+    setAmount(k, take > 0 ? Math.round(take * 100) / 100 : 0);
+    room = Math.round((room - Math.max(take, 0)) * 100) / 100;
+    if (room <= 0) room = 0;
+  }
+  renderAllocSummary();
+});
+
+el('allocClear').addEventListener('click', () => {
+  for (const inv of openInvoices) setAmount(key(inv), 0);
+});
+
+el('allocIncludeUnbilled').addEventListener('change', () =>
+  loadAllocCandidates().catch((err) => showMessage('messages', 'error', err.message)));
+
+/** いま画面に入っている内容を items に組み立てる */
+function collectItems() {
+  const items = [];
+  const seen = new Set();
+  for (const inv of openInvoices) {
+    const k = key(inv);
+    if (seen.has(k)) continue;
+    seen.add(k);
+    const input = el(`alloc_${k}`);
+    if (!input) continue;
+
+    const target = inv.orderNo
+      ? { orderNo: inv.orderNo }
+      : { consignmentReportId: inv.reportId };
+
+    const amount = Number(input.value || 0);
+    if (amount > 0) items.push({ ...target, amount, kind: '入金' });
+
+    // 締めた端数は入力欄で触らないので、ここで戻さないと消えてしまう
+    const settled = Number(input.dataset.settled || 0);
+    if (settled > 0) {
+      items.push({
+        ...target, amount: settled, kind: '端数',
+        note: input.dataset.settledNote || '端数',
+      });
+    }
+  }
+  return items;
+}
+
+/** 端数で締める。先にいまの内容を保存してから、残額を端数として足す */
+async function settleRow(k) {
+  const inv = openInvoices.find((i) => key(i) === k);
+  if (!inv) return;
+  const note = prompt('端数の理由を入れてください（振込手数料 / 値引き など）', '振込手数料');
+  if (note == null || !note.trim()) return;
+
+  clearMessage('messages');
+  try {
+    // いま入っている内容を先に確定させないと、締めたあとに消えてしまう
+    await apiPut(`/api/payments/${current.id}/allocations`, { items: collectItems() });
+    const body = { note: note.trim() };
+    if (inv.orderNo) body.orderNo = inv.orderNo;
+    else body.consignmentReportId = inv.reportId;
+    await apiPost(`/api/payments/${current.id}/settle`, body);
+
+    showMessage('messages', 'ok', `${inv.orderNo ?? inv.reportNo} の残額を端数として締めました（${escapeHtml(note.trim())}）`);
+    current = await apiGet(`/api/payments/${current.id}`);
+    await loadAllocCandidates();
+    await Promise.all([loadPayments(), loadOpenInvoices()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  }
+}
+
+el('allocSubmit').addEventListener('click', async () => {
+  clearMessage('messages');
+  el('allocSubmit').disabled = true;
+  try {
+    const after = await apiPut(`/api/payments/${current.id}/allocations`, { items: collectItems() });
+    showMessage('messages', 'ok',
+      `入金 ${after.payment_no} を消し込みました（充当 ${yen(after.used)} / 未割当 ${yen(after.unallocated)}）`);
+    current = after;
+    await loadAllocCandidates();
+    await Promise.all([loadPayments(), loadOpenInvoices()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('allocSubmit').disabled = false;
+  }
+});
+
+el('allocClose').addEventListener('click', () => {
+  current = null;
+  el('allocPanel').style.display = 'none';
+});
+
+// --- 入金の一覧 -------------------------------------------------------------
+
+const payView = createListView('paid_on');
+const PAGER = { limit: 'fLimit', prev: 'fPrev', next: 'fNext', range: 'fRange' };
+
+function paymentFilterParams() {
+  const params = new URLSearchParams();
+  if (filterCustomerSelect?.value) params.set('customerId', filterCustomerSelect.value.id);
+  if (el('fFrom').value) params.set('from', el('fFrom').value);
+  if (el('fTo').value) params.set('to', el('fTo').value);
+  if (el('fUnallocated').checked) params.set('unallocatedOnly', '1');
+  if (el('fCancelled').checked) params.set('includeCancelled', '1');
+  return params;
+}
+
+async function loadPayments() {
+  const params = listQuery(payView, PAGER);
+  for (const [k, v] of paymentFilterParams()) params.set(k, v);
+
+  const { rows, total } = asListResult(await apiGet(`/api/payments?${params}`), '入金の一覧');
+  payView.total = total;
+
+  el('paymentRows').innerHTML = rows.length
+    ? rows.map((p) => {
+        const actions = p.is_cancelled
+          ? `<span class="hint">${escapeHtml(p.cancel_reason ?? '')}</span>`
+          : '<div class="row-actions">' +
+            `<button type="button" class="secondary small" data-alloc="${p.id}">消し込み</button>` +
+            `<button type="button" class="danger small" data-cancel="${p.id}">取消</button></div>`;
+        return `<tr class="${p.is_cancelled ? 'muted cancelled' : ''}">
+          <td class="${p.is_cancelled ? 'struck' : ''}">${escapeHtml(p.payment_no ?? '')}</td>
+          <td>${escapeHtml(p.paid_on)}</td>
+          <td>${escapeHtml(p.customer_name ?? '')}</td>
+          <td>${escapeHtml(p.payer_name ?? '')}</td>
+          <td class="num${p.is_cancelled ? ' struck' : ''}">${yen(p.amount)}</td>
+          <td class="num">${p.used ? yen(p.used) : ''}</td>
+          <td class="num">${p.unallocated > 0 ? `<span class="badge warn">${yen(p.unallocated)}</span>` : ''}</td>
+          <td>${escapeHtml(p.note ?? '')}</td>
+          <td>${actions}</td>
+        </tr>`;
+      }).join('')
+    : '<tr><td colspan="9" class="empty">該当する入金がありません</td></tr>';
+
+  const live = rows.filter((p) => !p.is_cancelled);
+  el('paymentFoot').innerHTML = live.length
+    ? `<tr><th colspan="4">このページの合計</th>
+         <th class="num">${yen(live.reduce((s, p) => s + p.amount, 0))}</th>
+         <th class="num">${yen(live.reduce((s, p) => s + p.used, 0))}</th>
+         <th class="num">${yen(live.reduce((s, p) => s + p.unallocated, 0))}</th>
+         <th colspan="2"></th></tr>`
+    : '';
+
+  renderSortMarks(payView);
+  renderPager(payView, PAGER, rows.length);
+}
+
+el('paymentRows').addEventListener('click', async (e) => {
+  const alloc = e.target.closest('[data-alloc]');
+  if (alloc) {
+    try { await openAllocPanel(Number(alloc.dataset.alloc)); }
+    catch (err) { showMessage('messages', 'error', err.message); }
+    return;
+  }
+  const cancel = e.target.closest('[data-cancel]');
+  if (cancel) {
+    try { await openCancelPanel(Number(cancel.dataset.cancel)); }
+    catch (err) { showMessage('messages', 'error', err.message); }
+  }
+});
+
+// --- 入金の取消 -------------------------------------------------------------
+
+let cancelling = null;
+
+async function openCancelPanel(id) {
+  cancelling = await apiGet(`/api/payments/${id}`);
+  el('cancelCode').textContent = cancelling.payment_no;
+  el('cancelDetail').innerHTML =
+    `<div class="stat-row">
+       <div class="stat"><div class="label">入金日</div><div class="value" style="font-size:18px">${escapeHtml(cancelling.paid_on)}</div></div>
+       <div class="stat"><div class="label">入金額</div><div class="value">${yen(cancelling.amount)}</div></div>
+       <div class="stat"><div class="label">充当済</div><div class="value">${yen(cancelling.used)}</div></div>
+       <div class="stat"><div class="label">割り当て</div><div class="value">${cancelling.allocations.length}<span class="unit">件</span></div></div>
+     </div>` +
+    (cancelling.allocations.length
+      // 1つの請求に「入金」と「端数」の2行が付くことがあるので、名前は重複を外す
+      ? `<p class="hint">戻る請求: ${
+          [...new Set(cancelling.allocations.map((a) => a.label))]
+            .map(escapeHtml).join('、')}</p>`
+      : '');
+  el('cReason').value = '';
+  el('cancelPanel').style.display = '';
+  el('cancelPanel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+el('cCancel').addEventListener('click', () => {
+  cancelling = null;
+  el('cancelPanel').style.display = 'none';
+});
+
+el('cancelForm').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  if (!cancelling) return;
+  clearMessage('messages');
+  el('cSubmit').disabled = true;
+  try {
+    const after = await apiPost(`/api/payments/${cancelling.id}/cancel`, {
+      reason: el('cReason').value.trim(),
+    });
+    showMessage('messages', 'ok', `入金 ${after.payment_no} を取り消しました（請求の残額が戻りました）`);
+    if (current && current.id === cancelling.id) {
+      current = null;
+      el('allocPanel').style.display = 'none';
+    }
+    cancelling = null;
+    el('cancelPanel').style.display = 'none';
+    await Promise.all([loadPayments(), loadOpenInvoices()]);
+  } catch (err) {
+    showMessage('messages', 'error', err.message, err.details);
+  } finally {
+    el('cSubmit').disabled = false;
+  }
+});
+
+// --- 未消し込みの請求 -------------------------------------------------------
+
+async function loadOpenInvoices() {
+  const params = new URLSearchParams();
+  if (filterCustomerSelect?.value) params.set('customerId', filterCustomerSelect.value.id);
+  const { rows, total } = await apiGet(`/api/payments/open-invoices?${params}`);
+
+  el('openRows').innerHTML = rows.length
+    ? rows.map((inv) => `<tr>
+        <td><span class="badge ${inv.kind === '委託' ? 'muted' : 'ok'}">${escapeHtml(inv.kind)}</span></td>
+        <td>${escapeHtml(inv.orderNo ?? inv.reportNo ?? '')}</td>
+        <td>${escapeHtml(inv.customerName ?? '')}</td>
+        <td>${escapeHtml(inv.productSummary ?? '')}</td>
+        <td>${escapeHtml(inv.invoicedOn ?? '')}</td>
+        <td>${escapeHtml(inv.paymentDueOn ?? '')}</td>
+        <td class="num">${yen(inv.total)}</td>
+        <td class="num">${inv.allocated ? yen(inv.allocated) : ''}</td>
+        <td class="num">${yen(inv.remaining)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="9" class="empty">未消し込みの請求はありません</td></tr>';
+
+  el('openFoot').innerHTML = rows.length
+    ? `<tr><th colspan="6">${total}件の残額合計</th>
+         <th class="num">${yen(rows.reduce((s, i) => s + i.total, 0))}</th>
+         <th class="num">${yen(rows.reduce((s, i) => s + i.allocated, 0))}</th>
+         <th class="num">${yen(rows.reduce((s, i) => s + i.remaining, 0))}</th></tr>`
+    : '';
+}
+
+// --- 初期化 -----------------------------------------------------------------
+
+payCustomerSelect = createSearchSelect({
+  inputId: 'pCustomerSearch',
+  resultsId: 'pCustomerResults',
+  chosenId: 'pCustomerChosen',
+  endpoint: '/api/customers/search',
+  renderLabel: (c) => c.name,
+  renderSub: (c) => (c.parent_name ? `本店: ${c.parent_name}` : ''),
+});
+
+filterCustomerSelect = createSearchSelect({
+  inputId: 'fCustomerSearch',
+  resultsId: 'fCustomerResults',
+  chosenId: 'fCustomerChosen',
+  endpoint: '/api/customers/search',
+  renderLabel: (c) => c.name,
+  renderSub: (c) => (c.parent_name ? `本店: ${c.parent_name}` : ''),
+  onSelect: () => {
+    payView.offset = 0;
+    reload();
+  },
+});
+
+const reload = () =>
+  Promise.all([loadPayments(), loadOpenInvoices()])
+    .catch((err) => showMessage('messages', 'error', err.message, err.details));
+
+// 絞り込みを変えたら1ページ目に戻す
+wirePager(payView, PAGER, () =>
+  loadPayments().catch((err) => showMessage('messages', 'error', err.message)),
+  ['fFrom', 'fTo', 'fUnallocated', 'fCancelled']);
+wireSortHeaders(payView, 'paymentRows', () =>
+  loadPayments().catch((err) => showMessage('messages', 'error', err.message)));
+
+el('pPaidOn').value = todayStr();
+reload();
+</script>
+</body>
+</html>

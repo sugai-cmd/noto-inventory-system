@@ -7,6 +7,7 @@ const { getConnection } = require('../db/connection');
 const tankService = require('./tankService');
 const shippingFeeService = require('./shippingFeeService');
 const liquorTaxService = require('./liquorTaxService');
+const invoiceAmount = require('./invoiceAmount');
 const { parseShippingAddress } = require('../utils/shippingAddress');
 
 /** CSV1セル分のエスケープ */
@@ -309,10 +310,11 @@ function exportMoneyForward(filter = {}) {
     // 送料は受注単位（1行目にだけ載せている）
     const shipping = lines.reduce((sum, l) => sum + (l.shipping_fee ?? 0), 0);
 
-    const subtotal = items.reduce((sum, it) => sum + it.amount, 0) + shipping;
-    // 税率は送料の計算と同じ値を使う（2か所に書くと改定のときに片方だけ残る）
-    const tax = Math.round(subtotal * shippingFeeService.TAX_RATE);
-    const total = subtotal + tax;
+    // **請求額は invoiceAmount だけが出す。** ここで式を書くと、消し込みの
+    // 「請求額」と納品書の金額がずれて、残額が永久に0にならない
+    const { subtotal, tax, total } = invoiceAmount.taxedTotal(
+      items.reduce((sum, it) => sum + it.amount, 0) + shipping
+    );
 
     const deliveryDateStr = head.delivered_on ? head.delivered_on.replace(/-/g, '/') : '';
 
