@@ -20,7 +20,20 @@ const SELECT_WITH_NAMES = `
  */
 function findById(id) {
   const db = getConnection();
-  return db.prepare(`${SELECT_WITH_NAMES} WHERE o.id = ?`).get(id);
+  const row = db.prepare(`${SELECT_WITH_NAMES} WHERE o.id = ?`).get(id);
+  if (!row) return row;
+
+  // 入金の割り当てがあるかどうか。入金日は割り当てから自動で入れているので、
+  // 画面で手入力を塞ぐのに使う（2か所から書くと必ず食い違う）
+  const { n } = db
+    .prepare(
+      `SELECT COUNT(*) AS n
+         FROM payment_allocations a
+         JOIN payments p ON p.id = a.payment_id
+        WHERE a.order_no = ? AND p.is_cancelled = 0`
+    )
+    .get(row.order_no);
+  return { ...row, has_payment_allocation: n > 0 };
 }
 
 function findByOrderNo(orderNo) {

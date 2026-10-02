@@ -8,16 +8,31 @@
 
 const { getConnection } = require('../db/connection');
 const { today } = require('../utils/dateUtil');
+const paymentService = require('./paymentService');
 
-/** 入金予定日を過ぎているのに入金日が入っていない受注 */
+/**
+ * 入金予定日を過ぎているのに入金が済んでいない受注。
+ *
+ * **受注番号ごとに束ねる。** 請求書も消し込みも受注番号単位なので、
+ * 明細1行ずつ出すと「1件の請求が何行にも見える」「金額を足すと二重になる」。
+ *
+ * 金額は請求額（invoiceAmount）と、消し込み済みを引いた**残額**を出す。
+ * 以前は受注の「合計」欄（total_amount）を出していたが、あの列は式が3通りに
+ * 割れていて当てにならない（DATA_STRUCTURE.md 4-1）。一部入金にも追従しない。
+ */
 function listUnpaidOrders({ asOf } = {}) {
   const db = getConnection();
   const base = asOf ?? today();
-  return db
+
+  const rows = db
     .prepare(
-      `SELECT o.id, o.order_no, o.line_no, o.ordered_on, o.payment_due_on, o.total_amount,
-              c.name AS customer_name, p.name AS product_name,
-              CAST(julianday(@base) - julianday(o.payment_due_on) AS INTEGER) AS overdue_days
+      `SELECT o.order_no,
+              MIN(o.id)              AS id,
+              MIN(o.ordered_on)      AS ordered_on,
+              MIN(o.payment_due_on)  AS payment_due_on,
+              MIN(c.name)            AS customer_name,
+              GROUP_CONCAT(p.name || ' ' || o.quantity || '本', ' / ') AS product_name,
+              CAST(julianday(@base) - julianday(MIN(o.payment_due_on)) AS INTEGER) AS overdue_days
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        JOIN products  p ON p.id = o.product_id
@@ -25,9 +40,20 @@ function listUnpaidOrders({ asOf } = {}) {
          AND o.paid_on IS NULL
          AND o.payment_due_on IS NOT NULL
          AND o.payment_due_on < @base
-       ORDER BY o.payment_due_on`
+       GROUP BY o.order_no
+       ORDER BY MIN(o.payment_due_on)`
     )
     .all({ base });
+
+  return rows.map((r) => {
+    const invoice = paymentService.invoiceWithBalance(db, { orderNo: r.order_no });
+    return {
+      ...r,
+      invoiceTotal: invoice?.total ?? null,
+      paidAmount: invoice?.allocated ?? 0,
+      remainingAmount: invoice?.remaining ?? invoice?.total ?? null,
+    };
+  });
 }
 
 /** 指定日に出荷予定の受注（納入希望日が当日で、まだ発送していないもの） */

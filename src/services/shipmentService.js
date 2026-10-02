@@ -2,7 +2,9 @@
 // （旧GASの submitProductReturn / submitSampleShipment / submitConsignmentReport 相当）。
 
 const { getConnection } = require('../db/connection');
-const { nextProductHistoryCode, nextSampleNo } = require('../utils/codeGenerator');
+const {
+  nextProductHistoryCode, nextSampleNo, nextConsignmentReportNo,
+} = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
@@ -327,13 +329,17 @@ function submitConsignmentReport(input, actor = null) {
     const result = db
       .prepare(
         `INSERT INTO consignment_reports
-           (order_id, report_month, customer_id, product_id, quantity, unit_price, markup_rate,
+           (report_no, order_id, report_month, customer_id, product_id, quantity,
+            unit_price, markup_rate,
             sales_amount, shipping_fee, invoiced_on, payment_due_on, note, created_by)
          VALUES
-           (@orderId, @reportMonth, @customerId, @productId, @quantity, @unitPrice, @markupRate,
+           (@reportNo, @orderId, @reportMonth, @customerId, @productId, @quantity,
+            @unitPrice, @markupRate,
             @salesAmount, @shippingFee, @invoicedOn, @paymentDueOn, @note, @createdBy)`
       )
       .run({
+        // 報告番号。入金の消し込みでどの報告かを名指しするのに要る
+        reportNo: nextConsignmentReportNo(db, `${input.reportMonth}-01`),
         orderId: input.orderId,
         reportMonth: input.reportMonth,
         customerId: order.customer_id,

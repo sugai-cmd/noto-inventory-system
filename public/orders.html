@@ -391,6 +391,7 @@
         <div>
           <label for="ePaidOn">入金日</label>
           <input type="date" id="ePaidOn">
+          <div class="hint" id="ePaidHint"></div>
         </div>
         <div>
           <label for="eQuantity">本数</label>
@@ -830,6 +831,12 @@ async function openEditForm(id) {
       ? '同じ受注番号の中で、送料はこの行にだけ載ります'
       : 'この行は明細2行目以降のため、送料は1行目で直してください';
   el('eShippingFee').disabled = order.line_no !== 1;
+
+  // 入金日は入金タブの消し込みから自動で入る。ここで直せると食い違うので塞ぐ
+  el('ePaidOn').disabled = Boolean(order.has_payment_allocation);
+  el('ePaidHint').textContent = order.has_payment_allocation
+    ? 'この受注には入金の割り当てがあります。入金日は入金タブの消し込みから入ります'
+    : '';
 
   // 商品の差し替え。**いまの商品を選んだ状態から始める**（空だと必ず選び直すことになる）。
   // 発送済は差し替えられないので、触らせずに理由を出す

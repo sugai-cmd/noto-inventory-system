@@ -61,11 +61,23 @@ const nextMaterialHistoryCode = (db, dateOnly) =>
 const nextSampleNo = (db, dateOnly) =>
   generateCode(db, { table: 'sample_shipments', column: 'sample_no', prefix: 'S', dateOnly });
 
+// 入金（通帳の1件）。P+年月+連番
+const nextPaymentNo = (db, dateOnly) =>
+  generateCode(db, { table: 'payments', column: 'payment_no', prefix: 'P', dateOnly });
+
+// 委託販売実績報告。列もコメント（C+年月+連番）もあったのに**採番していなかった**ので、
+// 0027 で既存分を埋め、ここから新規分も振る。
+// 基準は報告月なので、呼び出し側が 'YYYY-MM-01' を渡す
+const nextConsignmentReportNo = (db, dateOnly) =>
+  generateCode(db, { table: 'consignment_reports', column: 'report_no', prefix: 'C', dateOnly });
+
 module.exports = {
   generateCode,
   nextOrderNo,
   nextProductHistoryCode,
   nextMaterialHistoryCode,
   nextSampleNo,
+  nextPaymentNo,
+  nextConsignmentReportNo,
   toYymm,
 };

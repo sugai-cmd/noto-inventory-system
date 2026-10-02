@@ -328,10 +328,9 @@ test('委託販売実績報告が紐付いていると取り消せない（報�
   const { status, body } = await api('POST', `/api/orders/${id}/cancel`, { reason: '委託の確認' });
   assert.equal(status, 409);
   assert.match(body.message, /委託販売実績報告/);
-  // 報告の取消手段がまだ無いので、どの報告が邪魔しているかが分からないと行き止まりになる。
-  // report_no は未採番（submitConsignmentReport が入れていない）ので、
-  // 画面の委託販売報告一覧で突き合わせられる「報告月と本数」で出す
-  assert.match(body.message, /2026-10 分 4本/);
+  // 報告の取消手段がまだ無いので、どの報告が邪魔しているかが分からないと行き止まりになる
+  assert.match(body.message, new RegExp(report.body.report_no), '報告番号で名指しすること');
+  assert.match(body.message, /2026-10/);
 });
 
 test('請求済み・入金済みは止めずに警告を返す', async () => {
