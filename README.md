@@ -28,6 +28,7 @@ npm test                            # テスト実行
 npm run migrate                     # マイグレーションのみ適用
 npm run create-user                 # ユーザー追加
 node scripts/create-user.js --list  # ユーザー一覧
+node scripts/export-weekly-report.js --dry-run  # 週次報告の集計を確認（docs/WEEKLY-REPORT.md）
 ```
 
 ## 画面
@@ -112,6 +113,7 @@ node scripts/verify-migration.js                # 答え合わせ
 | `docs/SETUP-MAC.md` | まっさらなMacの下準備（ターミナル・Git・GitHub・Node.js） |
 | `docs/SETUP.md` | 導入手順・複数PC設定・常時起動・バックアップ・動作確認チェックリスト |
 | `docs/MIGRATION.md` | 現行スプレッドシートからの過去データ移行手順 |
+| `docs/WEEKLY-REPORT.md` | 週次報告（売上・入金・在庫）をGoogleスプレッドシートへ毎朝書き出す設定 |
 | `DB_SCHEMA_DESIGN.md` | テーブル設計・プロジェクト構造・移行手順・実装済み機能の詳細 |
 | `DATA_STRUCTURE.md` | 現行スプレッドシート（21シート）の仕様。移行元の記録として保持 |
 | `ER_DIAGRAM_TEXT.md` | 現行システムの関係性図 |
@@ -127,6 +129,7 @@ src/
   routes/           Expressルーティング
   utils/            採番・日付計算・uid生成など
 public/             画面（ビルド不要の素のHTML+JS）
-scripts/            スプレッドシートからの移行スクリプト
+scripts/            スプレッドシートからの移行スクリプト・週次報告の書き出し
+gas/                Googleスプレッドシート側に貼るApps Script（週次報告の受け口）
 tests/              テスト（node --test）
 ```
