@@ -174,3 +174,169 @@ test('初期在庫を持つ浄酎タンクがあっても、原酒の一覧に�
   const { body } = await api('GET', '/api/raw-sake-receipts/tanks');
   assert.ok(!body.some((r) => r.code === 'T-001'));
 });
+
+// --- 中身の種類を列で持つ（0028） -------------------------------------------
+//
+// 原酒入荷の受入先と蒸留の投入元は容器IDの接頭辞 SP- で絞っていた。そのため
+// 「原酒を入れる別の容器（QBテナー・樽など）」を登録しても、登録はできるのに
+// 両画面に一切出てこなかった（よしのやの雲山を使った蒸留が記録できなかった）。
+
+/** マスタからタンクを1本登録する */
+const addTank = (body) => api('POST', '/api/tanks', body);
+
+test('中身=原酒で登録すれば、SP- でない容器も原酒入荷の受入先に出る', async () => {
+  // 対で見るため、まず中身=浄酎で登録した同種の容器が出ないことを確かめる
+  const jochu = await addTank({
+    code: 'Q-800', name: 'テナー800', containerType: 'QBテナー',
+    contentsKind: '浄酎', maxVolumeL: 1000,
+  });
+  assert.equal(jochu.status, 201);
+
+  const genshu = await addTank({
+    code: 'Q-900', name: 'テナー900', containerType: 'QBテナー',
+    contentsKind: '原酒', maxVolumeL: 1000,
+  });
+  assert.equal(genshu.status, 201);
+
+  const { body } = await api('GET', '/api/raw-sake-receipts/tanks/receivable');
+  const codes = body.map((t) => t.code);
+  assert.ok(codes.includes('Q-900'), '中身=原酒の容器が受入先に出ていません');
+  assert.ok(!codes.includes('Q-800'), '中身=浄酎の容器が受入先に混ざっています');
+});
+
+test('その容器に原酒入荷ができ、蒸留の投入元にも出る', async () => {
+  const tank = (await api('GET', '/api/tanks')).body.find((t) => t.code === 'Q-900');
+
+  const res = await api('POST', '/api/raw-sake-receipts', {
+    txnDate: '2026-10-08', toTankId: tank.id, quantity: 300,
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+
+  const source = (await api('GET', '/api/raw-sake-receipts/tanks')).body
+    .find((t) => t.code === 'Q-900');
+  assert.ok(source, '蒸留の投入元に出ていません');
+  assert.equal(source.current_volume_l, 300);
+});
+
+test('中身=原酒の容器は、浄酎のモニターに出ない', async () => {
+  // 原酒の残量は raw_sake_ledger から出るので、浄酎に混ぜると必ず 0L で並ぶ
+  const rows = await monitor(`?kind=${encodeURIComponent('浄酎')}`);
+  assert.ok(!rows.map((r) => r.code).includes('Q-900'));
+  assert.ok(rows.map((r) => r.code).includes('Q-800'), '中身=浄酎の容器は浄酎側に出ること');
+});
+
+test('contents_kind が未設定の既存行は、容器IDの接頭辞で扱われる', async () => {
+  // 移行ローダー（scripts/loaders/tanks.js）は contents_kind を入れずにタンクを作る。
+  // 列だけで絞ると、業務データを入れ直した直後に全容器が画面から消える
+  const raw = db.prepare('SELECT contents_kind FROM tanks WHERE code = ?').get('SP-001');
+  assert.equal(raw.contents_kind, null, '前提: 試験データは列を持たない');
+
+  const codes = (await api('GET', '/api/raw-sake-receipts/tanks/receivable')).body
+    .map((t) => t.code);
+  assert.ok(codes.includes('SP-001'), 'SP- の容器が原酒として扱われていません');
+  assert.ok(!codes.includes('JP-003'), 'JP- の容器が原酒に混ざっています');
+});
+
+test('中身の種類は 浄酎/原酒/残渣 以外を受け付けない', async () => {
+  const res = await addTank({
+    code: 'Q-901', name: 'テナー901', containerType: 'QBテナー', contentsKind: '原料',
+  });
+  assert.equal(res.status, 400);
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS n FROM tanks WHERE code = ?').get('Q-901').n,
+    0,
+    '弾いたのに行が残っています'
+  );
+});
+
+test('入出庫の記録があると中身の種類は変えられない（無ければ変えられる）', async () => {
+  const tanks = (await api('GET', '/api/tanks')).body;
+  const used = tanks.find((t) => t.code === 'Q-900');   // 前の試験で原酒を受け入れた
+  const unused = tanks.find((t) => t.code === 'Q-800'); // 記録なし
+
+  // 記録が無い容器は直せる（打ち間違いを直す道は残す）
+  const ok = await api('PUT', `/api/tanks/${unused.id}`, { contentsKind: '残渣' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.contents_kind, '残渣');
+
+  // 記録がある容器は止める
+  const ng = await api('PUT', `/api/tanks/${used.id}`, { contentsKind: '浄酎' });
+  assert.equal(ng.status, 422);
+  assert.match(ng.body.message, /中身の種類を変えられません/);
+  assert.equal(
+    db.prepare('SELECT contents_kind FROM tanks WHERE id = ?').get(used.id).contents_kind,
+    '原酒',
+    '止めたのに列が書き換わっています'
+  );
+});
+
+test('返却（廃棄）した容器は、受入先と投入元から消える', async () => {
+  const tank = (await api('GET', '/api/tanks')).body.find((t) => t.code === 'Q-900');
+
+  // 中身が残っているうちは廃棄できない（原酒は v_tank_monitor では 0L に見える）
+  const tooEarly = await api('POST', `/api/tanks/${tank.id}/discard`, { reason: '返却' });
+  assert.equal(tooEarly.status, 422);
+  assert.match(tooEarly.body.message, /残量/);
+
+  // 空にしてから返却する
+  const emptied = await api('POST', '/api/stocktaking/raw-sake-tanks', {
+    txnDate: '2026-10-09', tankId: tank.id, actualVolumeL: 0, reason: '蒸留に全量投入',
+  });
+  assert.equal(emptied.status, 201, JSON.stringify(emptied.body));
+  const discarded = await api('POST', `/api/tanks/${tank.id}/discard`, { reason: '返却' });
+  assert.equal(discarded.status, 200, JSON.stringify(discarded.body));
+
+  const receivable = (await api('GET', '/api/raw-sake-receipts/tanks/receivable')).body;
+  const source = (await api('GET', '/api/raw-sake-receipts/tanks')).body;
+  assert.ok(!receivable.map((t) => t.code).includes('Q-900'), '受入先に残っています');
+  assert.ok(!source.map((t) => t.code).includes('Q-900'), '投入元に残っています');
+});
+
+// --- 容器IDの採番（入荷ごとに増える容器） -----------------------------------
+
+const nextCode = async (query) =>
+  (await api('GET', `/api/tanks/next-code?${new URLSearchParams(query)}`)).body;
+
+test('入荷年月を入れると、その月の連番で採番する', async () => {
+  const first = await nextCode({ containerType: 'QBテナー', receivedYm: '2026-10' });
+  assert.equal(first.code, 'Q-2610-01');
+
+  await addTank({ code: first.code, name: '雲山テナー1', containerType: 'QBテナー', contentsKind: '原酒' });
+  const second = await nextCode({ containerType: 'QBテナー', receivedYm: '2026-10' });
+  assert.equal(second.code, 'Q-2610-02');
+
+  // 月が変わったら 01 に戻る（いつ入ってきた器かが容器IDで分かる）
+  assert.equal((await nextCode({ containerType: 'QBテナー', receivedYm: '2026-11' })).code, 'Q-2611-01');
+});
+
+test('年月入りの採番は、昔の連番（Q-001）と混ざらない', async () => {
+  // Q-001 と Q-2610-01 がある状態。両方向を見ないと空振りする
+  // 年月なしは昔どおり Q + 連番。既にある Q-900 の次なので Q-901。
+  // Q-2610-01 を拾っていたら Q-2611 のような数字になる
+  assert.equal(
+    (await nextCode({ containerType: 'QBテナー' })).code,
+    'Q-901',
+    '年月なしの採番が Q-2610-01 を拾っています'
+  );
+  assert.equal(
+    (await nextCode({ containerType: 'QBテナー', receivedYm: '2026-10' })).code,
+    'Q-2610-02',
+    '年月入りの採番が Q-001 を拾っています'
+  );
+});
+
+test('採番表に無い容器種別でも、中身の種類から採番できる', async () => {
+  // 以前はここで422になり、容器IDを自分で考えるしかなかった
+  const res = await api(
+    'GET',
+    `/api/tanks/next-code?containerType=${encodeURIComponent('ステンレス角タンク')}` +
+      `&contentsKind=${encodeURIComponent('原酒')}`
+  );
+  assert.equal(res.status, 200);
+  assert.equal(res.body.prefix, 'SP');
+  assert.match(res.body.code, /^SP-\d+$/);
+
+  // 種別も中身も分からないときは、今までどおり断る
+  const unknown = await api('GET', '/api/tanks/next-code?containerType=なぞの容器');
+  assert.equal(unknown.status, 422);
+});

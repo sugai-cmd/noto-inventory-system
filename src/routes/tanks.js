@@ -8,6 +8,7 @@ const createSchema = z.object({
   code: z.string().min(1, '容器IDは必須です'),
   name: z.string().min(1, '容器名称は必須です'),
   containerType: z.string().optional(),
+  contentsKind: z.enum(['浄酎', '原酒', '残渣']).optional(),
   maxVolumeL: z.number().positive().optional(),
   location: z.string().optional(),
   status: z.string().optional(),
@@ -42,13 +43,16 @@ const router = express.Router();
 router.get('/residue-collection', (req, res) => {
   const db = getConnection();
 
+  // 中身の種類（tanks.contents_kind）で絞る。容器IDの接頭辞ではない（0028）。
+  // ビューには列が無いので tanks を結び直す（ビューの作り直しはしない）。
   const tanks = db
     .prepare(
-      `SELECT * FROM v_residue_tank_collected
-        WHERE code LIKE @prefix AND discarded_on IS NULL
-        ORDER BY code`
+      `SELECT v.* FROM v_residue_tank_collected v
+         JOIN tanks t ON t.id = v.tank_id
+        WHERE ${tankService.contentsKindSql('t')} = '残渣' AND v.discarded_on IS NULL
+        ORDER BY v.code`
     )
-    .all({ prefix: `${tankService.RESIDUE_TANK_PREFIX}-%` });
+    .all();
 
   const unlinked = db
     .prepare(
@@ -74,7 +78,7 @@ router.get('/monitor', (req, res) => {
   const rows = db
     .prepare(
       `SELECT v.tank_id, v.name, v.current_volume_l, v.max_volume_l, v.fill_rate,
-              t.code, t.container_type, t.location, t.status
+              t.code, t.container_type, t.contents_kind, t.location, t.status
        FROM v_tank_monitor v
        JOIN tanks t ON t.id = v.tank_id
        ORDER BY t.code`
@@ -85,7 +89,7 @@ router.get('/monitor', (req, res) => {
   const abvByTank = tankService.computeTankAbv(db);
   const withKind = rows.map((r) => ({
     ...r,
-    kind: tankService.tankKind(r.code),
+    kind: tankService.tankContentsKind(r),
     abv: abvByTank.get(r.tank_id) ?? null,
   }));
 
@@ -116,10 +120,19 @@ router.get('/prefixes', (req, res) => {
   res.json(tankService.listTankPrefixes());
 });
 
-/** 種別を選んだときの次の容器ID（自動採番） */
+/**
+ * 種別を選んだときの次の容器ID（自動採番）。
+ * receivedYm を付けると入荷年月入りで採番する（QBテナーのような入荷ごとの容器）。
+ */
 router.get('/next-code', (req, res, next) => {
   try {
-    res.json(tankService.nextTankCode(String(req.query.containerType ?? '')));
+    res.json(
+      tankService.nextTankCode({
+        containerType: String(req.query.containerType ?? ''),
+        contentsKind: req.query.contentsKind ? String(req.query.contentsKind) : undefined,
+        receivedYm: req.query.receivedYm ? String(req.query.receivedYm) : undefined,
+      })
+    );
   } catch (err) {
     next(err);
   }

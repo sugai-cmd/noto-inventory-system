@@ -5,7 +5,7 @@ const { z } = require('zod');
 const distillationService = require('../services/distillationService');
 const { getConnection } = require('../db/connection');
 const { validateRequest } = require('../middlewares/validateRequest');
-const { RAW_SAKE_TANK_PREFIX } = require('../services/tankService');
+const { contentsKindSql } = require('../services/tankService');
 const rawSakeLedgerService = require('../services/rawSakeLedgerService');
 const rawSakeLotService = require('../services/rawSakeLotService');
 
@@ -58,10 +58,13 @@ const bulkReceiptSchema = z.object({
 /**
  * 原酒の入る容器と、その残量。
  *
- * **原酒ポリ（SP-）だけを返す。**
- * 以前は「残量が0より大きい容器」も足していたが、v_raw_sake_tank_volume は
+ * **中身の種類が「原酒」の容器だけを返す**（tanks.contents_kind。0028）。
+ * 以前は容器IDの接頭辞 SP- で絞っていたため、原酒を入れる別種の容器
+ * （QBテナー・樽など）を登録しても投入元に一切出てこなかった。
+ *
+ * 「残量が0より大きい容器」で絞ることはできない。v_raw_sake_tank_volume は
  * tanks.initial_volume_l を起点にするため、移行時に浄酎が入っていた容器まで
- * 原酒として並んでいた（実データで ステンレスタンク1 84L・2 211L・3 174L・
+ * 原酒として並ぶ（実データで ステンレスタンク1 84L・2 211L・3 174L・
  * 一斗瓶1 19.9L・出荷用ポリタンク3 3L の5本）。
  *
  * この口は在庫画面の「原酒タンク残量」と、蒸留の投入元の選択肢に使われている。
@@ -72,36 +75,39 @@ router.get('/tanks', (req, res) => {
   res.json(
     db
       .prepare(
-        `SELECT v.*, t.container_type, t.status
+        `SELECT v.*, t.container_type, t.contents_kind, t.status
          FROM v_raw_sake_tank_volume v
          JOIN tanks t ON t.id = v.tank_id
-         WHERE t.code LIKE @prefix
+         WHERE ${contentsKindSql('t')} = '原酒' AND t.discarded_on IS NULL
          ORDER BY t.code`
       )
-      .all({ prefix: `${RAW_SAKE_TANK_PREFIX}-%` })
+      .all()
   );
 });
 
 /**
- * 原酒入荷の受入先の候補。**原酒タンクだけ**を、空かどうかを添えて返す。
+ * 原酒入荷の受入先の候補。**中身の種類が「原酒」の容器だけ**を、空かどうかを添えて返す。
  *
  * 空でないタンクも返して `is_empty: 0` を付ける。画面から消してしまうと
  * 「原酒ポリ7が出てこないのはなぜか」が分からなくなるので、
  * 使用中であることが見えるようにしておく（選ばせはしない）。
+ *
+ * 廃棄した容器は返さない。返却したQBテナーは廃棄として締めるので、
+ * 残していると使えない容器が選択肢に溜まり続ける。
  */
 router.get('/tanks/receivable', (req, res) => {
   const db = getConnection();
   res.json(
     db
       .prepare(
-        `SELECT v.*, t.container_type, t.status,
+        `SELECT v.*, t.container_type, t.contents_kind, t.status,
                 CASE WHEN v.current_volume_l > 0 THEN 0 ELSE 1 END AS is_empty
          FROM v_raw_sake_tank_volume v
          JOIN tanks t ON t.id = v.tank_id
-         WHERE t.code LIKE @prefix
+         WHERE ${contentsKindSql('t')} = '原酒' AND t.discarded_on IS NULL
          ORDER BY t.code`
       )
-      .all({ prefix: `${RAW_SAKE_TANK_PREFIX}-%` })
+      .all()
   );
 });
 

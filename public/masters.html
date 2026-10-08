@@ -369,6 +369,11 @@ const MASTERS = {
     fields: [
       { key: 'containerType', label: '容器種別', type: 'tankType',
         hint: '採番の対象になっている種別を選ぶと容器IDが自動で決まります。一覧に無い種別も入力できます' },
+      { key: 'contentsKind', label: '中身の種類', type: 'select',
+        choices: ['浄酎', '原酒', '残渣'], omitIfEmpty: true,
+        hint: '原酒入荷の受入先・蒸留の投入元に出るのは「原酒」の容器です。容器種別は問いません（QBテナーや樽でも原酒にできます）。入出庫の記録があると変更できません' },
+      { key: 'receivedYm', label: '入荷年月', type: 'month', localOnly: true,
+        hint: '原酒の入荷ごとに増える容器（QBテナーなど）はここを入れると、容器IDが Q-2610-01 のように入荷年月入りになります。使い回す設備なら空のままで構いません' },
       { key: 'code', label: '容器ID', type: 'text', required: true, createOnly: true },
       { key: 'name', label: '容器名称', type: 'text', required: true },
       { key: 'maxVolumeL', label: '最大容量(L)', type: 'number', step: '0.1' },
@@ -385,6 +390,7 @@ const MASTERS = {
       { key: 'code', label: '容器ID' },
       { key: 'name', label: '容器名称' },
       { key: 'container_type', label: 'タイプ' },
+      { key: 'contents_kind', label: '中身' },
       { key: 'max_volume_l', label: '最大容量', format: (r) => (r.max_volume_l != null ? `${num(r.max_volume_l, 1)}L` : '') },
       { key: 'location', label: '設置場所' },
       { key: 'status', label: '状態' },
@@ -720,21 +726,59 @@ function renderForm() {
 
   const tankTypeInput = el('f_containerType');
   if (tankTypeInput && currentTab === 'tanks') {
-    tankTypeInput.addEventListener('change', async () => {
-      if (editingId != null || !tankTypeInput.value) return;
-      // 採番の対象になっている種別のときだけ容器IDを埋める。
-      // シート由来の種別（PEなど）は採番の決まりが無いので、手で入れてもらう。
-      const known = tankPrefixes.some((t) => t.containerType === tankTypeInput.value);
-      if (!known) return;
+    const kindInput = el('f_contentsKind');
+    const receivedYmInput = el('f_receivedYm');
+
+    /**
+     * 容器IDを採番して埋める。
+     *
+     * 採番の決まりは3通り（サーバーの nextTankCode と同じ）:
+     *   1. 採番表にある容器種別     → T-001 / SP-009 …
+     *   2. 入荷年月を入れたとき     → Q-2610-01（入荷ごとに増える容器）
+     *   3. 採番表に無い容器種別     → 中身の種類から決める（原酒→SP など）
+     * どれにも当てはまらない（種別も中身も空）ときは、手で入れてもらう。
+     */
+    async function fillNextCode() {
+      if (editingId != null) return;
+      const containerType = tankTypeInput.value.trim();
+      const contentsKind = kindInput ? kindInput.value : '';
+      const receivedYm = receivedYmInput ? receivedYmInput.value : '';
+      const known = tankPrefixes.some((t) => t.containerType === containerType);
+      if (!known && !contentsKind) return;
+
+      const q = new URLSearchParams({ containerType });
+      if (contentsKind) q.set('contentsKind', contentsKind);
+      if (receivedYm) q.set('receivedYm', receivedYm);
       try {
-        const next = await apiGet(
-          `/api/tanks/next-code?containerType=${encodeURIComponent(tankTypeInput.value)}`
-        );
+        const next = await apiGet(`/api/tanks/next-code?${q}`);
         el('f_code').value = next.code;
       } catch (err) {
         showMessage('messages', 'error', err.message);
       }
+    }
+
+    /** 入荷年月の欄は、入荷ごとに増える容器の種別のときだけ出す */
+    function syncReceivedYm() {
+      if (!receivedYmInput) return;
+      const row = receivedYmInput.closest('.field') ?? receivedYmInput.parentElement;
+      const perReceipt = tankPrefixes.some(
+        (t) => t.containerType === tankTypeInput.value.trim() && t.perReceipt
+      );
+      row.style.display = perReceipt ? '' : 'none';
+      if (!perReceipt) {
+        receivedYmInput.value = '';
+      } else if (!receivedYmInput.value) {
+        receivedYmInput.value = new Date().toISOString().slice(0, 7);  // 既定は今月
+      }
+    }
+
+    syncReceivedYm();
+    tankTypeInput.addEventListener('change', async () => {
+      syncReceivedYm();
+      await fillNextCode();
     });
+    if (kindInput) kindInput.addEventListener('change', fillNextCode);
+    if (receivedYmInput) receivedYmInput.addEventListener('change', fillNextCode);
   }
 
   const brewerySelect = el('f_brewery');
@@ -854,6 +898,7 @@ function buildPayload() {
 
   for (const f of spec().fields) {
     if (editing && f.createOnly) continue;
+    if (f.localOnly) continue;   // 画面の中だけで使う欄（入荷年月など）。APIには送らない
     const input = el(`f_${f.key}`);
     if (!input) continue;
 
@@ -1081,7 +1126,11 @@ el('listRows').addEventListener('click', async (e) => {
 /** タンクの廃棄。行は消さずに一覧から外れる */
 async function discardTank(id) {
   const tank = records.find((r) => r.id === id);
-  const reason = prompt(`${tank?.name ?? id} を廃棄します。理由を入力してください`);
+  // 返却したQBテナーもここで締める（中身を使い切ったら返す器なので、廃棄が終わり方）
+  const reason = prompt(
+    `${tank?.name ?? id} を廃棄します。理由を入力してください（例: 返却・破損・老朽）`,
+    '返却'
+  );
   if (reason == null) return;
 
   clearMessage('messages');

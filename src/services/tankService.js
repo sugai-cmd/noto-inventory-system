@@ -384,6 +384,29 @@ function listLedgerFilterOptions() {
  * 容器IDのプレフィックスは種別を表す（T=ステンレスタンク、B=木樽、SP=原酒ポリタンク、
  * U=残渣タンク、G=一斗瓶、JP=出荷用ポリタンク、Q=QBテナー、DISTL=蒸留機）。
  */
+/** 中身の種類の値を確かめる（ALTER TABLE では CHECK を足せないのでここで止める） */
+function assertContentsKind(contentsKind) {
+  if (!TANK_KINDS.includes(contentsKind)) {
+    throw new BusinessRuleError(
+      `中身の種類は ${TANK_KINDS.join('・')} のいずれかです: ${contentsKind}`
+    );
+  }
+}
+
+/** この容器に入出庫の記録があるか（取消済みも数える。記録があった事実は消えない） */
+function hasLedgerRows(db, tankId) {
+  const row = db
+    .prepare(
+      `SELECT
+         EXISTS (SELECT 1 FROM tank_ledger
+                  WHERE from_tank_id = @id OR to_tank_id = @id) AS jochu,
+         EXISTS (SELECT 1 FROM raw_sake_ledger
+                  WHERE from_tank_id = @id OR to_tank_id = @id) AS genshu`
+    )
+    .get({ id: tankId });
+  return Boolean(row.jochu || row.genshu);
+}
+
 function registerTank(input, actor = null) {
   const db = getConnection();
 
@@ -404,13 +427,18 @@ function registerTank(input, actor = null) {
     throw new BusinessRuleError('初期在庫量が最大容量を超えています');
   }
 
+  // 中身の種類。未指定なら容器IDの接頭辞から決める（CSV取込など既存の呼び出しを壊さず、
+  // 列が NULL のまま増えないようにする）
+  const contentsKind = input.contentsKind ?? tankKind(code);
+  assertContentsKind(contentsKind);
+
   const result = db
     .prepare(
       `INSERT INTO tanks
-         (uid, code, name, container_type, max_volume_l, location, status,
+         (uid, code, name, container_type, contents_kind, max_volume_l, location, status,
           gauge_constant, initial_volume_l, current_volume_l, current_abv, note)
        VALUES
-         (@uid, @code, @name, @containerType, @maxVolumeL, @location, @status,
+         (@uid, @code, @name, @containerType, @contentsKind, @maxVolumeL, @location, @status,
           @gaugeConstant, @initialVolumeL, @initialVolumeL, @currentAbv, @note)`
     )
     .run({
@@ -418,6 +446,7 @@ function registerTank(input, actor = null) {
       code,
       name,
       containerType: input.containerType ?? null,
+      contentsKind,
       maxVolumeL: input.maxVolumeL ?? null,
       location: input.location ?? null,
       status: input.status ?? '稼働中',
@@ -440,12 +469,28 @@ function registerTank(input, actor = null) {
 
 function updateTank(id, input, actor = null) {
   const db = getConnection();
-  if (!db.prepare('SELECT id FROM tanks WHERE id = ?').get(id)) return null;
+  const before = db.prepare('SELECT * FROM tanks WHERE id = ?').get(id);
+  if (!before) return null;
+
+  // 中身の種類は、台帳に1行でも記録があれば変えられない。
+  // 変えると今入っている残量が浄酎モニターと原酒在庫の間を飛び移り、
+  // 過去の棚卸・集計と合わなくなる（登録直後の打ち間違いは直せる）。
+  const contentsKindGiven = input.contentsKind != null;
+  if (contentsKindGiven) {
+    assertContentsKind(input.contentsKind);
+    if (input.contentsKind !== tankContentsKind(before) && hasLedgerRows(db, id)) {
+      throw new BusinessRuleError(
+        `${before.code} ${before.name} は入出庫の記録があるため、中身の種類を変えられません。` +
+          '新しい容器として登録してください'
+      );
+    }
+  }
 
   db.prepare(
     `UPDATE tanks SET
        name = COALESCE(@name, name),
        container_type = COALESCE(@containerType, container_type),
+       contents_kind = CASE WHEN @contentsKindGiven = 1 THEN @contentsKind ELSE contents_kind END,
        max_volume_l = COALESCE(@maxVolumeL, max_volume_l),
        location = COALESCE(@location, location),
        status = COALESCE(@status, status),
@@ -456,6 +501,8 @@ function updateTank(id, input, actor = null) {
     id,
     name: input.name ?? null,
     containerType: input.containerType ?? null,
+    contentsKind: input.contentsKind ?? null,
+    contentsKindGiven: contentsKindGiven ? 1 : 0,
     maxVolumeL: input.maxVolumeL ?? null,
     location: input.location ?? null,
     status: input.status ?? null,
@@ -479,49 +526,48 @@ function updateTank(id, input, actor = null) {
 
 // 容器種別ごとのプレフィックス（DATA_STRUCTURE.md タンクマスタ、
 // GAS版 README 3章「種別選択でプレフィックス自動切替」）。
+// perReceipt: 原酒の入荷ごとに増える容器。ポリタンクのように使い回す設備ではなく、
+// 中身を使い切ったら返す器なので、連番だけでは「いつ入ってきたどの器か」が残らない。
+// この印がある種別は容器IDに入荷年月を入れて採番する（Q-2610-01）。
 const TANK_PREFIXES = {
-  ステンレスタンク: 'T',
-  木樽: 'B',
-  原酒ポリタンク: 'SP',
-  残渣タンク: 'U',
-  一斗瓶: 'G',
-  出荷用ポリタンク: 'JP',
-  QBテナー: 'Q',
-  蒸留機: 'DISTL',
+  ステンレスタンク: { prefix: 'T' },
+  木樽: { prefix: 'B' },
+  原酒ポリタンク: { prefix: 'SP' },
+  残渣タンク: { prefix: 'U' },
+  一斗瓶: { prefix: 'G' },
+  出荷用ポリタンク: { prefix: 'JP' },
+  QBテナー: { prefix: 'Q', perReceipt: true },
+  蒸留機: { prefix: 'DISTL' },
 };
 
-/** 原酒タンクの容器IDプレフィックス。原酒の受入・投入はこの容器だけを対象にする */
-const RAW_SAKE_TANK_PREFIX = TANK_PREFIXES['原酒ポリタンク'];
-
-/**
- * 原酒タンクかどうかを容器IDで判定する。
- *
- * 容器種別（container_type）では判定できない。旧シートから移行した実データの
- * 種別は「PE」「QBテナー」など**材質や通称**で入っており、「原酒」を含む行は
- * 1件も無い。以前は container_type LIKE '%原酒%' で絞っていたため1件も当たらず、
- * 原酒入荷の画面に出荷用ポリタンクやテナーまで並んでいた。
- * 容器IDの採番規則（DATA_STRUCTURE.md タンクマスタ）は移行後も守られている。
- */
-function isRawSakeTankCode(code) {
-  return typeof code === 'string' && code.startsWith(`${RAW_SAKE_TANK_PREFIX}-`);
-}
+/** 原酒タンクの容器IDプレフィックス（移行データの既定値を決めるのに使う） */
+const RAW_SAKE_TANK_PREFIX = TANK_PREFIXES['原酒ポリタンク'].prefix;
 
 /** 残渣タンクの容器IDプレフィックス */
-const RESIDUE_TANK_PREFIX = TANK_PREFIXES['残渣タンク'];
+const RESIDUE_TANK_PREFIX = TANK_PREFIXES['残渣タンク'].prefix;
 
 /** 中身で分けた容器の種類。画面の見出しにもこの文字をそのまま使う */
 const TANK_KINDS = ['浄酎', '原酒', '残渣'];
 
+/** 中身の種類ごとの既定プレフィックス（容器種別が採番表に無いときの頼り先） */
+const PREFIX_BY_KIND = {
+  原酒: RAW_SAKE_TANK_PREFIX,
+  残渣: RESIDUE_TANK_PREFIX,
+  浄酎: TANK_PREFIXES['ステンレスタンク'].prefix,
+};
+
 /**
- * 容器を中身で3つに分ける。
+ * 容器IDの接頭辞から中身を推測する。**これは移行用の代用**。
  *
- * **容器IDの接頭辞で決める。容器種別では決められない。**
- * 実データでは原酒ポリ（SP）も出荷用ポリ（JP）も container_type が 'PE' で、
+ * 容器種別（container_type）では判定できなかった。旧シートから移行した実データの
+ * 種別は「PE」「QBテナー」など**材質や通称**で入っており、「原酒」を含む行は
+ * 1件も無い。原酒ポリ（SP）も出荷用ポリ（JP）も container_type が同じ 'PE' で、
  * 一斗瓶10本は容器IDが G- ではなく T- で採番されている。
+ * そのため当時は容器IDの接頭辞（DATA_STRUCTURE.md タンクマスタの採番規則）で代用した。
  *
- * 原酒（SP）と残渣（U）は tank_ledger に1行も持たない。
- * 原酒の残量は raw_sake_ledger（v_raw_sake_tank_volume）から出るので、
- * 浄酎のモニターに混ぜると必ず 0L で並ぶ。
+ * **いまの正は tanks.contents_kind**（0028）。この関数は列が未設定のときの
+ * 落ち先としてだけ残す。接頭辞に縛られていたせいで、原酒を入れる別種の容器
+ * （QBテナー・樽など）を登録しても原酒入荷・蒸留の画面に出てこなかった。
  */
 function tankKind(code) {
   if (isRawSakeTankCode(code)) return '原酒';
@@ -529,32 +575,106 @@ function tankKind(code) {
   return '浄酎';
 }
 
-function listTankPrefixes() {
-  return Object.entries(TANK_PREFIXES).map(([containerType, prefix]) => ({ containerType, prefix }));
+/** @deprecated 接頭辞による代用。中身は tankContentsKind / isRawSakeTank で見る */
+function isRawSakeTankCode(code) {
+  return typeof code === 'string' && code.startsWith(`${RAW_SAKE_TANK_PREFIX}-`);
 }
 
 /**
- * 容器種別から次の容器IDを作る。
- * 既存のコードの書き方（区切り文字と桁数）に合わせるので、
- * 移行した過去データが T-01 でも T01 でも、その並びを引き継げる。
+ * 容器の中身の種類。**tanks.contents_kind を正とし、未設定のときだけ接頭辞に落ちる。**
+ *
+ * 原酒と残渣は tank_ledger に1行も持たない。原酒の残量は raw_sake_ledger
+ * （v_raw_sake_tank_volume）から出るので、浄酎のモニターに混ぜると必ず 0L で並ぶ。
  */
-function nextTankCode(containerType) {
+function tankContentsKind(tank) {
+  const kind = tank?.contents_kind;
+  if (TANK_KINDS.includes(kind)) return kind;
+  return tankKind(tank?.code);
+}
+
+/** 原酒を入れる容器か。容器種別・容器IDは問わない */
+function isRawSakeTank(tank) {
+  return tankContentsKind(tank) === '原酒';
+}
+
+/**
+ * 中身の種類を SQL で出す式。**tankContentsKind と同じ規則を1か所で持つため**に用意する。
+ *
+ * 列が NULL の行があるので、JS と同じく容器IDの接頭辞に落ちる必要がある。
+ * 移行ローダー（scripts/loaders/tanks.js・knownTanks.js）は contents_kind を入れずに
+ * タンクを作るので、列だけで絞ると業務データを入れ直した直後に
+ * **すべての容器が原酒入荷・蒸留・残渣回収の画面から消える**。
+ *
+ * @param {string} alias tanks のテーブル別名
+ */
+function contentsKindSql(alias = 't') {
+  return (
+    `COALESCE(${alias}.contents_kind, CASE` +
+    ` WHEN ${alias}.code LIKE '${RAW_SAKE_TANK_PREFIX}-%' THEN '原酒'` +
+    ` WHEN ${alias}.code LIKE '${RESIDUE_TANK_PREFIX}-%' THEN '残渣'` +
+    " ELSE '浄酎' END)"
+  );
+}
+
+function listTankPrefixes() {
+  return Object.entries(TANK_PREFIXES).map(([containerType, { prefix, perReceipt }]) => ({
+    containerType,
+    prefix,
+    perReceipt: Boolean(perReceipt),
+  }));
+}
+
+/**
+ * 次の容器IDを作る。
+ *
+ * - 採番表にある容器種別 … 既存コードの書き方（区切り文字と桁数）に合わせるので、
+ *   移行した過去データが T-01 でも T01 でも、その並びを引き継げる
+ * - 入荷年月（receivedYm）付き … `Q-2610-01`。その年月の中で連番を振る。
+ *   旧形式（`^Q[-_]?\d+$`）には当たらないので過去データと衝突しない
+ * - 採番表に無い容器種別 … 中身の種類から接頭辞を決める（原酒→SP／残渣→U／浄酎→T）。
+ *   以前はここで例外を投げていたため、新しい種別の容器は容器IDを自分で考えるしかなかった
+ */
+function nextTankCode({ containerType, contentsKind, receivedYm } = {}) {
   const db = getConnection();
-  const prefix = TANK_PREFIXES[containerType];
+  const known = TANK_PREFIXES[containerType];
+  const prefix = known ? known.prefix : PREFIX_BY_KIND[contentsKind];
   if (!prefix) {
     throw new BusinessRuleError(
-      `容器種別が未対応です: ${containerType}（${Object.keys(TANK_PREFIXES).join('・')}）`
+      `容器種別が未対応です: ${containerType}（${Object.keys(TANK_PREFIXES).join('・')}）。` +
+        `中身の種類（${TANK_KINDS.join('・')}）を選べば採番できます`
     );
+  }
+
+  const codes = db.prepare('SELECT code FROM tanks').all();
+
+  if (receivedYm) {
+    const yymm = toTankYymm(receivedYm);
+    // 同じ接頭辞・同じ入荷年月のものだけを見て連番を振る
+    const pattern = new RegExp(`^${prefix}-${yymm}-(\\d+)$`);
+    let max = 0;
+    let width = 2;
+    for (const row of codes) {
+      const matched = pattern.exec(row.code ?? '');
+      if (!matched) continue;
+      const value = Number.parseInt(matched[1], 10);
+      if (value > max) {
+        max = value;
+        width = matched[1].length;
+      }
+    }
+    const next = String(max + 1).padStart(width, '0');
+    return { code: `${prefix}-${yymm}-${next}`, prefix, containerType, receivedYm };
   }
 
   // 同じプレフィックスで「区切り＋数字」で終わるコードだけを見る。
   // 例: T-01 / T01。SPとSは別物なので、数字の直前までを厳密に一致させる。
+  // 年月入り（Q-2610-01）は数字の後ろに -01 が続くのでここには当たらない。
   const pattern = new RegExp(`^${prefix}([-_]?)(\\d+)$`);
   let separator = '-';
   let width = 3; // 既存データが無いときはGAS版と同じ T-001 形式にする
   let max = 0;
 
-  for (const row of db.prepare('SELECT code FROM tanks').all()) {
+  for (const row of codes) {
     const matched = pattern.exec(row.code ?? '');
     if (!matched) continue;
     const [, sep, digits] = matched;
@@ -570,6 +690,19 @@ function nextTankCode(containerType) {
   return { code: `${prefix}${separator}${next}`, prefix, containerType };
 }
 
+/** 入荷年月（2026-10 / 2026-10-08）を容器IDに入れる YYMM にする */
+function toTankYymm(receivedYm) {
+  const matched = /^(\d{4})-(\d{2})(?:-\d{2})?$/.exec(String(receivedYm).trim());
+  if (!matched) {
+    throw new BusinessRuleError(`入荷年月は YYYY-MM で入れてください: ${receivedYm}`);
+  }
+  const [, year, month] = matched;
+  if (Number(month) < 1 || Number(month) > 12) {
+    throw new BusinessRuleError(`入荷年月の月が範囲外です: ${receivedYm}`);
+  }
+  return `${year.slice(2)}${month}`;
+}
+
 /**
  * 廃棄。行は消さずに廃棄日を入れる。
  * 過去の入出庫履歴がこのタンクを参照しているので、削除すると履歴が読めなくなる。
@@ -580,7 +713,13 @@ function discardTank(id, { discardedOn, reason } = {}, actor = null) {
   if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${id})`);
   if (tank.discarded_on) throw new ConflictError(`${tank.name} は既に廃棄済みです（${tank.discarded_on}）`);
 
-  const volume = getVolume(db, id);
+  // 残量は中身の種類によって見るビューが違う。原酒は tank_ledger に1行も持たないので
+  // v_tank_monitor では必ず 0L に見え、中身が残っていても廃棄できてしまっていた
+  // （廃棄した容器は原酒在庫・投入元から外れるので、残っていた原酒が消えて見える）。
+  const volume =
+    tankContentsKind(tank) === '原酒'
+      ? db.prepare('SELECT * FROM v_raw_sake_tank_volume WHERE tank_id = ?').get(id)
+      : getVolume(db, id);
   if (volume && volume.current_volume_l > 0) {
     throw new BusinessRuleError(
       `${tank.name} には残量が ${volume.current_volume_l}L あります。空にしてから廃棄してください`
@@ -619,6 +758,9 @@ module.exports = {
   TANK_KINDS,
   isRawSakeTankCode,
   tankKind,
+  tankContentsKind,
+  isRawSakeTank,
+  contentsKindSql,
   submitTankTransfer,
   submitTaxFreeTransfer,
   listLedger,
