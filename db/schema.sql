@@ -482,7 +482,7 @@ CREATE TABLE tanks (
   current_volume_l    REAL DEFAULT 0,           -- 現在液量(L)（キャッシュ値。真値はv_tank_monitorで再計算）
   current_abv         REAL,                     -- 理論アルコール度数（同上）
   note                TEXT
-, discarded_on   TEXT CHECK (discarded_on IS NULL OR discarded_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), discard_reason TEXT);
+, discarded_on   TEXT CHECK (discarded_on IS NULL OR discarded_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), discard_reason TEXT, contents_kind TEXT);
 
 CREATE TABLE users (
   id            INTEGER PRIMARY KEY,

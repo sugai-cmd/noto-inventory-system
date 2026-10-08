@@ -13,7 +13,7 @@ const { generateCode } = require('../utils/codeGenerator');
 const { nextRawSakeLotCode, nextRawSakeLotCodes } = require('../utils/rawSakeCode');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
-const { isRawSakeTankCode, tankKind, RAW_SAKE_TANK_PREFIX } = require('./tankService');
+const { isRawSakeTank, tankContentsKind } = require('./tankService');
 const operationLogService = require('./operationLogService');
 const rawSakeLotService = require('./rawSakeLotService');
 
@@ -95,10 +95,11 @@ function getRawSakeTankVolume(db, tankId) {
  * 混ざった時点で追跡が切れる。空の容器にだけ受け入れる。
  */
 function assertReceivableTank(db, tank) {
-  if (!isRawSakeTankCode(tank.code)) {
+  if (!isRawSakeTank(tank)) {
     throw new BusinessRuleError(
-      `${tank.code} ${tank.name} は原酒タンクではありません。` +
-        `原酒入荷の受入先は容器IDが ${RAW_SAKE_TANK_PREFIX}- で始まるタンクだけです`
+      `${tank.code} ${tank.name} は原酒を入れる容器ではありません。` +
+        'マスタのタンクで「中身の種類」が「原酒」の容器を選んでください' +
+        '（容器種別は問いません。QBテナーや樽でも原酒として登録できます）'
     );
   }
 
@@ -747,17 +748,19 @@ const EDITABLE_HEADER = [
  * 残渣の行き先が残渣タンクであることを確かめる。
  *
  * **容器種別（container_type）では判定できない。** 残渣タンクは 'PP' だが、
- * 種別は他の容器とも重なりうる。容器IDの接頭辞で決める tankKind を使う
+ * 種別は他の容器とも重なりうる。中身の種類（tanks.contents_kind）で決める
  * （stocktakingService.submitTankStocktaking が浄酎だけに絞っているのと同じ作法）。
  *
  * 浄酎や原酒のタンクを残渣の行き先にできてしまうと、そのタンクに残渣が
  * 溜まっているように見えて記録の意味が壊れる。
  */
 function assertResidueTank(db, tankId) {
-  const tank = db.prepare('SELECT id, code, name, discarded_on FROM tanks WHERE id = ?').get(tankId);
+  const tank = db
+    .prepare('SELECT id, code, name, contents_kind, discarded_on FROM tanks WHERE id = ?')
+    .get(tankId);
   if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${tankId})`);
 
-  const kind = tankKind(tank.code);
+  const kind = tankContentsKind(tank);
   if (kind !== '残渣') {
     throw new BusinessRuleError(
       `${tank.name}（${tank.code}）は${kind}タンクです。残渣の行き先は残渣タンクだけです`

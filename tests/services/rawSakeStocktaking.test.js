@@ -304,8 +304,45 @@ test('蒸留の投入元の選択肢が今までどおり出る', async () => {
   assert.equal(status, 200);
   assert.deepEqual(
     body.map((t) => t.code).sort(),
-    ['SP-001', 'SP-002', 'SP-003', 'SP-004'],
+    ['SP-001', 'SP-002', 'SP-003'],
     '原酒タンクだけが出ること（浄酎・残渣は混ざらない）'
   );
   assert.equal(body.find((t) => t.code === 'SP-001').current_volume_l, 20);
+
+  // SP-004 は廃棄済み。返却したQBテナーを廃棄で締めるので、
+  // 廃棄した容器が投入元・棚卸の選択肢に残り続けないことを押さえる
+  assert.equal(
+    body.find((t) => t.code === 'SP-004'),
+    undefined,
+    '廃棄した原酒タンクは投入元に出ない'
+  );
+});
+
+// --- 棚卸も中身の種類で決まる（0028） ---------------------------------------
+
+test('中身=原酒にすれば、SP- でない容器も原酒の棚卸ができる', async () => {
+  const created = await api('POST', '/api/tanks', {
+    code: 'Q-700', name: '雲山テナー', containerType: 'QBテナー',
+    contentsKind: '原酒', maxVolumeL: 1000,
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const tankId = created.body.id;
+
+  // 原酒の棚卸として通る（以前は容器IDが SP- でないため422だった）
+  const ok = await api('POST', '/api/stocktaking/raw-sake-tanks', {
+    txnDate: '2026-10-08', tankId, actualVolumeL: 12, reason: '検尺',
+  });
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+  assert.equal(
+    db.prepare('SELECT current_volume_l AS v FROM v_raw_sake_tank_volume WHERE tank_id = ?')
+      .get(tankId).v,
+    12
+  );
+
+  // 対で見る: 同じ容器を浄酎の棚卸に出すと断られる
+  const ng = await api('POST', '/api/stocktaking/tanks', {
+    txnDate: '2026-10-08', tankId, actualVolumeL: 12, reason: '検尺',
+  });
+  assert.equal(ng.status, 422);
+  assert.match(ng.body.message, /浄酎タンクだけが対象です/);
 });

@@ -171,7 +171,7 @@ test('原酒タンクでない容器には受け入れられない', async () =>
   });
 
   assert.equal(res.status, 422);
-  assert.match(res.body.message, /原酒タンクではありません/);
+  assert.match(res.body.message, /原酒を入れる容器ではありません/);
   assert.equal(ledgerCount(), before);
 });
 
@@ -210,7 +210,7 @@ test('1件ずつの登録にも同じ制限がかかる（画面だけの制限�
     quantity: 20,
   });
   assert.equal(res.status, 422);
-  assert.match(res.body.message, /原酒タンクではありません/);
+  assert.match(res.body.message, /原酒を入れる容器ではありません/);
 });
 
 test('操作ログに、まとめて入れたことが1本だけ残る', async () => {

@@ -10,7 +10,7 @@ const { getConnection } = require('../db/connection');
 const { nextProductHistoryCode, nextMaterialHistoryCode } = require('../utils/codeGenerator');
 const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError } = require('../utils/errors');
-const { tankKind, isRawSakeTankCode } = require('./tankService');
+const { tankContentsKind, isRawSakeTank } = require('./tankService');
 const { nextRawSakeLotCodes } = require('../utils/rawSakeCode');
 const operationLogService = require('./operationLogService');
 
@@ -222,7 +222,7 @@ function submitTankStocktaking(input, actor = null) {
     const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(input.tankId);
     if (!tank) throw new NotFoundError(`タンクが見つかりません (id=${input.tankId})`);
 
-    // 原酒（SP）と残渣（U）はここで棚卸できない。
+    // 中身の種類が原酒・残渣の容器はここで棚卸できない。
     //
     // 理論値に使う v_tank_monitor は tank_ledger しか見ないため、原酒タンクは
     // 必ず 0L に見える（実データでは19本が 0L 表示で、実際には20Lなどが入っている）。
@@ -232,7 +232,7 @@ function submitTankStocktaking(input, actor = null) {
     //
     // 画面側でも選べないようにしてあるが、APIを直接叩いたり古い画面が
     // 残っていたりしたときに通ってしまうので、ここでも断る。
-    const kind = tankKind(tank.code);
+    const kind = tankContentsKind(tank);
     if (kind !== '浄酎') {
       throw new BusinessRuleError(
         `${tank.name}（${tank.code}）は${kind}タンクです。この棚卸は浄酎タンクだけが対象です` +
@@ -330,8 +330,8 @@ function submitRawSakeStocktaking(input, actor = null) {
     // 原酒タンク以外はここでは直せない。浄酎タンクを指定されて raw_sake_ledger に
     // 書くと、浄酎の残量は動かないのに原酒の残量だけが増える
     // （submitTankStocktaking が浄酎だけに絞っているのと対）。
-    if (!isRawSakeTankCode(tank.code)) {
-      const kind = tankKind(tank.code);
+    if (!isRawSakeTank(tank)) {
+      const kind = tankContentsKind(tank);
       throw new BusinessRuleError(
         `${tank.name}（${tank.code}）は${kind}タンクです。この棚卸は原酒タンクだけが対象です` +
           (kind === '浄酎' ? '。浄酎タンクは「タンク（浄酎）」から行ってください' : '')
