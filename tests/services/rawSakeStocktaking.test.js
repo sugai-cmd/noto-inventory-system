@@ -318,12 +318,12 @@ test('蒸留の投入元の選択肢が今までどおり出る', async () => {
   );
 });
 
-// --- 棚卸も中身の種類で決まる（0028） ---------------------------------------
+// --- 棚卸も原酒の印で決まる（0029） -----------------------------------------
 
-test('中身=原酒にすれば、SP- でない容器も原酒の棚卸ができる', async () => {
+test('原酒の容器にすれば、SP- でない容器も原酒の棚卸ができる', async () => {
   const created = await api('POST', '/api/tanks', {
     code: 'Q-700', name: '雲山テナー', containerType: 'QBテナー',
-    contentsKind: '原酒', maxVolumeL: 1000,
+    isRawSakeTank: true, maxVolumeL: 1000,
   });
   assert.equal(created.status, 201, JSON.stringify(created.body));
   const tankId = created.body.id;

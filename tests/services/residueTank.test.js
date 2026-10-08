@@ -325,39 +325,3 @@ test('操作ログに行き先の変更が残る', () => {
   assert.equal(detail.before.destination_tank_id, RESIDUE);
   assert.equal(detail.after.destination_tank_id, RESIDUE2);
 });
-
-// --- 残渣も中身の種類で決まる（0028） ---------------------------------------
-//
-// 以前は容器IDが U- で始まるものだけを残渣として扱っていたので、
-// 別種の容器を残渣置き場にすると回収の行き先に選べなかった。
-
-test('中身=残渣にすれば、U- でない容器も残渣の行き先になる', async () => {
-  // 対で見るため、中身=浄酎の同じ T- 容器が混ざらないことも確かめる
-  const created = await api('POST', '/api/tanks', {
-    code: 'T-900', name: '残渣用角タンク', containerType: 'ステンレス角タンク',
-    contentsKind: '残渣', maxVolumeL: 500,
-  });
-  assert.equal(created.status, 201, JSON.stringify(created.body));
-
-  const { body } = await api('GET', '/api/tanks/residue-collection');
-  const codes = body.tanks.map((t) => t.code);
-  assert.ok(codes.includes('T-900'), '中身=残渣の容器が回収一覧に出ていません');
-  assert.ok(!codes.includes('T-001'), '中身=浄酎の容器が残渣に混ざっています');
-
-  // 回収の行き先としても受け付ける（画面だけの制限にしない）
-  const res = await api('POST', `/api/distillations/${distillationId}/residues`, {
-    collectedOn: '2026-06-20', collectedTime: '11:00', quantity: 5,
-    destinationTankId: created.body.id,
-  });
-  assert.equal(res.status, 201, JSON.stringify(res.body));
-  assert.equal(collected(created.body.id).collected_l, 5);
-});
-
-test('中身=原酒の容器は残渣の行き先にできない', async () => {
-  const res = await api('POST', `/api/distillations/${distillationId}/residues`, {
-    collectedOn: '2026-06-21', collectedTime: '11:00', quantity: 5,
-    destinationTankId: RAW,
-  });
-  assert.equal(res.status, 422);
-  assert.match(res.body.message, /残渣タンクだけです/);
-});

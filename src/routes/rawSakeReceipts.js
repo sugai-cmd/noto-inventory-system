@@ -5,7 +5,7 @@ const { z } = require('zod');
 const distillationService = require('../services/distillationService');
 const { getConnection } = require('../db/connection');
 const { validateRequest } = require('../middlewares/validateRequest');
-const { contentsKindSql } = require('../services/tankService');
+const { rawSakeTankSql } = require('../services/tankService');
 const rawSakeLedgerService = require('../services/rawSakeLedgerService');
 const rawSakeLotService = require('../services/rawSakeLotService');
 
@@ -58,7 +58,7 @@ const bulkReceiptSchema = z.object({
 /**
  * 原酒の入る容器と、その残量。
  *
- * **中身の種類が「原酒」の容器だけを返す**（tanks.contents_kind。0028）。
+ * **原酒の容器だけを返す**（tanks.is_raw_sake_tank。0029）。
  * 以前は容器IDの接頭辞 SP- で絞っていたため、原酒を入れる別種の容器
  * （QBテナー・樽など）を登録しても投入元に一切出てこなかった。
  *
@@ -75,10 +75,10 @@ router.get('/tanks', (req, res) => {
   res.json(
     db
       .prepare(
-        `SELECT v.*, t.container_type, t.contents_kind, t.status
+        `SELECT v.*, t.container_type, t.is_raw_sake_tank, t.status
          FROM v_raw_sake_tank_volume v
          JOIN tanks t ON t.id = v.tank_id
-         WHERE ${contentsKindSql('t')} = '原酒' AND t.discarded_on IS NULL
+         WHERE ${rawSakeTankSql('t')} AND t.discarded_on IS NULL
          ORDER BY t.code`
       )
       .all()
@@ -86,7 +86,7 @@ router.get('/tanks', (req, res) => {
 });
 
 /**
- * 原酒入荷の受入先の候補。**中身の種類が「原酒」の容器だけ**を、空かどうかを添えて返す。
+ * 原酒入荷の受入先の候補。**原酒の容器だけ**を、空かどうかを添えて返す。
  *
  * 空でないタンクも返して `is_empty: 0` を付ける。画面から消してしまうと
  * 「原酒ポリ7が出てこないのはなぜか」が分からなくなるので、
@@ -100,11 +100,11 @@ router.get('/tanks/receivable', (req, res) => {
   res.json(
     db
       .prepare(
-        `SELECT v.*, t.container_type, t.contents_kind, t.status,
+        `SELECT v.*, t.container_type, t.is_raw_sake_tank, t.status,
                 CASE WHEN v.current_volume_l > 0 THEN 0 ELSE 1 END AS is_empty
          FROM v_raw_sake_tank_volume v
          JOIN tanks t ON t.id = v.tank_id
-         WHERE ${contentsKindSql('t')} = '原酒' AND t.discarded_on IS NULL
+         WHERE ${rawSakeTankSql('t')} AND t.discarded_on IS NULL
          ORDER BY t.code`
       )
       .all()
