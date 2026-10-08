@@ -237,6 +237,39 @@ CREATE TABLE "orders" (
   updated_at         TEXT NOT NULL DEFAULT (datetime('now'))
 , legacy_order_no TEXT, is_cancelled  INTEGER NOT NULL DEFAULT 0, cancel_reason TEXT, cancelled_at  TEXT, cancelled_by  INTEGER REFERENCES users(id));
 
+CREATE TABLE payment_allocations (
+  id                    INTEGER PRIMARY KEY,
+  payment_id            INTEGER NOT NULL REFERENCES payments(id),
+  order_no              TEXT,                                          -- 受注への割当（受注番号）
+  consignment_report_id INTEGER REFERENCES consignment_reports(id),    -- 委託への割当
+  amount                REAL NOT NULL,
+  -- 入金 … その入金の金額を使う。合計は payments.amount を超えられない
+  -- 端数 … 振込手数料・値引き。**入金の金額は使わないが、請求の残額は減らす**
+  kind                  TEXT NOT NULL DEFAULT '入金' CHECK (kind IN ('入金','端数')),
+  note                  TEXT,                                          -- 端数の理由など
+  created_at            TEXT NOT NULL DEFAULT (datetime('now')),
+  -- 割当先は受注か委託のどちらか一方
+  -- （product_stock_ledger の order_id / sample_shipment_id と同じ作法）
+  CHECK ((order_no IS NULL) <> (consignment_report_id IS NULL))
+);
+
+CREATE TABLE payments (
+  id           INTEGER PRIMARY KEY,
+  payment_no   TEXT UNIQUE,                       -- P+年月+連番
+  paid_on      TEXT NOT NULL CHECK (paid_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),  -- 通帳の日付
+  customer_id  INTEGER REFERENCES customers(id),  -- 誰からか（通帳だけでは決められないことがあるのでNULL可）
+  amount       REAL NOT NULL,                     -- 入金額
+  payer_name   TEXT,                              -- 振込名義（通帳の表記。得意先名と違うことがある）
+  note         TEXT,
+  is_cancelled INTEGER NOT NULL DEFAULT 0,        -- 打ち間違いの取消（受注・台帳と同じ4列）
+  cancel_reason TEXT,
+  cancelled_at TEXT,
+  cancelled_by INTEGER REFERENCES users(id),
+  created_by   INTEGER REFERENCES users(id),
+  created_at   TEXT NOT NULL DEFAULT (datetime('now')),
+  updated_at   TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE prefecture_zones (
   prefecture TEXT PRIMARY KEY,                  -- 都道府県名（「石川県」のように県まで含む）
   zone       TEXT NOT NULL,                     -- 地帯名（運賃表の区分名をそのまま）
@@ -501,6 +534,12 @@ CREATE INDEX idx_orders_no        ON orders(order_no);
 CREATE INDEX idx_orders_product   ON orders(product_id);
 
 CREATE INDEX idx_orders_status    ON orders(status);
+
+CREATE INDEX idx_payment_alloc_order   ON payment_allocations(order_no);
+
+CREATE INDEX idx_payment_alloc_payment ON payment_allocations(payment_id);
+
+CREATE INDEX idx_payment_alloc_report  ON payment_allocations(consignment_report_id);
 
 CREATE INDEX idx_psl_order   ON product_stock_ledger(order_id);
 

@@ -488,6 +488,15 @@ function updateOrder(orderId, patch = {}, actor = null) {
       );
     }
 
+    // 入金日は入金の割り当てから自動で入れている（paymentService.refreshPaidOn）。
+    // ここからも直せると、消し込みの残額と入金日が食い違う
+    if (Object.hasOwn(next, 'paid_on') && before.has_payment_allocation) {
+      throw new BusinessRuleError(
+        `受注 ${before.order_no} には入金の割り当てがあります。` +
+          '入金日は入金タブの消し込みから直してください'
+      );
+    }
+
     // 商品の差し替え（誤登録の直し）。
     //
     // **未発送に限る。** 出荷が済んでいると、商品在庫変動履歴の出荷行の商品まで
@@ -623,9 +632,9 @@ function liveShipmentLedgerRows(db, orderId) {
 /**
  * 紐付いている委託販売実績報告（なければ空配列）。
  *
- * **report_no はいまのところ採番されていない**（submitConsignmentReport が入れていない。
- * 列もUNIQUEのまま空）。idは画面に出ないので、利用者が委託販売報告の一覧で
- * 突き合わせられる「報告月と本数」で名指しする。
+ * 報告番号は 0027 から採番している（既存分もそこで埋めた）。
+ * それでも空のことがありうるので、そのときは利用者が委託販売報告の一覧で
+ * 突き合わせられる「報告月と本数」に落とす。idは画面に出ないので使わない。
  */
 function linkedConsignmentReports(db, orderId) {
   return db

@@ -75,9 +75,17 @@
 
   <section class="panel">
     <h2>入金予定日を過ぎている受注</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      受注番号ごと（請求書の単位）に出しています。一部だけ入金があったものは残額で出ます。
+      消し込みは<a href="payments.html">入金タブ</a>から。
+    </p>
     <div class="table-scroll">
       <table>
-        <thead><tr><th>受注番号</th><th>得意先</th><th>商品</th><th class="num">金額</th><th>入金予定日</th><th class="num">超過</th></tr></thead>
+        <thead><tr>
+          <th>受注番号</th><th>得意先</th><th>商品</th>
+          <th class="num">請求額</th><th class="num">入金済</th><th class="num">残額</th>
+          <th>入金予定日</th><th class="num">超過</th>
+        </tr></thead>
         <tbody id="unpaidRows"></tbody>
       </table>
     </div>
@@ -234,16 +242,20 @@ const LOW_STOCK_THRESHOLD = 20;
         </tr>`).join('')
       : '<tr><td colspan="6" class="empty">本日の出荷予定はありません</td></tr>';
 
+    // 金額は請求額と残額を出す。受注の「合計」欄は式が3通りに割れていて当てにならず、
+    // 一部入金にも追従しない（DATA_STRUCTURE.md 4-1）
     el('unpaidRows').innerHTML = unpaid.length
       ? unpaid.map((o) => `<tr>
-          <td>${escapeHtml(o.order_no)}${o.line_no > 1 ? `-${o.line_no}` : ''}</td>
+          <td>${escapeHtml(o.order_no)}</td>
           <td>${escapeHtml(o.customer_name)}</td>
-          <td>${escapeHtml(o.product_name)}</td>
-          <td class="num">${yen(o.total_amount)}</td>
+          <td>${escapeHtml(o.product_name ?? '')}</td>
+          <td class="num">${yen(o.invoiceTotal)}</td>
+          <td class="num">${o.paidAmount ? yen(o.paidAmount) : ''}</td>
+          <td class="num">${yen(o.remainingAmount)}</td>
           <td>${escapeHtml(o.payment_due_on)}</td>
           <td class="num">${o.overdue_days}日</td>
         </tr>`).join('')
-      : '<tr><td colspan="6" class="empty">期日を過ぎた未入金はありません</td></tr>';
+      : '<tr><td colspan="8" class="empty">期日を過ぎた未入金はありません</td></tr>';
 
     const CONFIDENCE_BADGE = { 高: 'ok', 中: 'warn', 低: 'muted' };
     el('forecastRows').innerHTML = forecast.length
