@@ -12,6 +12,7 @@
 //   ⑤ 孤立した参照      : FKで拾えない紐付け漏れ
 
 const { getConnection } = require('../db/connection');
+const liquorTaxService = require('./liquorTaxService');
 
 /**
  * ① 重複検出
@@ -75,10 +76,17 @@ function findNegativeStock(db) {
  * 当たり前なので、数えると毎回その件数だけ鳴り続ける。
  */
 function auditOrderShipments(db) {
-  // 発送済なのに出荷行がない受注
-  const shippedWithoutLedger = db
+  // 発送済なのに出荷行がない受注。
+  //
+  // **移行データとそれ以外で分ける。** 移行した過去の受注（legacy_order_no あり）は
+  // 台帳と受注を紐付けていないので、ここに必ず全件並ぶ（実データで145件）。
+  // 一緒くたに出していたせいで、本当に直すべき新しい受注が埋もれて気づけなかった
+  // （編集でステータスだけ発送済にして出荷が記録されていない3件が、ここに隠れていた）。
+  const allShippedWithoutLedger = db
     .prepare(
-      `SELECT o.order_no, o.delivered_on, c.name AS customer_name, p.name AS product_name, o.quantity
+      `SELECT o.id, o.order_no, o.delivered_on, c.name AS customer_name,
+              p.name AS product_name, o.quantity,
+              o.legacy_order_no IS NOT NULL AS is_migrated
        FROM orders o
        JOIN customers c ON c.id = o.customer_id
        JOIN products p ON p.id = o.product_id
@@ -91,6 +99,26 @@ function auditOrderShipments(db) {
        ORDER BY o.delivered_on DESC`
     )
     .all();
+
+  // 直す対象は新システムで作った受注だけ。移行分は件数だけ畳んで出す
+  const migratedShippedWithoutLedger = allShippedWithoutLedger.filter((r) => r.is_migrated).length;
+
+  // 押す前に何が起きるかを出すため、記録したときの酒税額を見積もっておく。
+  // 在庫が動く操作なので、黙って実行させない
+  const productStmt = db.prepare('SELECT * FROM products WHERE id = ?');
+  const shippedWithoutLedger = allShippedWithoutLedger
+    .filter((r) => !r.is_migrated)
+    .map((row) => {
+      const order = db.prepare('SELECT product_id, delivered_on FROM orders WHERE id = ?').get(row.id);
+      const shippedOn = order.delivered_on ?? null;
+      const calc = liquorTaxService.taxFor(
+        db,
+        productStmt.get(order.product_id),
+        row.quantity,
+        shippedOn ?? '9999-12-31'
+      );
+      return { ...row, estimated_tax_amount: calc.amount, tax_reason: calc.reason };
+    });
 
   // 出荷行はあるのに受注が発送済になっていない
   const ledgerWithoutShippedStatus = db
@@ -133,6 +161,7 @@ function auditOrderShipments(db) {
 
   return {
     shippedWithoutLedger,
+    migratedShippedWithoutLedger,
     ledgerWithoutShippedStatus,
     quantityMismatch,
     unlinkedShipments,

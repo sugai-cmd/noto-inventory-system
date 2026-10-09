@@ -94,6 +94,60 @@
 renderNav('audit.html');
 
 /** 表を組み立てる。行が0件なら「問題なし」を出す */
+/**
+ * 発送済なのに出荷の記録が無い受注。**ここだけは直せる。**
+ *
+ * 編集画面でステータスだけ発送済にすると出荷が記録されず、在庫が減らず酒税にも乗らない
+ * （いまは直してあるが、それ以前に作られた受注がここに残る）。
+ *
+ * 移行した過去の受注は件数だけ出す。台帳の行は別にあって受注と紐付いていないだけなので、
+ * ここで作ると在庫が二重に減る。145件が並んでいたせいで、直すべき受注が埋もれていた。
+ */
+function missingShipmentSection(os) {
+  const rows = os.shippedWithoutLedger;
+  const migrated = os.migratedShippedWithoutLedger;
+
+  const body = rows.length
+    ? rows.map((o) => `<tr>
+        <td>${escapeHtml(o.order_no)}</td>
+        <td>${escapeHtml(o.delivered_on ?? '-')}</td>
+        <td>${escapeHtml(o.customer_name)}</td>
+        <td>${escapeHtml(o.product_name)}</td>
+        <td class="num">${num(o.quantity)}</td>
+        <td class="num">${
+          o.estimated_tax_amount == null
+            ? `<span class="warn-text">${escapeHtml(o.tax_reason ?? '出せません')}</span>`
+            : yen(o.estimated_tax_amount)
+        }</td>
+        <td><button type="button" class="secondary" data-record-shipment="${o.id}"
+              data-label="${escapeHtml(`${o.order_no}（${o.product_name} ${o.quantity}本・出荷日 ${o.delivered_on ?? '今日'}）`)}"
+            >出荷を記録する</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="7" class="empty">問題は見つかりませんでした</td></tr>';
+
+  return `<section class="panel">
+    <h2>③-1 発送済なのに出荷の記録が無い受注 ${
+      rows.length ? `<span class="badge danger">${rows.length}件</span>` : '<span class="badge ok">問題なし</span>'
+    }</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      <strong>在庫が減っておらず、酒税にも乗っていません。</strong>
+      「出荷を記録する」を押すと、納品日で出荷を記録して在庫を減らします。
+      段ボールは減らしません（どれを使ったか分からないため）。
+      ${migrated ? `なお、移行した過去の受注が別に ${migrated} 件ありますが、
+      台帳の行は別にあって受注と紐付いていないだけなので、ここには出していません。` : ''}
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>受注番号</th><th>納品日</th><th>得意先</th><th>商品</th>
+          <th class="num">本数</th><th class="num">記録される酒税</th><th></th>
+        </tr></thead>
+        <tbody>${body}</tbody>
+      </table>
+    </div>
+  </section>`;
+}
+
 function section(title, description, headers, rows, renderRow) {
   const body = rows.length
     ? rows.map(renderRow).join('')
@@ -148,10 +202,6 @@ async function runAudit() {
 
     const os = r.orderShipments;
     const orderRows = [
-      ...os.shippedWithoutLedger.map((o) => ({
-        kind: '出荷履歴なし',
-        detail: `${o.order_no}（${o.customer_name} / ${o.product_name} ${o.quantity}本・納品 ${o.delivered_on ?? '-'}）`,
-      })),
       ...os.ledgerWithoutShippedStatus.map((l) => ({
         kind: 'ステータス未更新',
         detail: `${l.order_no}（状態: ${l.status}・出荷 ${l.history_code ?? ''} ${l.txn_date}）`,
@@ -204,6 +254,7 @@ async function runAudit() {
           <td class="num" style="color:var(--danger)">${num(n.value, 2)}</td>
         </tr>`
       ) +
+      missingShipmentSection(os) +
       section(
         '③ 受注と出荷履歴の不整合',
         `受注番号で厳密に突合しています。なお、受注にもサンプルにも紐付かない出荷が ${r.unlinkedShipmentCount} 件あります（移行した過去データでは珍しくありません）。`,
@@ -313,6 +364,28 @@ el('corrFilter').addEventListener('input', () => {
 
 loadCorrectionOptions().catch(() => {});
 loadCorrections().catch((err) => showMessage('messages', 'error', err.message));
+
+/**
+ * 「出荷を記録する」。**在庫が動く**ので、何をするのかを見せてから実行する。
+ * 表は描き直しているので、行ごとではなく親で受ける。
+ */
+el('report').addEventListener('click', async (e) => {
+  const btn = e.target.closest('[data-record-shipment]');
+  if (!btn) return;
+
+  if (!confirm(`${btn.dataset.label}\n\nこの出荷を記録して在庫を減らします。よろしいですか？\n（段ボールは減らしません）`)) return;
+
+  clearMessage('messages');
+  btn.disabled = true;
+  try {
+    const r = await apiPost(`/api/audit/record-shipment/${btn.dataset.recordShipment}`, {});
+    showMessage('messages', 'ok', `受注 ${r.order.order_no} の出荷を記録しました（在庫を減らしました）`);
+    await runAudit();   // 直った行が一覧から消えることを、その場で見せる
+  } catch (err) {
+    btn.disabled = false;
+    showMessage('messages', 'error', err.message, err.details);
+  }
+});
 </script>
 </body>
 </html>

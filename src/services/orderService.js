@@ -324,6 +324,88 @@ function recordShipmentLedger(db, order, { shippedOn, counterparty, note, carton
   };
 }
 
+/**
+ * 在庫監査から、抜けている出荷を後から記録する。
+ *
+ * 「発送済なのに出荷の記録が無い」受注を直すための入口。
+ * 編集でステータスだけ発送済にされた受注が対象で、在庫が減らず酒税にも乗っていない。
+ *
+ * **移行した過去の受注は対象にしない**（台帳の行は別に存在していて、
+ * 受注と紐付いていないだけ。ここで作ると二重に在庫が減る）。
+ */
+function recordMissingShipment(orderId, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const order = orderModel.findById(orderId);
+    if (!order) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+    if (order.is_cancelled) {
+      throw new BusinessRuleError(`受注 ${order.order_no} は取消済みです`);
+    }
+    if (order.status !== '発送済') {
+      throw new BusinessRuleError(
+        `受注 ${order.order_no} は発送済ではありません（状態: ${order.status}）。` +
+          '発送したなら「発送済にする」から記録してください'
+      );
+    }
+    if (order.legacy_order_no) {
+      throw new BusinessRuleError(
+        `受注 ${order.order_no} は移行した過去の受注です。` +
+          '出荷の記録は台帳に別途あり、受注と紐付いていないだけなので、ここでは作りません' +
+          '（作ると在庫が二重に減ります）'
+      );
+    }
+    if (liveShipmentLedgerRows(db, orderId).length) {
+      throw new ConflictError(`受注 ${order.order_no} には既に出荷の記録があります`);
+    }
+
+    const shippedOn = order.delivered_on ?? today();
+    const customer = customerService.resolveBilling(order.customer_id, db);
+
+    if (order.payment_due_on == null) {
+      const paymentDueOn = calcPaymentDueOn(
+        shippedOn,
+        customer?.payment_term_months,
+        customer?.payment_term_day
+      );
+      if (paymentDueOn) {
+        db.prepare('UPDATE orders SET payment_due_on = @d WHERE id = @id')
+          .run({ id: orderId, d: paymentDueOn });
+      }
+    }
+    if (order.delivered_on == null) {
+      db.prepare('UPDATE orders SET delivered_on = @d WHERE id = @id')
+        .run({ id: orderId, d: shippedOn });
+    }
+
+    const { ledgerId, cartonSummary } = recordShipmentLedger(
+      db,
+      order,
+      {
+        shippedOn,
+        counterparty: customer?.name ?? null,
+        note: '在庫監査から、抜けていた出荷を記録',
+        cartons: null,
+      },
+      actor
+    );
+
+    operationLogService.record({
+      user: actor,
+      action: 'order.ship.backfill',
+      targetType: 'orders',
+      targetId: orderId,
+      summary:
+        `受注 ${order.order_no} の抜けていた出荷を記録した` +
+        `（${order.product_name} ${order.quantity}本・出荷日 ${shippedOn}）${cartonSummary}`,
+    });
+
+    return { order: orderModel.findById(orderId), stockLedgerId: ledgerId };
+  });
+
+  return run();
+}
+
 /** 請求日を記録する（旧 markInvoiceSent） */
 function markInvoiceSent(orderId, { invoicedOn } = {}) {
   const db = getConnection();
@@ -822,6 +904,7 @@ module.exports = {
   getOrderDefaults,
   submitOrder,
   markOrderAsShipped,
+  recordMissingShipment,
   updateOrder,
   markInvoiceSent,
   markInvoicesSent,
