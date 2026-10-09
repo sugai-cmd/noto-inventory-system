@@ -123,7 +123,11 @@ test('在庫監査: 問題がなければ検出件数0', async () => {
   const { status, body } = await api('GET', '/api/audit');
   assert.equal(status, 200);
   assert.equal(body.totalIssues, 0);
-  assert.equal(body.sections.length, 5);
+  // ③-1（出荷の記録が無い受注）は直せるので、別の節として数える
+  assert.equal(body.sections.length, 6);
+  const missing = body.sections.find((x) => x.key === 'missingShipments');
+  assert.ok(missing, '③-1 が節として出ていません');
+  assert.equal(missing.count, 0);
 });
 
 test('在庫監査④: レシピ通りに資材が消費されていれば差異なし', async () => {
@@ -219,4 +223,122 @@ test('在庫監査は読み取り専用（実行してもデータが変わら�
   await api('GET', '/api/audit');
   const after = db.prepare('SELECT COUNT(*) AS c FROM product_stock_ledger').get().c;
   assert.equal(after, before);
+});
+
+// --- 出荷の記録が抜けている受注を、監査から直せること -------------------------
+//
+// 編集画面でステータスだけ発送済にすると出荷が記録されず、在庫が減らず酒税にも乗らない
+// （いまは直してあるが、それ以前に作られた受注がここに残る。実データで3件あった）。
+//
+// 移行した過去の受注はここに必ず全件並ぶ（台帳と紐付けていないため）。
+// 実データでは145件が並び、**直すべき3件が埋もれて気づけなかった。**
+
+test('在庫監査: 移行した受注は「直す対象」に混ぜない（件数だけ出す）', async () => {
+  // 移行分（legacy_order_no あり）と新システム分を両方用意する。
+  // 片方だけだと、仕分けが効いているかを確かめられない
+  db.prepare(
+    `INSERT INTO orders (order_no, ordered_on, customer_id, product_id, quantity,
+                         status, delivered_on, legacy_order_no)
+     VALUES ('O2608-9002', '2026-08-01', 1, 1, 7, '発送済', '2026-08-02', 'LEGACY-1')`
+  ).run();
+
+  const { body } = await api('GET', '/api/audit');
+  const codes = body.orderShipments.shippedWithoutLedger.map((o) => o.order_no);
+
+  assert.ok(codes.includes('O2608-9001'), '新システム分が出ていません');
+  assert.ok(!codes.includes('O2608-9002'), '移行分が直す対象に混ざっています');
+  assert.ok(
+    body.orderShipments.migratedShippedWithoutLedger >= 1,
+    '移行分の件数が出ていません'
+  );
+});
+
+test('在庫監査: 押す前に、記録される酒税額が分かる', async () => {
+  const { body } = await api('GET', '/api/audit');
+  const row = body.orderShipments.shippedWithoutLedger.find((o) => o.order_no === 'O2608-9001');
+
+  // この商品は酒類区分も度数も未設定なので、金額は出さず理由を出す
+  assert.equal(row.estimated_tax_amount, null);
+  assert.match(row.tax_reason, /未設定/);
+  assert.ok(row.id, '記録するために受注のidが要る');
+});
+
+test('在庫監査から出荷を記録すると、在庫が減り一覧から消える', async () => {
+  const before = await api('GET', '/api/audit');
+  const target = before.body.orderShipments.shippedWithoutLedger
+    .find((o) => o.order_no === 'O2608-9001');
+  const stockBefore = db
+    .prepare('SELECT product_stock AS s FROM v_product_stock WHERE product_id = 1')
+    .get().s;
+
+  const res = await api('POST', `/api/audit/record-shipment/${target.id}`, {});
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+
+  const ledger = db
+    .prepare(
+      `SELECT * FROM product_stock_ledger
+        WHERE order_id = ? AND txn_type = '出荷' AND is_cancelled = 0`
+    )
+    .all(target.id);
+  assert.equal(ledger.length, 1, '出荷行が作られていません');
+  assert.equal(ledger[0].txn_date, '2026-08-02', '出荷日は納品日になること');
+  assert.equal(ledger[0].quantity, 5);
+
+  assert.equal(
+    db.prepare('SELECT product_stock AS s FROM v_product_stock WHERE product_id = 1').get().s,
+    stockBefore - 5,
+    '在庫が減っていません'
+  );
+
+  const after = await api('GET', '/api/audit');
+  assert.ok(
+    !after.body.orderShipments.shippedWithoutLedger.some((o) => o.order_no === 'O2608-9001'),
+    '直したのに一覧に残っています'
+  );
+});
+
+test('同じ受注を二度記録できない', async () => {
+  const order = db.prepare("SELECT id FROM orders WHERE order_no = 'O2608-9001'").get();
+  const res = await api('POST', `/api/audit/record-shipment/${order.id}`, {});
+  assert.equal(res.status, 409);
+  assert.match(res.body.message, /既に出荷の記録があります/);
+});
+
+test('移行した受注は、idを直接指定しても記録しない（在庫が二重に減る）', async () => {
+  const order = db.prepare("SELECT id FROM orders WHERE order_no = 'O2608-9002'").get();
+  const res = await api('POST', `/api/audit/record-shipment/${order.id}`, {});
+  assert.equal(res.status, 422);
+  assert.match(res.body.message, /移行した過去の受注/);
+  assert.equal(
+    db.prepare("SELECT COUNT(*) AS n FROM product_stock_ledger WHERE order_id = ?").get(order.id).n,
+    0,
+    '断ったのに行が作られています'
+  );
+});
+
+test('発送済でない受注は記録しない', async () => {
+  db.prepare(
+    `INSERT INTO orders (order_no, ordered_on, customer_id, product_id, quantity, status)
+     VALUES ('O2608-9003', '2026-08-01', 1, 1, 2, '未着手')`
+  ).run();
+  const order = db.prepare("SELECT id FROM orders WHERE order_no = 'O2608-9003'").get();
+
+  const res = await api('POST', `/api/audit/record-shipment/${order.id}`, {});
+  assert.equal(res.status, 422);
+  assert.match(res.body.message, /発送済ではありません/);
+});
+
+test('③-1 の件数は ③ と別に数える（片方だけ立つ）', async () => {
+  // 一緒に数えていたころは、③が「問題なし」なのに③の数字だけ立っていた
+  const { body } = await api('GET', '/api/audit');
+  const missing = body.sections.find((s) => s.key === 'missingShipments');
+  const mixed = body.sections.find((s) => s.key === 'orderShipments');
+
+  assert.equal(missing.count, body.orderShipments.shippedWithoutLedger.length);
+  assert.equal(
+    mixed.count,
+    body.orderShipments.ledgerWithoutShippedStatus.length +
+      body.orderShipments.quantityMismatch.length,
+    '③に出荷の記録が無い受注を混ぜない'
+  );
 });

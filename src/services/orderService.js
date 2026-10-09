@@ -216,7 +216,6 @@ function markOrderAsShipped(orderId, { deliveredOn, note, cartons } = {}, actor 
 
     const shippedOn = deliveredOn ?? today();
     const customer = customerService.resolveBilling(order.customer_id, db);
-    const product = db.prepare('SELECT * FROM products WHERE id = ?').get(order.product_id);
 
     const paymentDueOn = calcPaymentDueOn(
       shippedOn,
@@ -232,49 +231,12 @@ function markOrderAsShipped(orderId, { deliveredOn, note, cartons } = {}, actor 
        WHERE id = @id`
     ).run({ id: orderId, deliveredOn: shippedOn, paymentDueOn });
 
-    const ledgerResult = db
-      .prepare(
-        `INSERT INTO product_stock_ledger
-           (history_code, txn_date, product_id, txn_type, quantity, counterparty, order_id,
-            volume_ml, tax_amount, storage_place, data_kind, note, created_by)
-         VALUES
-           (@historyCode, @txnDate, @productId, '出荷', @quantity, @counterparty, @orderId,
-            @volumeMl, @taxAmount, @storagePlace, '運用中（リアルタイム）', @note, @createdBy)`
-      )
-      .run({
-        historyCode: nextProductHistoryCode(db, shippedOn),
-        txnDate: shippedOn,
-        productId: order.product_id,
-        quantity: order.quantity,
-        counterparty: customer?.name ?? null,
-        orderId,
-        volumeMl: product?.volume_ml != null ? product.volume_ml * order.quantity : null,
-        // 容量(ml)×本数×税率。**tax_per_unit は読まない**（容量を掛けていない値で、桁が違う）。
-        // 税率が引けなければ空で入り、酒税タブが名指しで出す。出荷は止めない
-        taxAmount: liquorTaxService.ledgerTaxAmount(db, product, order.quantity, shippedOn),
-        storagePlace: '浄溜所',
-        note: note ?? null,
-        createdBy: actor?.id ?? null,
-      });
-
-    // 出荷に使った段ボールを資材から減らす。
-    //
-    // **product_ledger_id に出荷行を入れるのが肝。**
-    // ledgerCancelService は product_ledger_id で資材行を連動取消しており、
-    // txn_type を見ていないので、ここで紐付けておけば**取消は無改修で戻る**。
-    //
-    // 何を何箱使うかは画面で選んでもらう（推奨は shippingFeeService.suggestCartons）。
-    // 対応表に無い・複数明細・物でない商品（委託生産料など）は空で来るので、
-    // **減らさずに理由だけ残す**。資材不足でも止めない（既存の方針。在庫監査が後で拾う）。
-    const consumed = consumeCartons(db, cartons, {
-      txnDate: shippedOn,
-      productLedgerId: ledgerResult.lastInsertRowid,
-      createdBy: actor?.id ?? null,
-    });
-
-    const cartonSummary = consumed.length
-      ? `／段ボール: ${consumed.map((c) => `${c.materialName}${c.quantity}枚`).join('、')}`
-      : '／段ボールは減らしていません（発送画面で選ばれませんでした）';
+    const { ledgerId, cartons: consumed, cartonSummary } = recordShipmentLedger(
+      db,
+      order,
+      { shippedOn, counterparty: customer?.name ?? null, note, cartons },
+      actor
+    );
 
     operationLogService.record({
       user: actor,
@@ -288,9 +250,157 @@ function markOrderAsShipped(orderId, { deliveredOn, note, cartons } = {}, actor 
 
     return {
       order: orderModel.findById(orderId),
-      stockLedgerId: ledgerResult.lastInsertRowid,
+      stockLedgerId: ledgerId,
       cartons: consumed,
     };
+  });
+
+  return run();
+}
+
+/**
+ * 出荷の記録（商品在庫変動履歴の '出荷' 行 ＋ 段ボールの消費）。
+ *
+ * **出荷行を作るのはここだけ。** 「発送済にする」ボタン（markOrderAsShipped）と、
+ * 受注の編集でステータスを発送済に変えたとき（updateOrder）の両方がここを通る。
+ * 以前は編集側が出荷行を作っておらず、発送済なのに在庫が減らず**酒税にも乗らない**
+ * 受注ができていた（酒税タブに商品が出てこない、として見つかった）。
+ *
+ * 呼び出し側は、事前に orders の status / delivered_on を更新しておくこと。
+ *
+ * @param {object} order - orderModel.findById の行（product_id, quantity, order_no …）
+ * @param {string} options.shippedOn - 出荷日。酒税はこの日付の月で集計される
+ * @param {Array} [options.cartons] - 使った段ボール。編集経由では選べないので空で来る
+ */
+function recordShipmentLedger(db, order, { shippedOn, counterparty, note, cartons } = {}, actor = null) {
+  const product = db.prepare('SELECT * FROM products WHERE id = ?').get(order.product_id);
+
+  const ledgerResult = db
+    .prepare(
+      `INSERT INTO product_stock_ledger
+         (history_code, txn_date, product_id, txn_type, quantity, counterparty, order_id,
+          volume_ml, tax_amount, storage_place, data_kind, note, created_by)
+       VALUES
+         (@historyCode, @txnDate, @productId, '出荷', @quantity, @counterparty, @orderId,
+          @volumeMl, @taxAmount, @storagePlace, '運用中（リアルタイム）', @note, @createdBy)`
+    )
+    .run({
+      historyCode: nextProductHistoryCode(db, shippedOn),
+      txnDate: shippedOn,
+      productId: order.product_id,
+      quantity: order.quantity,
+      counterparty: counterparty ?? null,
+      orderId: order.id,
+      volumeMl: product?.volume_ml != null ? product.volume_ml * order.quantity : null,
+      // 容量(ml)×本数×税率。**tax_per_unit は読まない**（容量を掛けていない値で、桁が違う）。
+      // 税率が引けなければ空で入り、酒税タブが名指しで出す。出荷は止めない
+      taxAmount: liquorTaxService.ledgerTaxAmount(db, product, order.quantity, shippedOn),
+      storagePlace: '浄溜所',
+      note: note ?? null,
+      createdBy: actor?.id ?? null,
+    });
+
+  // 出荷に使った段ボールを資材から減らす。
+  //
+  // **product_ledger_id に出荷行を入れるのが肝。**
+  // ledgerCancelService は product_ledger_id で資材行を連動取消しており、
+  // txn_type を見ていないので、ここで紐付けておけば**取消は無改修で戻る**。
+  //
+  // 何を何箱使うかは画面で選んでもらう（推奨は shippingFeeService.suggestCartons）。
+  // 対応表に無い・複数明細・物でない商品（委託生産料など）は空で来るので、
+  // **減らさずに理由だけ残す**。資材不足でも止めない（既存の方針。在庫監査が後で拾う）。
+  const consumed = consumeCartons(db, cartons, {
+    txnDate: shippedOn,
+    productLedgerId: ledgerResult.lastInsertRowid,
+    createdBy: actor?.id ?? null,
+  });
+
+  return {
+    ledgerId: ledgerResult.lastInsertRowid,
+    cartons: consumed,
+    cartonSummary: consumed.length
+      ? `／段ボール: ${consumed.map((c) => `${c.materialName}${c.quantity}枚`).join('、')}`
+      : '／段ボールは減らしていません（発送画面で選ばれませんでした）',
+  };
+}
+
+/**
+ * 在庫監査から、抜けている出荷を後から記録する。
+ *
+ * 「発送済なのに出荷の記録が無い」受注を直すための入口。
+ * 編集でステータスだけ発送済にされた受注が対象で、在庫が減らず酒税にも乗っていない。
+ *
+ * **移行した過去の受注は対象にしない**（台帳の行は別に存在していて、
+ * 受注と紐付いていないだけ。ここで作ると二重に在庫が減る）。
+ */
+function recordMissingShipment(orderId, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const order = orderModel.findById(orderId);
+    if (!order) throw new NotFoundError(`受注が見つかりません (id=${orderId})`);
+    if (order.is_cancelled) {
+      throw new BusinessRuleError(`受注 ${order.order_no} は取消済みです`);
+    }
+    if (order.status !== '発送済') {
+      throw new BusinessRuleError(
+        `受注 ${order.order_no} は発送済ではありません（状態: ${order.status}）。` +
+          '発送したなら「発送済にする」から記録してください'
+      );
+    }
+    if (order.legacy_order_no) {
+      throw new BusinessRuleError(
+        `受注 ${order.order_no} は移行した過去の受注です。` +
+          '出荷の記録は台帳に別途あり、受注と紐付いていないだけなので、ここでは作りません' +
+          '（作ると在庫が二重に減ります）'
+      );
+    }
+    if (liveShipmentLedgerRows(db, orderId).length) {
+      throw new ConflictError(`受注 ${order.order_no} には既に出荷の記録があります`);
+    }
+
+    const shippedOn = order.delivered_on ?? today();
+    const customer = customerService.resolveBilling(order.customer_id, db);
+
+    if (order.payment_due_on == null) {
+      const paymentDueOn = calcPaymentDueOn(
+        shippedOn,
+        customer?.payment_term_months,
+        customer?.payment_term_day
+      );
+      if (paymentDueOn) {
+        db.prepare('UPDATE orders SET payment_due_on = @d WHERE id = @id')
+          .run({ id: orderId, d: paymentDueOn });
+      }
+    }
+    if (order.delivered_on == null) {
+      db.prepare('UPDATE orders SET delivered_on = @d WHERE id = @id')
+        .run({ id: orderId, d: shippedOn });
+    }
+
+    const { ledgerId, cartonSummary } = recordShipmentLedger(
+      db,
+      order,
+      {
+        shippedOn,
+        counterparty: customer?.name ?? null,
+        note: '在庫監査から、抜けていた出荷を記録',
+        cartons: null,
+      },
+      actor
+    );
+
+    operationLogService.record({
+      user: actor,
+      action: 'order.ship.backfill',
+      targetType: 'orders',
+      targetId: orderId,
+      summary:
+        `受注 ${order.order_no} の抜けていた出荷を記録した` +
+        `（${order.product_name} ${order.quantity}本・出荷日 ${shippedOn}）${cartonSummary}`,
+    });
+
+    return { order: orderModel.findById(orderId), stockLedgerId: ledgerId };
   });
 
   return run();
@@ -497,6 +607,24 @@ function updateOrder(orderId, patch = {}, actor = null) {
       );
     }
 
+    // 発送済から外すときは、出荷の記録が残っていれば断る。
+    //
+    // 在庫・資材・タンクの戻しは「記録の取り消し」の仕事で、ここではやらない。
+    // 黙ってステータスだけ戻すと、出荷行は残ったまま受注だけ未着手になり、
+    // 「発送済にしたのに出荷が無い」の逆向きの食い違いができる。
+    if (
+      Object.hasOwn(next, 'status') &&
+      before.status === '発送済' &&
+      next.status !== '発送済' &&
+      liveShipmentLedgerRows(db, orderId).length
+    ) {
+      throw new BusinessRuleError(
+        `受注 ${before.order_no} には出荷の記録が残っているため、ステータスを戻せません。` +
+          '在庫監査タブの「記録の取り消し」で先に出荷を取り消してください' +
+          '（取り消すと受注は自動で未着手に戻ります）'
+      );
+    }
+
     // 商品の差し替え（誤登録の直し）。
     //
     // **未発送に限る。** 出荷が済んでいると、商品在庫変動履歴の出荷行の商品まで
@@ -548,6 +676,7 @@ function updateOrder(orderId, patch = {}, actor = null) {
     // 発送済なら、商品在庫変動履歴の出荷行も合わせて直す。
     // ここを直さないと、受注の本数と在庫の減り方が食い違ったままになる。
     const after = orderModel.findById(orderId);
+    let shippedHere = null;
     if (after.status === '発送済') {
       const ledger = db
         .prepare(
@@ -557,7 +686,43 @@ function updateOrder(orderId, patch = {}, actor = null) {
         )
         .get(orderId);
 
-      if (ledger) {
+      if (!ledger) {
+        // **この編集で発送済になったのに、出荷の記録がまだ無い。**
+        // 以前はここで何もしておらず、在庫が減らず酒税にも乗らない受注ができていた
+        // （酒税タブに商品が出てこない、として見つかった）。
+        // 「発送済にする」ボタンと同じ処理を通す。
+        //
+        // 段ボールは編集画面から選べないので減らさない。黙って抜けないよう、
+        // 操作ログにその旨を残す（cartonSummary がそう書く）。
+        const shippedOn = after.delivered_on ?? today();
+        const customer = customerService.resolveBilling(after.customer_id, db);
+
+        // 納品日が入ったのに空のままなら、入金予定日もここで出す。
+        // **既に入っている値は上書きしない**（この編集で指定された値を消さない）
+        if (after.payment_due_on == null) {
+          const paymentDueOn = calcPaymentDueOn(
+            shippedOn,
+            customer?.payment_term_months,
+            customer?.payment_term_day
+          );
+          if (paymentDueOn) {
+            db.prepare('UPDATE orders SET payment_due_on = @d WHERE id = @id')
+              .run({ id: orderId, d: paymentDueOn });
+          }
+        }
+        // 納品日が空のまま発送済にされたら、出荷日を納品日としても残す
+        if (after.delivered_on == null) {
+          db.prepare('UPDATE orders SET delivered_on = @d WHERE id = @id')
+            .run({ id: orderId, d: shippedOn });
+        }
+
+        shippedHere = recordShipmentLedger(
+          db,
+          after,
+          { shippedOn, counterparty: customer?.name ?? null, note: null, cartons: null },
+          actor
+        );
+      } else {
         const product = db.prepare('SELECT * FROM products WHERE id = ?').get(after.product_id);
         db.prepare(
           `UPDATE product_stock_ledger
@@ -590,17 +755,25 @@ function updateOrder(orderId, patch = {}, actor = null) {
           : `${EDITABLE_LABELS[c] ?? c }: ${before[c] ?? '(空)'} → ${after[c] ?? '(空)'}`
       );
 
+    // この編集で出荷を記録したなら、何が起きたのかを必ず残す。
+    // 在庫が動いた事実と、段ボールを減らしていないことの両方を書く
+    const shipSummary = shippedHere
+      ? `／出荷を記録した（${after.product_name} ${after.quantity}本）${shippedHere.cartonSummary}`
+      : '';
+
     operationLogService.record({
       user: actor,
       action: 'order.update',
       targetType: 'orders',
       targetId: orderId,
-      summary: changes.length
-        ? `受注 ${after.order_no} を訂正した（${changes.join('、')}）`
-        : `受注 ${after.order_no} を訂正した（内容に変化なし）`,
+      summary:
+        (changes.length
+          ? `受注 ${after.order_no} を訂正した（${changes.join('、')}）`
+          : `受注 ${after.order_no} を訂正した（内容に変化なし）`) + shipSummary,
     });
 
-    return after;
+    // 出荷を記録したときは納品日・入金予定日もここで入れているので、読み直して返す
+    return shippedHere ? orderModel.findById(orderId) : after;
   });
 
   return run();
@@ -731,6 +904,7 @@ module.exports = {
   getOrderDefaults,
   submitOrder,
   markOrderAsShipped,
+  recordMissingShipment,
   updateOrder,
   markInvoiceSent,
   markInvoicesSent,
