@@ -353,3 +353,14 @@ th button.link {
 }
 th button.link:hover { text-decoration: underline; }
 th button.link .dir { margin-left: 2px; opacity: 0.7; }
+
+/* 取り込みが完了していないときの赤帯。全画面の最上部に出る。
+   サーバーは起動しているので、何が起きているかをここで伝える */
+.migration-notice {
+  background: var(--danger);
+  color: #fff;
+  padding: 10px 16px;
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.5;
+}
