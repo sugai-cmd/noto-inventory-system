@@ -308,11 +308,17 @@ function runAudit() {
   const sections = [
     { key: 'duplicates', label: '① 重複の疑いがある在庫変動', count: duplicates.length },
     { key: 'negativeStock', label: '② 在庫がマイナスになっているもの', count: negativeCount },
+    // 「出荷の記録が無い受注」は直せるので、画面でも別の節にしている。
+    // 数え方を合わせないと、③が0件なのに③の数字だけ立つ
+    {
+      key: 'missingShipments',
+      label: '③-1 出荷の記録が無い受注',
+      count: orderShipments.shippedWithoutLedger.length,
+    },
     {
       key: 'orderShipments',
       label: '③ 受注と出荷履歴の不整合',
       count:
-        orderShipments.shippedWithoutLedger.length +
         orderShipments.ledgerWithoutShippedStatus.length +
         orderShipments.quantityMismatch.length,
     },

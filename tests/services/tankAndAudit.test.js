@@ -123,7 +123,11 @@ test('在庫監査: 問題がなければ検出件数0', async () => {
   const { status, body } = await api('GET', '/api/audit');
   assert.equal(status, 200);
   assert.equal(body.totalIssues, 0);
-  assert.equal(body.sections.length, 5);
+  // ③-1（出荷の記録が無い受注）は直せるので、別の節として数える
+  assert.equal(body.sections.length, 6);
+  const missing = body.sections.find((x) => x.key === 'missingShipments');
+  assert.ok(missing, '③-1 が節として出ていません');
+  assert.equal(missing.count, 0);
 });
 
 test('在庫監査④: レシピ通りに資材が消費されていれば差異なし', async () => {
@@ -322,4 +326,19 @@ test('発送済でない受注は記録しない', async () => {
   const res = await api('POST', `/api/audit/record-shipment/${order.id}`, {});
   assert.equal(res.status, 422);
   assert.match(res.body.message, /発送済ではありません/);
+});
+
+test('③-1 の件数は ③ と別に数える（片方だけ立つ）', async () => {
+  // 一緒に数えていたころは、③が「問題なし」なのに③の数字だけ立っていた
+  const { body } = await api('GET', '/api/audit');
+  const missing = body.sections.find((s) => s.key === 'missingShipments');
+  const mixed = body.sections.find((s) => s.key === 'orderShipments');
+
+  assert.equal(missing.count, body.orderShipments.shippedWithoutLedger.length);
+  assert.equal(
+    mixed.count,
+    body.orderShipments.ledgerWithoutShippedStatus.length +
+      body.orderShipments.quantityMismatch.length,
+    '③に出荷の記録が無い受注を混ぜない'
+  );
 });

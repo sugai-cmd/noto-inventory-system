@@ -379,8 +379,9 @@ el('report').addEventListener('click', async (e) => {
   btn.disabled = true;
   try {
     const r = await apiPost(`/api/audit/record-shipment/${btn.dataset.recordShipment}`, {});
-    showMessage('messages', 'ok', `受注 ${r.order.order_no} の出荷を記録しました（在庫を減らしました）`);
     await runAudit();   // 直った行が一覧から消えることを、その場で見せる
+    // runAudit が messages を消すので、**そのあとに**出す
+    showMessage('messages', 'ok', `受注 ${r.order.order_no} の出荷を記録しました（在庫を減らしました）`);
   } catch (err) {
     btn.disabled = false;
     showMessage('messages', 'error', err.message, err.details);
