@@ -369,9 +369,9 @@ const MASTERS = {
     fields: [
       { key: 'containerType', label: '容器種別', type: 'tankType',
         hint: '採番の対象になっている種別を選ぶと容器IDが自動で決まります。一覧に無い種別も入力できます' },
-      { key: 'contentsKind', label: '中身の種類', type: 'select',
-        choices: ['浄酎', '原酒', '残渣'], omitIfEmpty: true,
-        hint: '原酒入荷の受入先・蒸留の投入元に出るのは「原酒」の容器です。容器種別は問いません（QBテナーや樽でも原酒にできます）。入出庫の記録があると変更できません' },
+      { key: 'isRawSakeTank', label: '原酒を入れる容器', type: 'checkbox',
+        checkboxLabel: '原酒を入れる容器にする',
+        hint: '原酒入荷の受入先・蒸留の投入元に出るのは、ここにチェックを入れた容器だけです。容器種別は問いません（QBテナーや樽でも原酒にできます）。入出庫の記録があると変更できません' },
       { key: 'receivedYm', label: '入荷年月', type: 'month', localOnly: true,
         hint: '原酒の入荷ごとに増える容器（QBテナーなど）はここを入れると、容器IDが Q-2610-01 のように入荷年月入りになります。使い回す設備なら空のままで構いません' },
       { key: 'code', label: '容器ID', type: 'text', required: true, createOnly: true },
@@ -390,7 +390,8 @@ const MASTERS = {
       { key: 'code', label: '容器ID' },
       { key: 'name', label: '容器名称' },
       { key: 'container_type', label: 'タイプ' },
-      { key: 'contents_kind', label: '中身' },
+      { key: 'is_raw_sake_tank', label: '中身',
+        format: (r) => (r.is_raw_sake_tank ? '原酒' : '') },
       { key: 'max_volume_l', label: '最大容量', format: (r) => (r.max_volume_l != null ? `${num(r.max_volume_l, 1)}L` : '') },
       { key: 'location', label: '設置場所' },
       { key: 'status', label: '状態' },
@@ -697,6 +698,14 @@ function renderForm() {
         control = `<input type="date" id="f_${f.key}"${required}${disabled}>`;
       } else if (f.type === 'month') {
         control = `<input type="month" id="f_${f.key}"${required}${disabled}>`;
+      } else if (f.type === 'checkbox') {
+        // チェックボックスはラベルと横並びにする（.check-inline）。
+        // 入力欄の width:100% はPR Iでチェックボックスから外してある
+        control =
+          `<label class="check-inline">
+             <input type="checkbox" id="f_${f.key}"${disabled}>
+             ${escapeHtml(f.checkboxLabel ?? f.label)}
+           </label>`;
       } else if (f.type === 'number' || f.type === 'int') {
         const step = f.type === 'int' ? '1' : (f.step ?? 'any');
         control = `<input type="number" step="${step}" id="f_${f.key}"${required}${disabled}${ph}>`;
@@ -726,28 +735,28 @@ function renderForm() {
 
   const tankTypeInput = el('f_containerType');
   if (tankTypeInput && currentTab === 'tanks') {
-    const kindInput = el('f_contentsKind');
+    const rawSakeInput = el('f_isRawSakeTank');
     const receivedYmInput = el('f_receivedYm');
 
     /**
      * 容器IDを採番して埋める。
      *
      * 採番の決まりは3通り（サーバーの nextTankCode と同じ）:
-     *   1. 採番表にある容器種別     → T-001 / SP-009 …
-     *   2. 入荷年月を入れたとき     → Q-2610-01（入荷ごとに増える容器）
-     *   3. 採番表に無い容器種別     → 中身の種類から決める（原酒→SP など）
-     * どれにも当てはまらない（種別も中身も空）ときは、手で入れてもらう。
+     *   1. 採番表にある容器種別           → T-001 / SP-009 …
+     *   2. 入荷年月を入れたとき           → Q-2610-01（入荷ごとに増える容器）
+     *   3. 採番表に無い種別＋原酒の容器   → SP-###
+     * どれにも当てはまらないときは、手で入れてもらう。
      */
     async function fillNextCode() {
       if (editingId != null) return;
       const containerType = tankTypeInput.value.trim();
-      const contentsKind = kindInput ? kindInput.value : '';
+      const isRawSake = rawSakeInput ? rawSakeInput.checked : false;
       const receivedYm = receivedYmInput ? receivedYmInput.value : '';
       const known = tankPrefixes.some((t) => t.containerType === containerType);
-      if (!known && !contentsKind) return;
+      if (!known && !isRawSake) return;
 
       const q = new URLSearchParams({ containerType });
-      if (contentsKind) q.set('contentsKind', contentsKind);
+      if (isRawSake) q.set('isRawSakeTank', '1');
       if (receivedYm) q.set('receivedYm', receivedYm);
       try {
         const next = await apiGet(`/api/tanks/next-code?${q}`);
@@ -777,7 +786,7 @@ function renderForm() {
       syncReceivedYm();
       await fillNextCode();
     });
-    if (kindInput) kindInput.addEventListener('change', fillNextCode);
+    if (rawSakeInput) rawSakeInput.addEventListener('change', fillNextCode);
     if (receivedYmInput) receivedYmInput.addEventListener('change', fillNextCode);
   }
 
@@ -852,6 +861,10 @@ function fillForm(record) {
     }
 
     const value = record[snake(f.key)];
+    if (f.type === 'checkbox') {
+      input.checked = Boolean(value);
+      continue;
+    }
     input.value = value == null ? '' : String(value);
   }
 }
@@ -915,6 +928,11 @@ function buildPayload() {
       } else if (input.value) {
         payload.breweryId = Number(input.value);
       }
+      continue;
+    }
+
+    if (f.type === 'checkbox') {
+      payload[f.key] = input.checked;
       continue;
     }
 
