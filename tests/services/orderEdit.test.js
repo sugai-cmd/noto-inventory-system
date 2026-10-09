@@ -175,3 +175,148 @@ test('何を直したかが操作ログに残る', async () => {
   assert.ok(rows.some((r) => r.summary.includes('入金予定日')));
   assert.ok(rows.some((r) => r.summary.includes('本数: 12 → 24')));
 });
+
+// --- 編集でステータスを発送済にしたときも出荷を記録する -----------------------
+//
+// 受注の編集画面には「ステータス」の欄があり、ここで未着手→発送済にできる。
+// 以前はステータスの文字だけ書き換えて**出荷行を作っていなかった**ので、
+// 在庫が減らず、酒税にも乗らない受注ができていた
+// （酒税タブに商品が出てこない、として見つかった。実データで3件）。
+
+const shipmentRows = (orderId) =>
+  db
+    .prepare(
+      `SELECT * FROM product_stock_ledger
+        WHERE order_id = ? AND txn_type = '出荷' AND is_cancelled = 0
+        ORDER BY id`
+    )
+    .all(orderId);
+
+/** 受注を1件足して、そのidを返す */
+async function addOrder(body) {
+  const res = await api('POST', '/api/orders', {
+    orderedOn: '2026-11-02',
+    customerId: 1,
+    items: [{ productId: 1, quantity: 4 }],
+    ...body,
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+  const no = res.body.orderNo ?? res.body.order_no ?? res.body.orders?.[0]?.order_no;
+  const row = db.prepare('SELECT id FROM orders WHERE order_no = ? ORDER BY line_no').get(no);
+  return row.id;
+}
+
+test('編集でステータスを発送済にすると、出荷が記録される', async () => {
+  const orderId = await addOrder({});
+  assert.equal(shipmentRows(orderId).length, 0, '前提: まだ出荷していない');
+
+  const res = await api('PATCH', `/api/orders/${orderId}`, {
+    status: '発送済',
+    deliveredOn: '2026-11-05',
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+
+  const rows = shipmentRows(orderId);
+  assert.equal(rows.length, 1, '出荷行が作られていません');
+  assert.equal(rows[0].txn_date, '2026-11-05', '出荷日は納品日になること');
+  assert.equal(rows[0].quantity, 4);
+  // 300ml × 4本 × 0.37円/ml = 444円
+  assert.equal(rows[0].tax_amount, 444, '酒税額が入っていません');
+  assert.equal(rows[0].volume_ml, 1200);
+});
+
+test('その出荷は、納品日の月の酒税に乗る', async () => {
+  // 日付がズレると「発送済なのに酒税に出てこない」が再発する
+  const report = await api('GET', '/api/liquor-tax/monthly?month=2026-11');
+  assert.equal(report.status, 200);
+  const row = report.body.taxable.rows.find((r) => r.productName === 'JOCHU White NOTO 35 300ml');
+  assert.ok(row, '酒税の内訳に出ていません');
+  assert.ok(row.quantity >= 4, `本数が乗っていません（${row.quantity}）`);
+  assert.equal(report.body.unresolved.length, 0, '税率が出せない商品は無いこと');
+});
+
+test('ボタンで発送済にしたときと、同じ酒税額になる', async () => {
+  // 2か所で計算していたら、ここで額が割れる
+  const edited = await addOrder({});
+  await api('PATCH', `/api/orders/${edited}`, { status: '発送済', deliveredOn: '2026-11-06' });
+
+  const byButton = await addOrder({});
+  const shipped = await api('POST', `/api/orders/${byButton}/ship`, { deliveredOn: '2026-11-06' });
+  assert.equal(shipped.status, 200, JSON.stringify(shipped.body));
+
+  assert.equal(shipmentRows(edited)[0].tax_amount, shipmentRows(byButton)[0].tax_amount);
+  assert.equal(shipmentRows(edited)[0].volume_ml, shipmentRows(byButton)[0].volume_ml);
+});
+
+test('すでに出荷行がある受注を編集しても、二重に作らない', async () => {
+  const orderId = await addOrder({});
+  await api('PATCH', `/api/orders/${orderId}`, { status: '発送済', deliveredOn: '2026-11-07' });
+  assert.equal(shipmentRows(orderId).length, 1);
+
+  const again = await api('PATCH', `/api/orders/${orderId}`, { quantity: 5 });
+  assert.equal(again.status, 200);
+
+  const rows = shipmentRows(orderId);
+  assert.equal(rows.length, 1, '出荷行が増えています');
+  assert.equal(rows[0].quantity, 5, '本数は今までどおり追従すること');
+});
+
+test('入金予定日は空のときだけ入れる（入っていれば上書きしない）', async () => {
+  // 得意先1は「翌月末日」。納品 2026-11-08 なら 2026-12-31
+  const auto = await addOrder({});
+  await api('PATCH', `/api/orders/${auto}`, { status: '発送済', deliveredOn: '2026-11-08' });
+  assert.equal(
+    db.prepare('SELECT payment_due_on AS d FROM orders WHERE id = ?').get(auto).d,
+    '2026-12-31'
+  );
+
+  // この編集で指定した入金予定日を消さないこと（対で見ないと空振りする）
+  const given = await addOrder({});
+  await api('PATCH', `/api/orders/${given}`, {
+    status: '発送済',
+    deliveredOn: '2026-11-08',
+    paymentDueOn: '2026-11-30',
+  });
+  assert.equal(
+    db.prepare('SELECT payment_due_on AS d FROM orders WHERE id = ?').get(given).d,
+    '2026-11-30',
+    '指定した入金予定日が上書きされています'
+  );
+});
+
+test('編集経由では段ボールを減らさない（黙って抜けないよう記録は残す）', async () => {
+  const before = db.prepare("SELECT COUNT(*) AS n FROM material_stock_ledger").get().n;
+  const orderId = await addOrder({});
+  await api('PATCH', `/api/orders/${orderId}`, { status: '発送済', deliveredOn: '2026-11-09' });
+
+  assert.equal(
+    db.prepare('SELECT COUNT(*) AS n FROM material_stock_ledger').get().n,
+    before,
+    '編集画面では段ボールを選べないので、資材は動かさない'
+  );
+  const log = db
+    .prepare("SELECT summary FROM operation_logs WHERE action = 'order.update' ORDER BY id DESC LIMIT 1")
+    .get();
+  assert.match(log.summary, /出荷を記録した/);
+  assert.match(log.summary, /段ボールは減らしていません/);
+});
+
+test('出荷の記録が残っているうちは、ステータスを戻せない', async () => {
+  const orderId = await addOrder({});
+  await api('PATCH', `/api/orders/${orderId}`, { status: '発送済', deliveredOn: '2026-11-10' });
+
+  const res = await api('PATCH', `/api/orders/${orderId}`, { status: '未着手' });
+  assert.equal(res.status, 422);
+  assert.match(res.body.message, /ステータスを戻せません/);
+  assert.equal(
+    db.prepare('SELECT status AS s FROM orders WHERE id = ?').get(orderId).s,
+    '発送済',
+    '断ったのにステータスが変わっています'
+  );
+
+  // 出荷の記録が無ければ戻せる（対で見ないと空振りする）
+  const notShipped = await addOrder({});
+  const ok = await api('PATCH', `/api/orders/${notShipped}`, { status: '手配中' });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.body.status, '手配中');
+});
