@@ -5,6 +5,11 @@ const path = require('node:path');
 const express = require('express');
 const { errorHandler } = require('./middlewares/errorHandler');
 const { attachUser, requireAuth } = require('./middlewares/auth');
+const {
+  getMigrationState,
+  migrationNotice,
+  blockWritesWhenMigrationFailed,
+} = require('./middlewares/migrationState');
 
 const PUBLIC_DIR = path.resolve(__dirname, '..', 'public');
 
@@ -27,6 +32,12 @@ function createApp({ requireLogin = true } = {}) {
     res.json({ status: 'ok' });
   });
 
+  // 取り込みが完了しているか。全画面が読んで、失敗していれば赤帯を出す。
+  // **認証より前に置く**（ログイン画面でも理由が分かるようにするため）
+  app.get('/api/migration-state', (req, res) => {
+    res.json({ ...getMigrationState(), notice: migrationNotice() });
+  });
+
   app.use('/api/auth', require('./routes/auth'));
 
   if (requireLogin) {
@@ -39,6 +50,10 @@ function createApp({ requireLogin = true } = {}) {
   }
 
   app.use(express.static(PUBLIC_DIR));
+
+  // 取り込みが途中なら、記録の追加・変更は止める（読み取りは通す）。
+  // まだ無い列や表に書いて、中途半端なデータを増やさないため
+  app.use(blockWritesWhenMigrationFailed);
 
   // マスタ系
   app.use('/api/customers', require('./routes/customers'));

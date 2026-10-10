@@ -254,6 +254,28 @@ function renderNav(current) {
   );
 
   renderCurrentUser();
+  renderMigrationNotice();
+}
+
+/**
+ * 取り込みが途中なら、全画面の上部に赤帯を出す。
+ *
+ * 以前は移行SQLが落ちるとサーバーごと起動せず、画面が一切出なかったため、
+ * 利用者からは「急に全部繋がらない」としか見えなかった。
+ * いまはサーバーは起動するので、**何が起きているかをここで伝える**。
+ */
+async function renderMigrationNotice() {
+  try {
+    const state = await apiGet('/api/migration-state');
+    if (state.ok) return;
+
+    const bar = document.createElement('div');
+    bar.className = 'migration-notice';
+    bar.textContent = state.notice;
+    document.querySelector('header.site')?.insertAdjacentElement('afterend', bar);
+  } catch {
+    // 取り込み状態が取れないこと自体で画面を壊さない
+  }
 }
 
 /** ヘッダにログイン中のユーザー名とログアウトボタンを出す */

@@ -1,24 +1,33 @@
 const fs = require('node:fs');
 const https = require('node:https');
 const config = require('./config');
-const { migrate } = require('./db/migrate');
+const { migrateOrReport } = require('./db/migrate');
 const { createApp } = require('./app');
+const { setMigrationState } = require('./middlewares/migrationState');
 const authService = require('./services/authService');
 
-// 起動時にマイグレーションを適用してからサーバーを立ち上げる
-migrate();
+// 起動時にマイグレーションを適用する。
+// **失敗してもサーバーは立ち上げる。** 画面が出ないと、利用者からは
+// 「急に全部繋がらない」としか見えず、原因に辿り着く手段が無くなる。
+setMigrationState(migrateOrReport());
 
-// 期限切れセッションを掃除する
-const purged = authService.purgeExpiredSessions();
-if (purged) console.log(`[auth] 期限切れセッションを${purged}件削除しました`);
+// 取り込みが途中だと、まだ無い表を読んで落ちることがある。
+// **起動を止める理由にはしない**（画面が出ないのが一番困る）
+try {
+  // 期限切れセッションを掃除する
+  const purged = authService.purgeExpiredSessions();
+  if (purged) console.log(`[auth] 期限切れセッションを${purged}件削除しました`);
 
-// ユーザーが1人もいないと誰もログインできないので、起動時に気づけるようにする
-if (authService.countUsers() === 0) {
-  console.warn(
-    '\n[!] ログインユーザーが登録されていません。\n' +
-    '    次のコマンドで最初の管理者を作成してください:\n' +
-    '        npm run create-user\n'
-  );
+  // ユーザーが1人もいないと誰もログインできないので、起動時に気づけるようにする
+  if (authService.countUsers() === 0) {
+    console.warn(
+      '\n[!] ログインユーザーが登録されていません。\n' +
+      '    次のコマンドで最初の管理者を作成してください:\n' +
+      '        npm run create-user\n'
+    );
+  }
+} catch (err) {
+  console.error(`[auth] 起動時の点検ができませんでした: ${err.message}`);
 }
 
 const app = createApp();
