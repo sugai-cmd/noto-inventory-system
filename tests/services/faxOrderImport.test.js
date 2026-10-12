@@ -15,6 +15,8 @@ const fixture = (name) =>
   fs.readFileSync(path.join(__dirname, '..', 'fixtures', 'fax', name), 'utf8');
 const PSM4 = fixture('kanakan-20261010-psm4.txt');
 const PSM6 = fixture('kanakan-20261010-psm6.txt');
+// バラ注文（入数が空・発注数量「6 P」）。MacのTesseractの出力で、「入庫日」が「太陳日」と崩れている
+const PIECES_MAC = fixture('kanakan-20261001-pieces-mac.txt');
 
 let db;
 let svc;
@@ -64,6 +66,27 @@ test('実物のOCR結果から全項目が読める（丸数字・1文字ごと�
   assert.equal(p.perCase, 12);
   assert.equal(p.cases, 2);
   assert.equal(p.quantity, 24);
+});
+
+test('バラ注文（「6 P」）は本数として読む。入庫日の見出しが崩れても「…分着」の行から読む', () => {
+  const p = parser.parseKanakanOrder(PIECES_MAC);
+  assert.deepEqual(p.errors, []);
+  assert.equal(p.orderNumber, '73066182');
+  assert.equal(p.orderedOn, '2026-10-01');
+  assert.equal(p.deliveryOn, '2026-10-06');
+  assert.equal(p.jan, '4589501590860');
+  assert.equal(p.pieces, 6);
+  assert.equal(p.quantity, 6);
+  assert.equal(p.warehouse, 'カナカン酒類石川');
+});
+
+test('バラ注文: 空白が消えて容量とくっついても、JANの前の数字を本数にする', () => {
+  // 1文字ずつ空白が入る出力（LinuxのTesseract）の形
+  const spaced = PIECES_MAC.replace(
+    'ナオライ JOCHUホワノト3 5300ML           6 P   4589501590860',
+    'ナ オ ラ イ J0CHU ホ ワ ノ ト ③ ⑤ ③00 岐 ⑫ P ④ ⑤ ⑧ ⑨ ⑤ 0 ① ⑤ ⑨ 0 ⑧ ⑥ 0'
+  );
+  assert.equal(parser.parseKanakanOrder(spaced).quantity, 12);
 });
 
 test('崩れた回は読めなかった項目をエラーとして返し、推測で埋めない', () => {
