@@ -283,6 +283,10 @@
       <button type="button" class="secondary" id="exportYupack">ゆうパックCSV（上の絞り込み条件で出力）</button>
       <button type="button" class="secondary" id="exportMf">マネーフォワードCSV</button>
     </div>
+    <div class="actions">
+      <button type="button" id="shipDocsRun">送り状・納品書を今すぐ登録（カナカン・COREZO）</button>
+      <span id="shipDocsStatus" class="hint"></span>
+    </div>
   </section>
 
   <section class="panel" id="shipPanel" style="display:none">
@@ -1263,6 +1267,34 @@ el('exportYupack').addEventListener('click', () =>
   downloadCsv('/api/exports/yupack', 'ゆうパックCSV'));
 el('exportMf').addEventListener('click', () =>
   downloadCsv('/api/exports/moneyforward', 'マネーフォワードCSV'));
+
+// 送り状（Webゆうパックプリント）・納品書（マネーフォワード）の登録。毎朝8時に自動で動くが、
+// FAXが追加で届いた日はここから手で動かす。処理はサーバーのMacで進み、結果はSlackに届く
+async function refreshShipDocsStatus() {
+  try {
+    const s = await api('GET', '/api/ship-docs/status');
+    const y = s.pending.yupack.length;
+    const m = s.pending.moneyforward.length;
+    el('shipDocsStatus').textContent = s.running
+      ? '登録を実行中です'
+      : `未登録: 送り状 ${y}件 / 納品書 ${m}件（毎朝8時に自動）`;
+    el('shipDocsRun').disabled = s.running || (!y && !m);
+  } catch {
+    el('shipDocsStatus').textContent = '';
+  }
+}
+
+el('shipDocsRun').addEventListener('click', async () => {
+  if (!confirm('未出荷のカナカン・COREZOの受注を、Webゆうパックプリントとマネーフォワードに登録します。よろしいですか？')) return;
+  try {
+    const r = await api('POST', '/api/ship-docs/run');
+    showMessage('messages', 'ok', r.message);
+  } catch (err) {
+    showMessage('messages', 'error', err.message);
+  }
+  setTimeout(refreshShipDocsStatus, 1500);
+});
+refreshShipDocsStatus();
 
 el('resetBtn').addEventListener('click', resetForm);
 el('quantity').addEventListener('input', refreshDefaults);

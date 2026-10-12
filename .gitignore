@@ -17,3 +17,6 @@ scripts/migration-report/*
 logs/
 backups/
 certs/
+
+# ブラウザ自動操作の専用プロファイル（ログイン状態が入る）
+.browser-profile/

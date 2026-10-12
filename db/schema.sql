@@ -439,6 +439,15 @@ CREATE TABLE sessions (
   user_agent  TEXT
 );
 
+CREATE TABLE ship_doc_uploads (
+  id           INTEGER PRIMARY KEY,
+  order_no     TEXT NOT NULL,                         -- 受注番号（1受注で複数明細でも1件）
+  target       TEXT NOT NULL CHECK (target IN ('yupack', 'moneyforward')),
+  uploaded_at  TEXT NOT NULL DEFAULT (datetime('now')),
+  csv_file     TEXT,                                  -- アップロードしたCSV（logs/ship-docs/ 配下）
+  UNIQUE (order_no, target)
+);
+
 CREATE TABLE shipping_rates (
   id          INTEGER PRIMARY KEY,
   zone        TEXT NOT NULL,

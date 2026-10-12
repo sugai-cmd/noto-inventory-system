@@ -143,7 +143,10 @@ function resolveCartonSize(db, lines) {
   if (!rule) {
     return { size: null, reason: 'この商品と本数の組み合わせが段ボール対応表にありません' };
   }
-  return { size: String(rule.carton_size).padStart(3, '0'), reason: null };
+  // 発送前（毎朝の送り状の自動登録）は、まだ使った段ボールの記録が無い。
+  // 対応表の本数で割った箱数を個数にする（24本で12本用なら2個）
+  const boxes = (lines[0].quantity / rule.quantity) * (rule.parcels || 1);
+  return { size: String(rule.carton_size).padStart(3, '0'), boxes, reason: null };
 }
 
 /**
@@ -175,6 +178,15 @@ function countShippedCartons(db, lines) {
     .get(params);
 
   return boxes > 0 ? boxes : null;
+}
+
+/**
+ * 品名。カナカンから「送り状に発注番号を記入」と頼まれているので、
+ * FAX取込で note の先頭に書いた発注番号を品名に入れる（それ以外は固定の品名）。
+ */
+function yupackGoodsName(note) {
+  const m = String(note ?? '').match(/カナカン発注番号：(\d{8})/);
+  return m ? `${YUPACK_DEFAULTS.goodsName} 発注番号${m[1]}` : YUPACK_DEFAULTS.goodsName;
 }
 
 /**
@@ -218,7 +230,7 @@ function exportYuPack(filter = {}) {
     if (!carton.size) unresolved.push({ orderNo, reason: carton.reason });
 
     // 個数は、発送時に選んだ段ボールが分かっていればその箱数を使う
-    const boxes = countShippedCartons(db, lines);
+    const boxes = countShippedCartons(db, lines) ?? carton.boxes ?? null;
 
     const row = new Array(72).fill('');
     row[0] = YUPACK_DEFAULTS.product;        // 1 商品
@@ -242,7 +254,7 @@ function exportYuPack(filter = {}) {
     row[30] = SENDER_INFO.phone;             // 31 ご依頼主の電話番号
     row[31] = SENDER_INFO.corporateName;     // 32 ご依頼主の法人名
     row[32] = SENDER_INFO.department;        // 33 ご依頼主の部署名
-    row[34] = YUPACK_DEFAULTS.goodsName;     // 35 品名
+    row[34] = yupackGoodsName(head.note);    // 35 品名（カナカンは発注番号入り）
     row[36] = String(boxes ?? 1);            // 37 個数（実際に使った段ボールの箱数）
     row[38] = '0';                           // 39 発送予定時間帯
     row[39] = '0';                           // 40 セキュリティ
@@ -285,7 +297,13 @@ const MF_HEADERS_BASE = [
 ];
 const MF_HEADERS_ITEM = ['品名', '品目コード', '単価', '数量', '単位', '詳細', '金額', '品目消費税率'];
 
-function exportMoneyForward(filter = {}) {
+/**
+ * @param {object} [filter] - fetchOrders と同じ絞り込み
+ * @param {{beforeShipping?: boolean}} [opts]
+ *   beforeShipping: 出荷前に納品書を作る（毎朝の自動登録）。納品日は納品希望日を使い、
+ *   納品ステータスを「未納品」にする
+ */
+function exportMoneyForward(filter = {}, { beforeShipping = false } = {}) {
   const db = getConnection();
   const orders = fetchOrders(db, filter);
   const grouped = groupByOrderNo(orders);
@@ -316,7 +334,9 @@ function exportMoneyForward(filter = {}) {
       items.reduce((sum, it) => sum + it.amount, 0) + shipping
     );
 
-    const deliveryDateStr = head.delivered_on ? head.delivered_on.replace(/-/g, '/') : '';
+    const deliveryDate =
+      head.delivered_on || (beforeShipping ? head.requested_delivery_on : null);
+    const deliveryDateStr = deliveryDate ? deliveryDate.replace(/-/g, '/') : '';
 
     let row = [
       MF_CSV_TYPE,
@@ -339,7 +359,8 @@ function exportMoneyForward(filter = {}) {
       parsed.name,        // 担当者氏名
       '',                 // 自社担当者氏名
       head.note ?? '',
-      '', '', '', '',     // 各ステータス
+      beforeShipping ? '未納品' : '', // 納品ステータス
+      '', '', '',         // メール送信・郵送・ダウンロードの各ステータス
     ];
 
     if (items.length > MF_MAX_ITEMS) {
