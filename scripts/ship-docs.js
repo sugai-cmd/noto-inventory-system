@@ -7,6 +7,7 @@
 //   node scripts/ship-docs.js --headed        # Chromeの画面を出して動かす（初回の確認・調整）
 //   node scripts/ship-docs.js --only yupack   # 片方だけ（yupack / moneyforward）
 //   node scripts/ship-docs.js --manual        # 手動実行として通知する（受注画面のボタンが付ける）
+//   node scripts/ship-docs.js --login         # 専用のChromeを開いて、両方のサイトに手でログインする（最初に1回）
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -21,10 +22,37 @@ function loadDotEnv(file) {
   }
 }
 
+/**
+ * 自動操作で使う専用のChromeを開き、人が手でログインする。
+ * ログイン状態は専用プロファイル（.browser-profile/）に残るので、以後の自動実行はログイン済みで始まる。
+ * アカウント選択・二段階認証・利用規約の同意など、初回だけ出る画面をここで済ませておく。
+ */
+async function loginMode(root) {
+  const readline = require('node:readline');
+  const { openBrowser } = require('../src/services/shipDocs/browser');
+  const context = await openBrowser({ profileDir: path.join(root, '.browser-profile'), headed: true });
+  const yupack = context.pages()[0] ?? (await context.newPage());
+  await yupack.goto(process.env.WEBYUPACK_URL || 'https://www.post.japanpost.jp/web-yu-packprint/');
+  const mf = await context.newPage();
+  await mf.goto('https://invoice.moneyforward.com/');
+
+  console.log('\nChromeが開きました。2つのタブで、それぞれ手でログインしてください。');
+  console.log('  1. Webゆうパックプリント … ゆうIDでログインし、メインメニューが出るところまで');
+  console.log('  2. マネーフォワード      … アカウントを選び、請求書の画面が出るところまで（二段階認証もここで）');
+  console.log('終わったら、このターミナルで Enter を押してください（Chromeが閉じます）。\n');
+  await new Promise((resolve) => {
+    const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+    rl.question('', () => { rl.close(); resolve(); });
+  });
+  await context.close();
+  console.log('ログイン状態を保存しました。次は npm run ship-docs -- --headed で確認してください。');
+}
+
 async function main() {
   const root = path.resolve(__dirname, '..');
   loadDotEnv(path.join(root, '.env'));
   const args = process.argv.slice(2);
+  if (args.includes('--login')) return loginMode(root);
   const dryRun = args.includes('--dry-run');
   const headed = args.includes('--headed');
   const onlyIdx = args.indexOf('--only');

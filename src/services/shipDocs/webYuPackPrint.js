@@ -12,29 +12,57 @@
 //   WEBYUPACK_URL                       入口（既定はサービスのトップ）
 //   WEBYUPACK_CONVERSION                ファイル変換定義の名前に含まれる文字（既定「標準」）
 
-const { clickByText, fillFirst, bodyText, StepError } = require('./browser');
+const { clickByText, clickMaybePopup, fillFirst, bodyText, StepError } = require('./browser');
 
 const DEFAULT_URL = 'https://www.post.japanpost.jp/web-yu-packprint/';
+/** ゆうIDのログイン画面のドメイン（URLの login_challenge は毎回変わるので、ドメインで見分ける） */
+const LOGIN_HOST = /jpid\.pf\.japanpost\.jp/;
 
+/**
+ * ログインして、ログイン後のページを返す（「ログイン」で別タブが開くサイトがあるため）。
+ * 専用のChrome（--login で一度手でログイン済み）ならログイン状態が残っていて、ここは素通りする。
+ */
 async function login(page, env, rec) {
-  // すでにログイン済みなら「ログアウト」がある
-  if (/ログアウト/.test(await bodyText(page))) return;
+  if (/ログアウト/.test(await bodyText(page))) return page;
 
-  await clickByText(page, /^ログイン|ログインする|ログインはこちら/, { timeout: 5000 });
+  const opened = await clickMaybePopup(page, /^ログイン|ログインする|ログインはこちら|ログイン画面/, { timeout: 5000 });
+  page = opened.page;
+  // ゆうIDのログインは別のドメイン（login.jpid.pf.japanpost.jp）に転送され、
+  // 入力欄は画面の読み込み後に表示される。着いて欄が出るまで待つ
+  await page.waitForURL(LOGIN_HOST, { timeout: 15000 }).catch(() => {});
+  await page.waitForLoadState('networkidle').catch(() => {});
+  await page
+    .locator('input[type=email], input[type=password], input[type=text]')
+    .first()
+    .waitFor({ state: 'visible', timeout: 15000 })
+    .catch(() => {});
   await rec.snap(page, 'yupack_login_page');
+  if (/ログアウト/.test(await bodyText(page))) return page;
 
   if (!env.WEBYUPACK_ID || !env.WEBYUPACK_PASSWORD) {
     throw new StepError('.env に WEBYUPACK_ID と WEBYUPACK_PASSWORD を設定してください', { kind: 'login' });
   }
   const idOk = await fillFirst(
     page,
-    ['input[type=email]', 'input[name*=mail i]', 'input[name*=id i]:not([type=hidden])', 'input[type=text]'],
+    ['input[type=email]', 'input[name*=mail i]', 'input[id*=mail i]', 'input[name*=id i]:not([type=hidden])', 'input[type=text]'],
     env.WEBYUPACK_ID
   );
+  // ゆうIDも「メールアドレス → 次へ → パスワード」の2画面のことがある
+  if (idOk && !(await fillFirst(page, ['input[type=password]'], env.WEBYUPACK_PASSWORD))) {
+    await clickByText(page, /次へ|続ける/, { timeout: 3000 });
+    await page.locator('input[type=password]').first().waitFor({ state: 'visible', timeout: 10000 }).catch(() => {});
+  }
   const pwOk = await fillFirst(page, ['input[type=password]'], env.WEBYUPACK_PASSWORD);
-  if (!idOk || !pwOk) throw new StepError('ログイン画面の入力欄が見つかりません', { step: 'login', kind: 'login' });
+  if (!idOk || !pwOk) {
+    throw new StepError(
+      'ログイン画面の入力欄が見つかりません。npm run ship-docs -- --login で一度手でログインしてください',
+      { step: 'login', kind: 'login' }
+    );
+  }
 
   await clickByText(page, /ログイン/);
+  // ログイン画面のドメインから戻ってくるまで待つ
+  await page.waitForURL((u) => !LOGIN_HOST.test(u.href), { timeout: 20000 }).catch(() => {});
   await page.waitForLoadState('networkidle').catch(() => {});
   await rec.snap(page, 'yupack_after_login');
 
@@ -43,21 +71,22 @@ async function login(page, env, rec) {
     throw new StepError('ゆうIDかパスワードが違います', { step: 'login', kind: 'login' });
   }
   if (/認証コード|確認コード|ワンタイム/.test(text)) {
-    throw new StepError('追加の認証（確認コード）を求められました。BROWSER_HEADED=1 で一度手でログインしてください', {
+    throw new StepError('追加の認証（確認コード）を求められました。npm run ship-docs -- --login で一度手でログインしてください', {
       step: 'login', kind: 'login',
     });
   }
+  return page;
 }
 
 /**
  * @returns {Promise<{message: string}>}
  */
 async function uploadYuPack(context, csvFile, { env = process.env, rec }) {
-  const page = await context.newPage();
+  let page = await context.newPage();
   try {
     await page.goto(env.WEBYUPACK_URL || DEFAULT_URL, { waitUntil: 'domcontentloaded' });
     await rec.snap(page, 'yupack_top');
-    await login(page, env, rec);
+    page = await login(page, env, rec);
 
     // 出荷予定データ一覧へ
     if (!(await clickByText(page, /印字予定を見る|出荷予定データ一覧/, { timeout: 3000 }))) {
