@@ -85,6 +85,7 @@ function createApp({ requireLogin = true } = {}) {
   app.use('/api/lots', require('./routes/lots'));                  // ロット追跡
   app.use('/api/liquor-tax', require('./routes/liquorTax'));       // 酒税の月次算出と税率マスタ
   app.use('/api/payments', require('./routes/payments'));         // 入金の消し込み
+  app.use('/api/ship-docs', require('./routes/shipDocs'));        // 送り状・納品書の自動登録（手動実行）
 
   // 存在しない /api/... は、Expressの既定のHTML404ではなくJSONで返す。
   // HTMLが返ると画面側のJSON.parseが落ち、利用者には

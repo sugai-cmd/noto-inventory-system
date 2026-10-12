@@ -184,11 +184,9 @@ function importParsed(parsed, { dryRun = false, sourceName = null, actor = null 
 
   if (reasons.length) return { status: 'needs_review', parsed, reasons, candidates, warnings };
 
-  const noteLines = [`${NOTE_PREFIX}${parsed.orderNumber}`];
-  noteLines.push(
-    `FAX自動取込${sourceName ? `（${sourceName}）` : ''}: ${parsed.cases}ケース×${parsed.perCase}本` +
-      (parsed.inner !== 1 ? `×${parsed.inner}` : '')
-  );
+  // 納品書の備考にそのまま載るので、発注番号の1行だけにする（2026-10-12 決定）。
+  // どのFAXから取り込んだかはSlack通知とFAXフォルダ（取込済）に残る
+  const note = `${NOTE_PREFIX}${parsed.orderNumber}`;
 
   const plan = {
     orderedOn: parsed.orderedOn,
@@ -198,7 +196,7 @@ function importParsed(parsed, { dryRun = false, sourceName = null, actor = null 
     productName: product.name,
     quantity: parsed.quantity,
     requestedDeliveryOn: parsed.deliveryOn,
-    note: noteLines.join('\n'),
+    note,
   };
 
   if (dryRun) return { status: 'dry_run', parsed, plan, warnings };

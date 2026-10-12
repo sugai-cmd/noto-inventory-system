@@ -12,7 +12,8 @@
     "test": "node --test tests/**/*.test.js",
     "create-user": "node scripts/create-user.js",
     "import-fax": "node scripts/import-fax-order.js",
-    "fax-inbox": "node scripts/fax-inbox.js"
+    "fax-inbox": "node scripts/fax-inbox.js",
+    "ship-docs": "node scripts/ship-docs.js"
   },
   "repository": {
     "type": "git",
@@ -27,6 +28,7 @@
     "csv-parse": "^7.0.2",
     "express": "^5.2.1",
     "iconv-lite": "^0.7.3",
+    "playwright-core": "1.63.0",
     "zod": "^4.4.3"
   }
 }

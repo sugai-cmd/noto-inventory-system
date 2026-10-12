@@ -390,30 +390,32 @@ test('ゆうパックCSV: 複数明細は1行目のサイズで代用しない',
 test('ゆうパックCSV: 個数は実際に使った段ボールの箱数になる', async () => {
   const orderId = await newOrder(24, { deliveryAddress: '〒920-3114 石川県金沢市吉原町ヨ87-1 山田太郎様' });
 
-  // 発送前は箱数が分からないので 1（従来どおり）
+  // 発送前は対応表から見積もる（24本÷12本用＝2個）。
+  // 送り状を出荷前に作る（毎朝の自動登録）ようになったため。以前は 1 固定だった
   const before = await yupackCells(`orderIds=${orderId}`);
-  assert.equal(before.cells[0][36], '1');
+  assert.equal(before.cells[0][36], '2');
 
+  // 実際には3箱に分けた。見積もりではなく実際の箱数が出る
   await api('POST', `/api/orders/${orderId}/ship`, {
     deliveredOn: '2026-08-21',
-    cartons: [{ materialId: BOX_12, quantity: 2 }],
+    cartons: [{ materialId: BOX_12, quantity: 3 }],
   });
 
   const after = await yupackCells(`orderIds=${orderId}`);
-  assert.equal(after.cells[0][36], '2', '実際に使った箱数が個数に出ていない');
+  assert.equal(after.cells[0][36], '3', '実際に使った箱数が個数に出ていない');
 });
 
 test('ゆうパックCSV: 取り消した段ボールは個数に数えない', async () => {
   const orderId = await newOrder(24, { deliveryAddress: '〒920-3114 石川県金沢市吉原町ヨ87-1 山田太郎様' });
   const ship = await api('POST', `/api/orders/${orderId}/ship`, {
     deliveredOn: '2026-08-22',
-    cartons: [{ materialId: BOX_12, quantity: 2 }],
+    cartons: [{ materialId: BOX_12, quantity: 3 }],
   });
-  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '2');
+  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '3');
 
   await api('POST', `/api/ledger-cancel/${ship.body.stockLedgerId}`, { reason: '入れ直し' });
-  // 取消済みを数えていると 2 のままになる
-  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '1');
+  // 取消済みを数えていると 3 のままになる。未発送に戻るので対応表の見積もり（2）
+  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '2');
 });
 
 test('段ボールの行は資材タブから単独では取り消せない（受注タブへ案内する）', async () => {
@@ -439,17 +441,17 @@ test('ゆうパックCSV: 段ボールの行が取消済みなら個数に数え
   const orderId = await newOrder(24, { deliveryAddress: '〒920-3114 石川県金沢市吉原町ヨ87-1 山田太郎様' });
   const ship = await api('POST', `/api/orders/${orderId}/ship`, {
     deliveredOn: '2026-08-24',
-    cartons: [{ materialId: BOX_12, quantity: 2 }],
+    cartons: [{ materialId: BOX_12, quantity: 3 }],
   });
-  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '2');
+  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '3');
 
   db.prepare('UPDATE material_stock_ledger SET is_cancelled = 1 WHERE id = ?')
     .run(ship.body.cartons[0].ledgerId);
 
-  // 出荷行は生きたままなので、ml.is_cancelled を見ていないと 2 のまま
+  // 出荷行は生きたままなので、ml.is_cancelled を見ていないと 3 のまま
   const shipRow = db
     .prepare('SELECT is_cancelled FROM product_stock_ledger WHERE id = ?')
     .get(ship.body.stockLedgerId);
   assert.equal(shipRow.is_cancelled, 0, '出荷まで取り消されていて、この試験の意味がない');
-  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '1');
+  assert.equal((await yupackCells(`orderIds=${orderId}`)).cells[0][36], '2');
 });

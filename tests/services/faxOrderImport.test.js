@@ -112,7 +112,7 @@ test('受注として登録される（得意先は支店、納品希望日＝�
   assert.equal(row.requested_delivery_on, '2026-10-15');
   assert.equal(row.quantity, 24);
   assert.equal(row.status, '未着手');
-  assert.match(row.note, /^カナカン発注番号：73068150\n/);
+  assert.equal(row.note, 'カナカン発注番号：73068150');
   // 掛率は支店が空欄なので本店（カナカン 0.7）を引き継ぐ
   assert.equal(row.markup_rate, 0.7);
   assert.equal(row.sales_amount, Math.round(1500 * 24 * 0.7));
