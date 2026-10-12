@@ -95,20 +95,40 @@ async function clickByText(page, pattern, { timeout = 8000 } = {}) {
   return false;
 }
 
-/** 見えている最初の入力欄に書く。書けたら true */
+/**
+ * 見えている最初の入力欄に書く。書けたら true。
+ * ログイン欄が枠（iframe）の中にあるサイトもあるので、枠の中も探す。
+ */
 async function fillFirst(page, selectors, value) {
-  for (const sel of selectors) {
-    const loc = page.locator(sel).first();
-    if (await loc.isVisible().catch(() => false)) {
-      await loc.fill(value);
-      return true;
+  for (const frame of page.frames()) {
+    for (const sel of selectors) {
+      const loc = frame.locator(sel).first();
+      if (await loc.isVisible().catch(() => false)) {
+        await loc.fill(value);
+        return true;
+      }
     }
   }
   return false;
+}
+
+/**
+ * 押すと別タブが開くかもしれないボタンを押し、開いたらそのタブを返す（開かなければ元のページ）。
+ */
+async function clickMaybePopup(page, pattern, opts) {
+  const popup = page.context().waitForEvent('page', { timeout: 5000 }).catch(() => null);
+  const clicked = await clickByText(page, pattern, opts);
+  if (!clicked) return { clicked, page };
+  const opened = await popup;
+  if (opened) {
+    await opened.waitForLoadState('domcontentloaded').catch(() => {});
+    return { clicked, page: opened };
+  }
+  return { clicked, page };
 }
 
 async function bodyText(page) {
   return (await page.locator('body').innerText().catch(() => '')) ?? '';
 }
 
-module.exports = { openBrowser, createRecorder, clickByText, fillFirst, bodyText, StepError };
+module.exports = { openBrowser, createRecorder, clickByText, clickMaybePopup, fillFirst, bodyText, StepError };
