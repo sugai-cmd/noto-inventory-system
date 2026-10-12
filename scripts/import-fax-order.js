@@ -49,7 +49,7 @@ function print(name, r) {
   const p = r.parsed;
   const summary = p.orderNumber
     ? `発注番号 ${p.orderNumber} / 入庫日 ${p.deliveryOn ?? '?'} / ${p.warehouse ?? '?'} / ` +
-      `JAN ${p.jan ?? '?'} / ${p.cases ?? '?'}C×${p.perCase ?? '?'}本`
+      `JAN ${p.jan ?? '?'} / ${p.pieces ? `${p.pieces}本（バラ）` : `${p.cases ?? '?'}C×${p.perCase ?? '?'}本`}`
     : '';
   switch (r.status) {
     case 'registered':

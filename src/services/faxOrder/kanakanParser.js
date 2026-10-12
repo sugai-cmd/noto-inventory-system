@@ -41,6 +41,11 @@ function findDate(joined, label) {
   return m ? toDate(m[1], m[2], m[3]) : null;
 }
 
+function findArrivalDate(joined) {
+  const m = joined.match(/(\d{2,4})年(\d{1,2})月(\d{1,2})日\d{1,2}時\d{1,2}分着/);
+  return m ? toDate(m[1], m[2], m[3]) : null;
+}
+
 /** JAN（EAN-13）のチェックデジットが合うか。OCRの読み違いはここでほぼ弾ける */
 function isValidJan(code) {
   if (!/^\d{13}$/.test(code)) return false;
@@ -88,6 +93,36 @@ function findQuantity(lines, warnings) {
   return null;
 }
 
+/**
+ * バラ（本数）での注文。入数の欄が空で、発注数量が「6 P」のように書かれる（2026-10-01・10-05着の実物）。
+ * P＝本。数量は本数そのもの。
+ *
+ * 空白を消すと商品名の容量とくっつく（「300ML6P」「3006P」）ので、まず空白が残った行で
+ * 「数字だけの塊 + P」を探す。見つからなければ、空白を消した行で「文字のあと・JANの前」の数字を見る。
+ */
+function findPieces(rawLines) {
+  for (const raw of rawLines) {
+    const squashed = raw.replace(/\s+/g, '');
+    if (!/\d{13}/.test(squashed)) continue; // 商品の行（JANがある行）だけ見る
+    const spaced = raw.match(/(?:^|\s)(\d{1,4})\s*[Pp](?=\s|$)/);
+    const tight = squashed.match(/(?<=[^\d])(\d{1,4})[Pp](?=\d{13})/);
+    const m = spaced ?? tight;
+    if (!m || !Number(m[1])) continue;
+    const pieces = Number(m[1]);
+    const at = squashed.search(/\d{1,4}[Pp]\d{13}/);
+    return {
+      perCase: null,
+      inner: null,
+      cases: null,
+      pieces,
+      quantity: pieces,
+      line: squashed,
+      productName: at > 0 ? squashed.slice(0, at) : null,
+    };
+  }
+  return null;
+}
+
 /** 納入倉庫の名前（＝得意先の支店名）。「納入倉庫」のあとの文字列 */
 function findWarehouse(lines) {
   const idx = lines.findIndex((l) => l.includes('納入倉庫'));
@@ -103,7 +138,7 @@ function findWarehouse(lines) {
  *   isKanakan: boolean, orderNumber: string|null, orderedOn: string|null,
  *   deliveryOn: string|null, warehouse: string|null, office: string|null,
  *   jan: string|null, perCase: number|null, inner: number|null, cases: number|null,
- *   quantity: number|null, productNameRaw: string|null,
+ *   pieces: number|null, quantity: number|null, productNameRaw: string|null,
  *   errors: string[], warnings: string[], missing: string[]
  * }}
  */
@@ -127,20 +162,25 @@ function parseKanakanOrder(text) {
   const orderedOn = findDate(joined, '発注日');
   if (!orderedOn) fail('orderedOn', '発注日が読み取れませんでした');
 
-  const deliveryOn = findDate(joined, '入庫日');
+  // 「入庫日」の見出しはOCRで崩れやすい（「太陳日」と読まれた実物がある）。
+  // 「…時…分着」は入庫日の行にしかない書き方なので、見出しが読めなくても拾える
+  const deliveryOn = findDate(joined, '入庫日') ?? findArrivalDate(joined);
   if (!deliveryOn) fail('deliveryOn', '入庫日が読み取れませんでした');
 
   const jan = findJan(lines);
   if (!jan) fail('jan', 'JANコード（チェックデジットの合う13桁）が読み取れませんでした');
 
-  const qty = findQuantity(lines, warnings);
+  const rawLines = String(text ?? '').normalize('NFKC').split(/\r?\n/);
+  const qty = findQuantity(lines, warnings) ?? findPieces(rawLines);
   if (!qty) fail('quantity', '入数・発注数量が読み取れませんでした');
 
   const { warehouse, office } = findWarehouse(lines);
   if (!warehouse) fail('warehouse', '納入倉庫（得意先）が読み取れませんでした');
 
   // 商品名は照合には使わない。人が確認するときの手がかりとして残すだけ
-  const productNameRaw = qty ? qty.line.split(/\d+[XxＸ×]/)[0] || null : null;
+  const productNameRaw = qty
+    ? qty.productName ?? (qty.line.split(/\d+[XxＸ×]/)[0] || null)
+    : null;
 
   if (orderedOn && deliveryOn && deliveryOn < orderedOn) {
     warnings.push(`入庫日（${deliveryOn}）が発注日（${orderedOn}）より前になっています`);
@@ -157,6 +197,7 @@ function parseKanakanOrder(text) {
     perCase: qty?.perCase ?? null,
     inner: qty?.inner ?? null,
     cases: qty?.cases ?? null,
+    pieces: qty?.pieces ?? null,
     quantity: qty?.quantity ?? null,
     productNameRaw,
     errors,

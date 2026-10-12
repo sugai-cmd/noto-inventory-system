@@ -27,7 +27,7 @@ const CUSTOMER_MIN_SCORE = 0.75;
 const CUSTOMER_MIN_MARGIN = 0.1;
 
 /** 入数・数量は同じ回の読み取り結果をまとめて採用する（混ぜると数字が食い違う） */
-const QUANTITY_FIELDS = ['perCase', 'inner', 'cases', 'quantity', 'productNameRaw'];
+const QUANTITY_FIELDS = ['perCase', 'inner', 'cases', 'pieces', 'quantity', 'productNameRaw'];
 const SIMPLE_FIELDS = ['orderNumber', 'orderedOn', 'deliveryOn', 'jan', 'warehouse', 'office'];
 
 /**
