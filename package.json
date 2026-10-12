@@ -10,7 +10,8 @@
     "migrate": "node src/db/migrate.js",
     "schema": "node scripts/dump-schema.js",
     "test": "node --test tests/**/*.test.js",
-    "create-user": "node scripts/create-user.js"
+    "create-user": "node scripts/create-user.js",
+    "import-fax": "node scripts/import-fax-order.js"
   },
   "repository": {
     "type": "git",
