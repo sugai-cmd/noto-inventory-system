@@ -41,18 +41,23 @@ FAX/取込済・要確認・未分類 に仕分け ＋ Slackで通知
 
 ### ② Mac（共有ドライブ → 受注登録）
 
-1. Googleドライブ（パソコン版）で、共有ドライブのFAXフォルダが見えることを確認し、場所を控えます。
+1. FAXフォルダの場所（パス）を調べます。
+
+   - Finderの左の「Google Drive」（または「場所」の下のGoogle Drive）→「共有ドライブ」→ 共有ドライブ →「FAX」フォルダを表示する
+   - 「FAX」フォルダを **option キーを押しながら右クリック** →「“FAX”のパス名をコピー」を選ぶ
+
+   Finderに「Google Drive」が出ていない場合は、Googleドライブ（パソコン版）にログインしていません。
+   メニューバーのGoogleドライブのアイコンから、FAXを受け取るアカウント（sugai@naorai.co など）でログインしてください。
+
+2. `.env` を開き（`cd ~/noto-inventory-system` → `open -e .env`）、いちばん下に1行書き足して保存（⌘S）します。
+   `=` のあとに、1でコピーしたパスを貼り付け（⌘V）ます。
 
    ```bash
-   ls ~/Library/CloudStorage/          # GoogleDrive-sugai@naorai.co のようなフォルダがある
-   ls ~/Library/CloudStorage/GoogleDrive-sugai@naorai.co/共有ドライブ/
+   FAX_INBOX_DIR=（ここに貼り付け）
    ```
 
-2. `.env` に次を書き足します（場所は①で控えたものに合わせる）。
-
-   ```bash
-   FAX_INBOX_DIR=/Users/YOUR_NAME/Library/CloudStorage/GoogleDrive-sugai@naorai.co/共有ドライブ/（共有ドライブ名）/FAX
-   ```
+   例: `FAX_INBOX_DIR=/Users/notonorai/Library/CloudStorage/GoogleDrive-sugai@naorai.co/共有ドライブ/NOTO Naorai/FAX`
+   （パスに空白が入っていても、引用符で囲む必要はありません）
 
 3. 試しに、登録も移動もせずに動かしてみます。
 
