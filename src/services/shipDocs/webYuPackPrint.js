@@ -25,7 +25,12 @@ const LOGIN_HOST = /jpid\.pf\.japanpost\.jp/;
 async function login(page, env, rec) {
   if (/ログアウト/.test(await bodyText(page))) return page;
 
-  const opened = await clickMaybePopup(page, /^ログイン|ログインする|ログインはこちら|ログイン画面/, { timeout: 5000 });
+  // サービスのトップには「ログイン」ボタンが無く、入口は「ゆうIDをお持ちの方はこちら」（2026-10-13 実機で確認）。
+  // 隣の「ゆうIDをお持ちではない方はこちら」は新規登録なので押さない（「お持ちの方」で区別する）
+  const opened = await clickMaybePopup(page, /お持ちの方はこちら|^ログイン|ログインする|ログインはこちら/, { timeout: 8000 });
+  if (!opened.clicked) {
+    throw new StepError('トップページに「ゆうIDをお持ちの方はこちら」が見つかりません', { step: 'login', kind: 'login' });
+  }
   page = opened.page;
   // ゆうIDのログインは別のドメイン（login.jpid.pf.japanpost.jp）に転送され、
   // 入力欄は画面の読み込み後に表示される。着いて欄が出るまで待つ
