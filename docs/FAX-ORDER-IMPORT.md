@@ -65,9 +65,11 @@ PDF → pdftoppm（300dpi画像）→ Tesseract（日本語）→ 項目の読�
 - 読み取り: `src/services/faxOrder/kanakanParser.js` / 突合と登録: `src/services/faxOrderImportService.js`
 - Tesseractの場所を変えたいときは `TESSERACT_BIN` / `PDFTOPPM_BIN` で指定できます。
 
-## 6. まだできていないこと
+## 6. 自動化
 
-- **Gmailからの自動取得**: いまはPDFを手で保存して渡す。Gmail API（OAuth）でアプリが
-  `from:FromBrotherDevice@brother.com` を定期的に見て、この取込を呼ぶ形にする予定
-  （COREZO注文メールの自動取込と同じ認証を使う）。
+Gmailからの取得・定期実行・仕分け・Slack通知は [FAX-AUTO-IMPORT.md](FAX-AUTO-IMPORT.md)。
+
+## 7. まだできていないこと
+
+- 出荷後のゆうパック送り状（Webゆうパックプリント）・納品書（マネーフォワード）の自動作成
 - 受注画面からPDFをアップロードして取り込むボタン
