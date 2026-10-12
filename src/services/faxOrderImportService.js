@@ -28,7 +28,7 @@ const CUSTOMER_MIN_MARGIN = 0.1;
 
 /** 入数・数量は同じ回の読み取り結果をまとめて採用する（混ぜると数字が食い違う） */
 const QUANTITY_FIELDS = ['perCase', 'inner', 'cases', 'pieces', 'quantity', 'productNameRaw'];
-const SIMPLE_FIELDS = ['orderNumber', 'orderedOn', 'deliveryOn', 'jan', 'warehouse', 'office'];
+const SIMPLE_FIELDS = ['orderNumber', 'orderedOn', 'deliveryOn', 'jan', 'volumeMl', 'warehouse', 'office'];
 
 /**
  * 読み方を変えた複数回のOCR結果を1つにまとめる。項目ごとに最初に読めたものを使う。
@@ -59,29 +59,65 @@ function mergeParsed(parsedList) {
   return merged;
 }
 
-/** 同じ発注番号の受注がすでにあるか（取消済みも含む。取り消したものを勝手に復活させない） */
+/**
+ * 同じ発注番号の受注がすでにあるか（取消済みも含む。取り消したものを勝手に復活させない）。
+ * 手で登録した受注は備考に「発注番号：73068150」と書かれている（2026-10-12 確認）ので、
+ * 「カナカン発注番号：」に限らず「発注番号：<番号>」があれば同じ注文とみなす。
+ */
 function findExistingOrder(db, orderNumber) {
   return db
     .prepare(
-      `SELECT order_no, is_cancelled FROM orders WHERE note LIKE ? ORDER BY id LIMIT 1`
+      `SELECT order_no, is_cancelled FROM orders
+        WHERE note LIKE ? OR note LIKE ? OR note LIKE ?
+        ORDER BY id LIMIT 1`
     )
-    .get(`${NOTE_PREFIX}${orderNumber}%`);
+    .get(`%発注番号：${orderNumber}%`, `%発注番号:${orderNumber}%`, `%発注番号 ${orderNumber}%`);
 }
 
-/** JANで商品を引く。1件に決まったときだけ返す */
-function matchProduct(db, jan) {
+/** カナカンのFAXのJAN → 実際の商品のJAN（kanakanJanMap.json） */
+function loadJanMap() {
+  try {
+    return require('./faxOrder/kanakanJanMap.json').map ?? {};
+  } catch {
+    return {};
+  }
+}
+
+/**
+ * 商品を決める。
+ * カナカンのFAXに載るJANはカナカン側でずれている（300MLの注文に700mlのJANが載る）ので、
+ * 読み替え表で実際のJANに直してから商品マスタを引き、**商品名の容量と合うかを検算する**。
+ * 合わなければ登録しない（間違った商品で送り状・納品書が作られるのを防ぐ）。
+ */
+function matchProduct(db, jan, volumeMl = null, janMap = loadJanMap()) {
+  const realJan = janMap[jan] ?? jan;
   const rows = db
     .prepare(
-      `SELECT id, name, jan_code FROM products
+      `SELECT id, name, jan_code, volume_ml FROM products
         WHERE REPLACE(REPLACE(jan_code, ' ', ''), '-', '') = ?`
     )
-    .all(jan);
-  if (rows.length === 1) return { product: rows[0] };
-  if (rows.length === 0) return { reason: `JAN ${jan} の商品が商品マスタにありません` };
-  return {
-    reason: `JAN ${jan} の商品が商品マスタに${rows.length}件あります`,
-    candidates: rows.map((r) => r.name),
-  };
+    .all(realJan);
+  const via = realJan !== jan ? `（FAXのJAN ${jan} を ${realJan} に読み替え）` : '';
+  if (rows.length === 0) return { reason: `JAN ${realJan}${via} の商品が商品マスタにありません` };
+  if (rows.length > 1) {
+    return {
+      reason: `JAN ${realJan}${via} の商品が商品マスタに${rows.length}件あります`,
+      candidates: rows.map((r) => r.name),
+    };
+  }
+  const product = rows[0];
+  if (volumeMl && product.volume_ml && Number(product.volume_ml) !== volumeMl) {
+    return {
+      reason:
+        `FAXの商品名は${volumeMl}mlですが、JAN ${jan}${via} の商品は「${product.name}」（${product.volume_ml}ml）です。` +
+        'JANの読み替え表（src/services/faxOrder/kanakanJanMap.json）を確認してください',
+      candidates: [product.name],
+    };
+  }
+  const warning = volumeMl
+    ? null
+    : `FAXの商品名から容量が読めなかったため、JANだけで「${product.name}」に決めました`;
+  return { product, warning };
 }
 
 /**
@@ -162,8 +198,11 @@ function importParsed(parsed, { dryRun = false, sourceName = null, actor = null 
 
   let product = null;
   if (parsed.jan) {
-    const m = matchProduct(db, parsed.jan);
-    if (m.product) product = m.product;
+    const m = matchProduct(db, parsed.jan, parsed.volumeMl);
+    if (m.product) {
+      product = m.product;
+      if (m.warning) warnings.push(m.warning);
+    }
     else {
       reasons.push(m.reason);
       if (m.candidates) candidates.product = m.candidates;
