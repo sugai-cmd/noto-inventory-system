@@ -123,6 +123,27 @@ function findPieces(rawLines) {
   return null;
 }
 
+/** 商品の容量としてありうる値。OCRで前の文字とくっついた数字（「35300ML」）から容量を切り出すのに使う */
+const KNOWN_VOLUMES = [1800, 900, 750, 720, 700, 500, 360, 300, 200, 180, 100];
+
+/**
+ * 商品名の容量（ml）。JANがあてにならない（カナカン側のJANがずれている）ので、照合の検算に使う。
+ * 「ホワイト35 300ML」は空白が消えると「35300ML」になるので、末尾から既知の容量を探す。
+ */
+function findVolume(lines) {
+  for (const line of lines) {
+    if (!/\d{13}/.test(line)) continue; // 商品の行だけ
+    const m = line.match(/(\d+)[mMｍ][lLｌ]/);
+    if (!m) continue;
+    const digits = m[1];
+    for (const len of [4, 3]) {
+      const v = Number(digits.slice(-len));
+      if (digits.length >= len && KNOWN_VOLUMES.includes(v)) return v;
+    }
+  }
+  return null;
+}
+
 /** 納入倉庫の名前（＝得意先の支店名）。「納入倉庫」のあとの文字列 */
 function findWarehouse(lines) {
   const idx = lines.findIndex((l) => l.includes('納入倉庫'));
@@ -137,7 +158,7 @@ function findWarehouse(lines) {
  * @returns {{
  *   isKanakan: boolean, orderNumber: string|null, orderedOn: string|null,
  *   deliveryOn: string|null, warehouse: string|null, office: string|null,
- *   jan: string|null, perCase: number|null, inner: number|null, cases: number|null,
+ *   jan: string|null, volumeMl: number|null, perCase: number|null, inner: number|null, cases: number|null,
  *   pieces: number|null, quantity: number|null, productNameRaw: string|null,
  *   errors: string[], warnings: string[], missing: string[]
  * }}
@@ -175,6 +196,7 @@ function parseKanakanOrder(text) {
   if (!qty) fail('quantity', '入数・発注数量が読み取れませんでした');
 
   const { warehouse, office } = findWarehouse(lines);
+  const volumeMl = findVolume(lines);
   if (!warehouse) fail('warehouse', '納入倉庫（得意先）が読み取れませんでした');
 
   // 商品名は照合には使わない。人が確認するときの手がかりとして残すだけ
@@ -194,6 +216,7 @@ function parseKanakanOrder(text) {
     warehouse,
     office,
     jan,
+    volumeMl,
     perCase: qty?.perCase ?? null,
     inner: qty?.inner ?? null,
     cases: qty?.cases ?? null,

@@ -39,9 +39,15 @@ test.before(async () => {
         `INSERT INTO customers (uid, code, name, parent_id) VALUES (?, ?, ?, ?)`
       ).run(generateUid(db, 'customers'), code, name, parentId);
     }
+    // 実際の商品マスタと同じJAN（300ml＝…907、700ml＝…860）。
+    // カナカンのFAXは300MLの注文に …860 を載せてくるので、読み替えないと700mlになる
     db.prepare(
       `INSERT INTO products (uid, name, volume_ml, list_price, jan_code)
-       VALUES (?, 'JOCHU ホワイト35 300ml', 300, 1500, '4589501590860')`
+       VALUES (?, 'JOCHU ホワイト35 300ml', 300, 1500, '4589501590907')`
+    ).run(generateUid(db, 'products'));
+    db.prepare(
+      `INSERT INTO products (uid, name, volume_ml, list_price, jan_code)
+       VALUES (?, 'JOCHU White NOTO 35 700ml without box', 700, 3500, '4589501590860')`
     ).run(generateUid(db, 'products'));
   }));
   // src/ の require は harness.setup のあと（テスト用DBを掴ませるため）
@@ -141,10 +147,35 @@ test('受注として登録される（得意先は支店、納品希望日＝�
   assert.equal(row.sales_amount, Math.round(1500 * 24 * 0.7));
 });
 
+test('FAXのJAN（…860）は読み替えて300mlにする。商品名の容量でも検算する', () => {
+  const r = svc.importFromTexts([PIECES_MAC], { dryRun: true });
+  assert.equal(r.status, 'dry_run');
+  assert.equal(r.parsed.volumeMl, 300);
+  assert.equal(r.plan.productName, 'JOCHU ホワイト35 300ml');
+  assert.equal(r.plan.quantity, 6);
+});
+
+test('商品名の容量とJANの商品が合わなければ登録しない', () => {
+  const wrong = PIECES_MAC.replace('3 5300ML', '3 5700ML').replace('73066182', '73066183');
+  const r = svc.importFromTexts([wrong]);
+  assert.equal(r.status, 'needs_review');
+  assert.ok(r.reasons.some((m) => m.includes('FAXの商品名は700ml')));
+});
+
+test('手で登録した受注（備考「発注番号：…」）があれば二重に登録しない', () => {
+  const orderService = require('../../src/services/orderService');
+  orderService.submitOrder({
+    orderedOn: '2026-10-01', customerId: 2, productId: 1, quantity: 6, note: '発注番号：73066182',
+  });
+  const r = svc.importFromTexts([PIECES_MAC]);
+  assert.equal(r.status, 'duplicate');
+  assert.match(r.reasons[0], /73066182/);
+});
+
 test('同じ発注番号は二重に登録しない', () => {
   const r = svc.importFromTexts([PSM4]);
   assert.equal(r.status, 'duplicate');
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 2); // FAX取込1件＋手入力1件
 });
 
 test('別の支店（七尾）の発注書は七尾の得意先になる', () => {
@@ -167,7 +198,7 @@ test('得意先が決まらないときは登録せず、候補を付けて要�
   assert.equal(r.status, 'needs_review');
   assert.ok(r.reasons.some((m) => m.includes('カナカン酒類富山')));
   assert.ok(r.candidates.customer.length > 0);
-  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 1);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, 2);
 });
 
 test('JANが商品マスタにないときは登録せず要確認にする', () => {
