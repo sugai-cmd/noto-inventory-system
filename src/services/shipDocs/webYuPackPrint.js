@@ -88,6 +88,7 @@ async function login(page, env, rec) {
  */
 async function uploadYuPack(context, csvFile, { env = process.env, rec }) {
   let page = await context.newPage();
+  let listPage = null;
   try {
     await page.goto(env.WEBYUPACK_URL || DEFAULT_URL, { waitUntil: 'domcontentloaded' });
     await rec.snap(page, 'yupack_top');
@@ -103,9 +104,23 @@ async function uploadYuPack(context, csvFile, { env = process.env, rec }) {
     }
     await rec.snap(page, 'yupack_schedule_list');
 
-    if (!(await clickByText(page, /^アップロード$|アップロード/))) {
+    // 一覧の「アップロード」ボタン（<input type=button name=Uplod onclick=openUplodWin()>）は
+    // アップロード画面を別ウィンドウで開く（2026-10-13 確認）。開いたウィンドウに切り替えて続ける。
+    listPage = page;
+    const popupPromise = page.context().waitForEvent('page', { timeout: 10000 }).catch(() => null);
+    const uplodButton = page.locator('input[name=Uplod], input[type=button][value="アップロード"]').first();
+    const openedUpload =
+      (await uplodButton.click({ timeout: 5000 }).then(() => true).catch(() => false)) ||
+      (await clickByText(page, /^アップロード$|アップロード/));
+    if (!openedUpload) {
       throw new StepError('出荷予定データ一覧に「アップロード」が見つかりません', { step: 'open_upload' });
     }
+    const popup = await popupPromise;
+    if (popup) {
+      await popup.waitForLoadState('domcontentloaded').catch(() => {});
+      page = popup;
+    }
+    await page.locator('input[type=file]').first().waitFor({ state: 'attached', timeout: 10000 }).catch(() => {});
     await rec.snap(page, 'yupack_upload_page');
 
     // ファイル変換定義（標準フォーマット）
@@ -130,6 +145,11 @@ async function uploadYuPack(context, csvFile, { env = process.env, rec }) {
       (await clickByText(page, /アップロード/));
     if (!clicked) throw new StepError('「アップロード」ボタンが押せません', { step: 'submit' });
     await page.waitForLoadState('networkidle').catch(() => {});
+    // 別ウィンドウが結果表示前に閉じた場合は、一覧画面のほうで結果を見る
+    if (page.isClosed() && listPage) {
+      page = listPage;
+      await page.waitForLoadState('networkidle').catch(() => {});
+    }
     await rec.snap(page, 'yupack_result');
 
     const text = await bodyText(page);
@@ -150,6 +170,7 @@ async function uploadYuPack(context, csvFile, { env = process.env, rec }) {
     throw err;
   } finally {
     await page.close().catch(() => {});
+    if (listPage && listPage !== page) await listPage.close().catch(() => {});
   }
 }
 
