@@ -124,15 +124,30 @@ async function uploadYuPack(context, csvFile, { env = process.env, rec }) {
     await rec.snap(page, 'yupack_upload_page');
 
     // ファイル変換定義（標準フォーマット）
-    const select = page.locator('select').first();
+    // 選び直すと onchange で画面が送信・再表示され、その間はCSV選択欄が見つからない
+    // （2026-10-13 確認。選択肢は「標準フォーマット」1つで最初から選ばれている）。
+    // すでに選ばれているときは触らず、選び直したときは再表示を待つ。
+    const select = page.locator('select#selFleConvrnDef, select').first();
     if (await select.isVisible().catch(() => false)) {
       const want = env.WEBYUPACK_CONVERSION || '標準';
-      const options = await select.locator('option').allInnerTexts();
-      const label = options.find((o) => o.includes(want));
-      if (label) await select.selectOption({ label });
+      const current = await select
+        .evaluate((el) => el.options[el.selectedIndex]?.text ?? '')
+        .catch(() => '');
+      if (!current.includes(want)) {
+        const options = await select.locator('option').allInnerTexts();
+        const label = options.find((o) => o.includes(want));
+        if (label) {
+          await Promise.all([
+            page.waitForLoadState('load').catch(() => {}),
+            select.selectOption({ label }),
+          ]);
+          await page.waitForLoadState('domcontentloaded').catch(() => {});
+        }
+      }
     }
 
     const fileInput = page.locator('input[type=file]').first();
+    await fileInput.waitFor({ state: 'attached', timeout: 10000 }).catch(() => {});
     if (!(await fileInput.count())) {
       throw new StepError('CSVを選ぶ欄が見つかりません', { step: 'choose_file' });
     }
