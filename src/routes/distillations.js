@@ -239,6 +239,53 @@ router.patch(
   }
 );
 
+const addOutputSchema = z.object({
+  collectedOn: dateOnly.optional(),
+  collectedTime: timeOnly.optional(),
+  outputTankId: z.number().int().positive(),
+  outputL: z.number().positive('蒸留量は0より大きい値で入力してください'),
+  outputAbv: z.number().optional(),
+  note: z.string().optional(),
+});
+
+/**
+ * 払出を足す（二次蒸留・分割払出）。
+ * 投入は増やさない。1件の蒸留が払出を複数持てるようにするための口。
+ */
+router.post('/:id/outputs', validateRequest(addOutputSchema), (req, res, next) => {
+  try {
+    res
+      .status(201)
+      .json(distillationService.addDistillationOutput(Number(req.params.id), req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 払出の明細 */
+router.get('/:id/outputs', (req, res, next) => {
+  try {
+    res.json(distillationService.listDistillationOutputs(Number(req.params.id)));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 払出を1件取り消す（継足を取り消してヘッダを引き直す） */
+router.delete('/outputs/:ledgerId', (req, res, next) => {
+  try {
+    res.json(
+      distillationService.cancelDistillationOutput(
+        Number(req.params.ledgerId),
+        { reason: req.body?.reason },
+        req.user
+      )
+    );
+  } catch (err) {
+    next(err);
+  }
+});
+
 // 蒸留量（出力）を直す。完了時に入れた「継足」を差し替える
 const updateOutputSchema = z
   .object({

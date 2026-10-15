@@ -392,6 +392,84 @@ function submitDistillationStart(input) {
 /**
  * 蒸留完了報告。得られた浄酎を払出先タンクへ充填（継足）し、残渣も記録する。
  */
+/**
+ * 浄酎タンクへの「継足」を1行書く。**継足を書くのはここだけ。**
+ *
+ * 蒸留の完了も、あとからの払出の追加（二次蒸留・分割払出）も同じ関数を通す。
+ * 2か所で書くと、片方だけ直したときに在庫と記録が食い違う。
+ */
+function recordDistillationOutput(db, { distillationId, txnDate, toTankId, quantityL, abv, note }) {
+  return db
+    .prepare(
+      `INSERT INTO tank_ledger
+         (txn_date, from_tank_id, txn_type, product_id, to_tank_id, quantity_l, abv,
+          distillation_id, data_kind, note)
+       VALUES
+         (@txnDate, NULL, '継足', NULL, @toTankId, @quantityL, @abv,
+          @distillationId, '運用中（リアルタイム）', @note)`
+    )
+    .run({
+      txnDate,
+      toTankId,
+      quantityL,
+      abv: abv ?? null,
+      distillationId,
+      note: note ?? null,
+    });
+}
+
+/** この蒸留の、取り消されていない払出（継足）の行 */
+function outputRows(db, distillationId) {
+  return db
+    .prepare(
+      `SELECT l.*, t.name AS tank_name, t.code AS tank_code
+         FROM tank_ledger l
+         LEFT JOIN tanks t ON t.id = l.to_tank_id
+        WHERE l.distillation_id = @id AND l.txn_type = '継足' AND l.is_cancelled = 0
+        ORDER BY l.txn_date, l.id`
+    )
+    .all({ id: distillationId });
+}
+
+/**
+ * 蒸留ヘッダの払出欄を、継足の行から引き直す。
+ *
+ * **真値は継足の行。ヘッダはその要約（キャッシュ）。**
+ * tanks.current_volume_l が v_tank_monitor のキャッシュなのと同じ作法で、
+ * 払出のための表は作らない。
+ *
+ *   output_l       … 合計
+ *   output_abv     … 量で加重平均（この蒸留で得た液の平均度数。ロット追跡もこれを見る）
+ *   output_tank_id … 払出先が1つならそのタンク、**複数なら NULL**
+ *                    （どれか1つを代表にすると「そこへ全部入った」という嘘になる）
+ */
+function refreshDistillationOutput(db, distillationId) {
+  const rows = outputRows(db, distillationId);
+
+  const totalL = rows.reduce((sum, r) => sum + r.quantity_l, 0);
+  const tankIds = new Set(rows.map((r) => r.to_tank_id));
+
+  // 度数が入っている行だけで加重平均を出す（空の行に0を入れると平均が下がる）
+  const withAbv = rows.filter((r) => r.abv != null);
+  const abvWeight = withAbv.reduce((sum, r) => sum + r.quantity_l, 0);
+  const weightedAbv = abvWeight
+    ? Number((withAbv.reduce((sum, r) => sum + r.abv * r.quantity_l, 0) / abvWeight).toFixed(2))
+    : null;
+
+  db.prepare(
+    `UPDATE distillations
+        SET output_l = @outputL, output_abv = @outputAbv, output_tank_id = @outputTankId
+      WHERE id = @id`
+  ).run({
+    id: distillationId,
+    outputL: rows.length ? Number(totalL.toFixed(3)) : null,
+    outputAbv: weightedAbv,
+    outputTankId: tankIds.size === 1 ? rows[0].to_tank_id : null,
+  });
+
+  return rows;
+}
+
 function completeDistillation(distillationId, input) {
   const db = getConnection();
 
@@ -432,24 +510,16 @@ function completeDistillation(distillationId, input) {
       completedTime: input.completedTime ?? null,
     });
 
-    // 浄酎容器変動履歴へ「継足」を記録（蒸留IDで紐付け）
-    const tankLedgerResult = db
-      .prepare(
-        `INSERT INTO tank_ledger
-           (txn_date, from_tank_id, txn_type, product_id, to_tank_id, quantity_l, abv,
-            distillation_id, data_kind, note)
-         VALUES
-           (@txnDate, NULL, '継足', NULL, @toTankId, @quantityL, @abv,
-            @distillationId, '運用中（リアルタイム）', @note)`
-      )
-      .run({
-        txnDate: completedOn,
-        toTankId: input.outputTankId,
-        quantityL: input.outputL,
-        abv: input.outputAbv ?? null,
-        distillationId,
-        note: `蒸留 ${distillation.distillation_code} の完了による充填`,
-      });
+    // 浄酎容器変動履歴へ「継足」を記録（蒸留IDで紐付け）。
+    // **継足を書くのはこの関数だけ。** 払出の追加（二次蒸留・分割払出）も同じところを通す
+    const tankLedgerResult = recordDistillationOutput(db, {
+      distillationId,
+      txnDate: completedOn,
+      toTankId: input.outputTankId,
+      quantityL: input.outputL,
+      abv: input.outputAbv ?? null,
+      note: `蒸留 ${distillation.distillation_code} の完了による充填`,
+    });
 
     // 残渣回収記録（任意）。記録を作るなら行き先のタンクは必須（ルート側のスキーマでも必須）
     let residueId = null;
@@ -661,7 +731,12 @@ function list({
 
   const rows = db
     .prepare(
-      `SELECT d.*, t.name AS output_tank_name
+      // 払出が複数の蒸留は output_tank_id が NULL になる（どれか1つを代表にすると嘘になる）。
+      // 一覧の払出先が空欄になってしまうので、継足の件数も出して「2か所」と書けるようにする
+      `SELECT d.*, t.name AS output_tank_name,
+              (SELECT COUNT(DISTINCT l.to_tank_id) FROM tank_ledger l
+                WHERE l.distillation_id = d.id AND l.txn_type = '継足' AND l.is_cancelled = 0
+              ) AS output_tank_count
        FROM distillations d
        LEFT JOIN tanks t ON t.id = d.output_tank_id
        ${whereSql}
@@ -698,7 +773,12 @@ function findById(id) {
   const db = getConnection();
   const distillation = db
     .prepare(
-      `SELECT d.*, t.name AS output_tank_name
+      // 払出が複数の蒸留は output_tank_id が NULL になる（どれか1つを代表にすると嘘になる）。
+      // 一覧の払出先が空欄になってしまうので、継足の件数も出して「2か所」と書けるようにする
+      `SELECT d.*, t.name AS output_tank_name,
+              (SELECT COUNT(DISTINCT l.to_tank_id) FROM tank_ledger l
+                WHERE l.distillation_id = d.id AND l.txn_type = '継足' AND l.is_cancelled = 0
+              ) AS output_tank_count
        FROM distillations d
        LEFT JOIN tanks t ON t.id = d.output_tank_id
        WHERE d.id = ?`
@@ -1187,6 +1267,134 @@ function updateDistillationDetail(detailId, input, actor = null) {
  * 完了時に浄酎タンクへ入れた「継足」が出力量の実体。
  * 投入明細と同じ考え方で、古い継足を取り消して、新しい量で入れ直す。
  */
+/**
+ * 完了した蒸留に払出を足す（二次蒸留・分割払出）。
+ *
+ * 10/09 の記録で必要になった。残渣を蒸留機に残したまま二次にかけているので、
+ * **投入は1回きり**。別の蒸留記録にすると原酒を二重に投入したことになる。
+ * 1件の蒸留が払出を複数持てる形にして、投入は増やさない。
+ *
+ * 1回の払出を複数のタンクに分けた場合も、タンクごとに1行足す。
+ */
+function addDistillationOutput(distillationId, input, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const distillation = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+    if (!distillation) throw new NotFoundError(`蒸留記録が見つかりません (id=${distillationId})`);
+    if (distillation.status !== STATUS_COMPLETED) {
+      throw new ConflictError(
+        `蒸留 ${distillation.distillation_code} はまだ完了していません。` +
+          '先に完了報告を入れてください（1回目の払出はそこで記録します）'
+      );
+    }
+
+    const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(input.outputTankId);
+    if (!tank) throw new NotFoundError(`払出先タンクが見つかりません (id=${input.outputTankId})`);
+
+    const txnDate = input.collectedOn ?? distillation.completed_on ?? today();
+
+    recordDistillationOutput(db, {
+      distillationId,
+      txnDate,
+      toTankId: input.outputTankId,
+      quantityL: input.outputL,
+      abv: input.outputAbv ?? null,
+      note:
+        input.note ??
+        `蒸留 ${distillation.distillation_code} の払出を追加（${txnDate}${input.collectedTime ? ` ${input.collectedTime}` : ''}）`,
+    });
+
+    const rows = refreshDistillationOutput(db, distillationId);
+    const after = db.prepare('SELECT * FROM distillations WHERE id = ?').get(distillationId);
+
+    return { distillation: after, outputs: rows, addedTo: tank };
+  });
+
+  const result = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.output.add',
+    targetType: 'distillations',
+    targetId: distillationId,
+    summary:
+      `蒸留 ${result.distillation.distillation_code} に払出を追加` +
+      `（${result.addedTo.name} へ ${input.outputL}L` +
+      `${input.outputAbv != null ? ` / ${input.outputAbv}%` : ''}）` +
+      `／払出は計${result.outputs.length}件・合計 ${result.distillation.output_l}L`,
+  });
+
+  return result;
+}
+
+/**
+ * 払出を1件取り消す。継足を取り消してヘッダを引き直す。
+ *
+ * 間違えたときに戻せないと使えない。最後の1件も取り消せるが、
+ * そのときヘッダの払出は空になる（完了そのものは取り消さない）。
+ */
+function cancelDistillationOutput(ledgerId, { reason } = {}, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const row = db
+      .prepare(
+        `SELECT l.*, d.distillation_code, t.name AS tank_name
+           FROM tank_ledger l
+           JOIN distillations d ON d.id = l.distillation_id
+           LEFT JOIN tanks t ON t.id = l.to_tank_id
+          WHERE l.id = ?`
+      )
+      .get(ledgerId);
+    if (!row) throw new NotFoundError(`払出が見つかりません (id=${ledgerId})`);
+    if (row.txn_type !== '継足') {
+      throw new BusinessRuleError(`この記録は払出（継足）ではありません（${row.txn_type}）`);
+    }
+    if (row.is_cancelled) {
+      throw new ConflictError(`払出 (id=${ledgerId}) は既に取消済みです`);
+    }
+
+    db.prepare(
+      `UPDATE tank_ledger
+          SET is_cancelled = 1, cancel_reason = @reason,
+              cancelled_at = datetime('now'), cancelled_by = @by
+        WHERE id = @id`
+    ).run({ id: ledgerId, reason: reason ?? '(未記入)', by: actor?.id ?? null });
+
+    refreshDistillationOutput(db, row.distillation_id);
+
+    // 減らした結果、既に瓶詰めに使われていて足りなくなるなら断る（まるごと戻る）
+    assertTankMonitorNotNegative(db, [row.to_tank_id]);
+
+    return {
+      code: row.distillation_code,
+      tankName: row.tank_name,
+      quantityL: row.quantity_l,
+      distillation: db.prepare('SELECT * FROM distillations WHERE id = ?').get(row.distillation_id),
+    };
+  });
+
+  const result = run();
+
+  operationLogService.record({
+    user: actor,
+    action: 'distillation.output.cancel',
+    targetType: 'distillations',
+    targetId: result.distillation.id,
+    summary:
+      `蒸留 ${result.code} の払出を取消（${result.tankName} へ ${result.quantityL}L）` +
+      `／理由: ${reason ?? '(未記入)'}`,
+  });
+
+  return result;
+}
+
+/** 蒸留の払出（継足）の明細。画面に出す */
+function listDistillationOutputs(distillationId) {
+  return outputRows(getConnection(), distillationId);
+}
+
 function updateDistillationOutput(distillationId, input, actor = null) {
   const db = getConnection();
 
@@ -1199,6 +1407,18 @@ function updateDistillationOutput(distillationId, input, actor = null) {
       );
     }
 
+    // この蒸留の「継足」（有効なもの）を取り消して1行に入れ直す。
+    //
+    // **払出が複数ある蒸留では使えない。** ここは全部を1行にまとめてしまうので、
+    // 二次蒸留ぶんや分割払出が黙って消える。複数のときは払出の明細から直してもらう
+    const old = outputRows(db, distillationId);
+    if (old.length > 1) {
+      throw new BusinessRuleError(
+        `蒸留 ${current.distillation_code} は払出が${old.length}件あります。` +
+          'ここからはまとめて直せません。払出の明細から、直したい行を取り消して入れ直してください'
+      );
+    }
+
     const outputL = input.outputL ?? current.output_l;
     const outputAbv = Object.hasOwn(input, 'outputAbv') ? input.outputAbv : current.output_abv;
     const outputTankId = input.outputTankId ?? current.output_tank_id;
@@ -1208,14 +1428,6 @@ function updateDistillationOutput(distillationId, input, actor = null) {
     const tank = db.prepare('SELECT * FROM tanks WHERE id = ?').get(outputTankId);
     if (!tank) throw new NotFoundError(`払出先タンクが見つかりません (id=${outputTankId})`);
 
-    // この蒸留の「継足」（有効なもの）を取り消す
-    const old = db
-      .prepare(
-        `SELECT * FROM tank_ledger
-          WHERE distillation_id = ? AND txn_type = '継足' AND is_cancelled = 0
-          ORDER BY id`
-      )
-      .all(distillationId);
 
     for (const row of old) {
       db.prepare(
@@ -1422,6 +1634,9 @@ function addDistillationDetailItem(distillationId, { tankId, volumeL, note, spec
 
 module.exports = {
   addDistillationDetailItem,
+  addDistillationOutput,
+  cancelDistillationOutput,
+  listDistillationOutputs,
   acknowledgeStaleAlert,
   submitRawSakeReceipt,
   submitRawSakeReceipts,

@@ -364,8 +364,6 @@
         </div>
       </div>
 
-      ${outputForm}
-
     <h3>残渣回収</h3>
       <p class="muted" style="margin-top:0;font-size:13px">
         回収量・払出先・食塩のいずれかを入力したときだけ、残渣回収記録に1行残ります。
@@ -1030,7 +1028,11 @@ async function loadDistillations() {
         <td class="num">${num(d.total_input_l, 1)}</td>
         <td><span class="badge ${badge}">${escapeHtml(d.status)}</span></td>
         <td class="num">${d.output_l != null ? num(d.output_l, 1) : ''}</td>
-        <td>${escapeHtml(d.output_tank_name ?? '')}</td>
+        <td>${
+          d.output_tank_name
+            ? escapeHtml(d.output_tank_name)
+            : d.output_tank_count > 1 ? `${d.output_tank_count}か所` : ''
+        }</td>
         <td><div class="row-actions">
           <button class="secondary small" data-detail="${d.id}">詳細</button>
           ${completeBtn}
@@ -1045,6 +1047,8 @@ let currentDetailId = null;
 async function showDetail(id) {
   currentDetailId = id;
   const d = await apiGet(`/api/distillations/${id}`);
+  // 払出（継足）の明細。二次蒸留や分割払出で複数になる
+  const outputs = d.status === '完了' ? await apiGet(`/api/distillations/${id}/outputs`) : [];
   el('detailPanel').style.display = '';
   el('detailCode').textContent = d.distillation_code;
 
@@ -1109,7 +1113,64 @@ async function showDetail(id) {
        </div>`
     : '';
 
-  const outputForm = d.status === '完了'
+  // 払出の明細。1回の蒸留で二次蒸留ぶんや分割払出を複数持てる
+  const outputRowsHtml = outputs.length
+    ? outputs.map((o) => `<tr>
+        <td>${escapeHtml(o.txn_date ?? '')}</td>
+        <td>${escapeHtml(`${o.tank_code ?? ''} ${o.tank_name ?? ''}`.trim())}</td>
+        <td class="num">${num(o.quantity_l, 1)}</td>
+        <td class="num">${o.abv != null ? num(o.abv, 2) : ''}</td>
+        <td>${escapeHtml(o.note ?? '')}</td>
+        <td><button type="button" class="danger small" data-cancel-output="${o.id}">取消</button></td>
+      </tr>`).join('')
+    : '<tr><td colspan="6" class="empty">払出の記録はありません</td></tr>';
+
+  const outputPanel = d.status === '完了'
+    ? `<h3>払出（浄酎タンクへの継足）</h3>
+       <p class="muted" style="margin-top:0;font-size:13px">
+         1回の蒸留で<strong>何回でも払い出せます</strong>。二次蒸留ぶんや、
+         1回の払出を複数のタンクに分けたときは、ここに行を足してください。
+         <strong>投入量は増えません</strong>（同じ蒸留の続きなので）。
+       </p>
+       <div class="table-scroll">
+         <table>
+           <thead><tr><th>日付</th><th>払出先</th><th class="num">量(L)</th>
+                      <th class="num">度数</th><th>備考</th><th></th></tr></thead>
+           <tbody>${outputRowsHtml}</tbody>
+         </table>
+       </div>
+       <div class="grid">
+         <div>
+           <label for="adOutDate">日付</label>
+           <input type="date" id="adOutDate" value="${escapeHtml(d.completed_on ?? '')}">
+         </div>
+         <div>
+           <label for="adOutTank">払出先タンク</label>
+           <select id="adOutTank">${
+             tanks.map((t) => `<option value="${t.id}">${escapeHtml(t.code)} ${escapeHtml(t.name)}</option>`).join('')
+           }</select>
+         </div>
+         <div>
+           <label for="adOutL">量 (L)</label>
+           <input type="number" min="0.1" step="0.1" id="adOutL">
+         </div>
+         <div>
+           <label for="adOutAbv">アルコール度数</label>
+           <input type="number" step="0.01" id="adOutAbv">
+         </div>
+       </div>
+       <div>
+         <label for="adOutNote">備考</label>
+         <input type="text" id="adOutNote" placeholder="二次蒸留 など">
+       </div>
+       <div class="actions">
+         <button type="button" id="adAddOutput">払出を足す</button>
+       </div>`
+    : '';
+
+  // 「蒸留量を直す」は継足を全部まとめ直すので、払出が1件のときだけ出す。
+  // 複数あるときはサーバー側でも断る（二次蒸留ぶんが黙って消えないように）
+  const outputForm = d.status === '完了' && outputs.length <= 1
     ? `<h3>蒸留量（出力）</h3>
        <div class="grid">
          <div>
@@ -1179,6 +1240,8 @@ async function showDetail(id) {
         <tbody>${details}</tbody>
       </table>
     </div>
+
+    ${outputPanel}
 
     ${outputForm}
 
@@ -1298,6 +1361,46 @@ el('detailBody').addEventListener('click', async (e) => {
   if (e.target.closest('#edSaveOutput')) {
     try { await saveOutput(); }
     catch (err) { showMessage('messages', 'error', err.message, err.details); }
+    return;
+  }
+
+  // 払出を足す（二次蒸留・分割払出）。投入量は増えない
+  if (e.target.closest('#adAddOutput')) {
+    const volume = Number(el('adOutL').value);
+    if (!(volume > 0)) {
+      return showMessage('messages', 'error', '払出の量を入れてください');
+    }
+    const abv = el('adOutAbv').value;
+    try {
+      await apiPost(`/api/distillations/${currentDetailId}/outputs`, {
+        collectedOn: el('adOutDate').value || undefined,
+        outputTankId: Number(el('adOutTank').value),
+        outputL: volume,
+        outputAbv: abv === '' ? undefined : Number(abv),
+        note: el('adOutNote').value || undefined,
+      });
+      // 一覧の蒸留量・払出先も変わるので読み直す（詳細だけ直すと上が古いまま残る）
+      await Promise.all([showDetail(currentDetailId), loadDistillations(), loadTanks()]);
+      showMessage('messages', 'ok', `払出を足しました（${volume}L）。浄酎タンクに継足しています`);
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
+    return;
+  }
+
+  // 払出を1件取り消す。継足も取り消して、蒸留量を引き直す
+  const cancelOutput = e.target.closest('[data-cancel-output]');
+  if (cancelOutput) {
+    const reason = prompt('この払出を取り消します。理由を入力してください');
+    if (reason == null) return;
+    try {
+      await api('DELETE', `/api/distillations/outputs/${cancelOutput.dataset.cancelOutput}`,
+        { reason: reason.trim() || null });
+      await Promise.all([showDetail(currentDetailId), loadDistillations(), loadTanks()]);
+      showMessage('messages', 'ok', '払出を取り消しました（浄酎タンクの中身も戻しています）');
+    } catch (err) {
+      showMessage('messages', 'error', err.message, err.details);
+    }
     return;
   }
 

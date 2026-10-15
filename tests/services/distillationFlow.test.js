@@ -237,3 +237,207 @@ test('24時間超の蒸留中アラートが検出される（旧 getStaleDistil
   const relaxed = await api('GET', '/api/distillations/alerts?hours=72');
   assert.equal(relaxed.body.find((d) => d.distillation_code === 'DS-STALE'), undefined);
 });
+
+// --- 払出を複数回に分けて記録する（二次蒸留・分割払出） ----------------------
+//
+// 10/09 の長野浄酎の蒸留で必要になった。
+//   投入27.0L → 一次 13.3L/36.01% → 残渣を**蒸留機に残したまま**二次にかけて 0.8L/2.82%
+//   （出荷タンク4に0.4L・出荷タンク7に0.4L）→ 最終残渣 12.9L
+//
+// **投入は27Lの1回きり。** 二次蒸留を別の蒸留記録にすると、投入27Lを2回
+// （計40.7L）記録することになり、原酒が二重に減る。
+// 1件の蒸留が払出を複数持てる形にして、投入は増やさない。
+
+const outputsOf = (id) =>
+  db
+    .prepare(
+      `SELECT * FROM tank_ledger
+        WHERE distillation_id = ? AND txn_type = '継足' AND is_cancelled = 0
+        ORDER BY id`
+    )
+    .all(id);
+
+const header = (id) => db.prepare('SELECT * FROM distillations WHERE id = ?').get(id);
+/** 浮動小数の誤差で落ちないように、比べる前に丸める */
+const round3 = (v) => Number(v.toFixed(3));
+const tankVolume = (tankId) =>
+  db.prepare('SELECT current_volume_l AS v FROM v_tank_monitor WHERE tank_id = ?').get(tankId).v;
+
+let twoPass = null; // この節で使う蒸留
+
+test('二次蒸留のための蒸留を1件用意する（投入27L・一次払出13.3L）', async () => {
+  // 払出先をもう1本増やす（分割払出を見るため）
+  db.prepare(
+    `INSERT INTO tanks (uid, code, name, container_type, max_volume_l, initial_volume_l)
+     VALUES ('tnk00099', 'T-02', '浄酎タンク2', 'ステンレスタンク', 1000, 0)`
+  ).run();
+
+  const started = await api('POST', '/api/distillations', {
+    startedOn: '2026-10-09',
+    startedTime: '12:57',
+    plannedDuration: '1時間22分',
+    items: [{ tankId: 1, volumeL: 27 }],
+  });
+  assert.equal(started.status, 201, JSON.stringify(started.body));
+  twoPass = started.body.distillationId;
+
+  const done = await api('POST', `/api/distillations/${twoPass}/complete`, {
+    completedOn: '2026-10-09',
+    completedTime: '14:19',
+    outputTankId: 4,
+    outputL: 13.3,
+    outputAbv: 36.01,
+  });
+  assert.equal(done.status, 200, JSON.stringify(done.body));
+
+  assert.equal(outputsOf(twoPass).length, 1);
+  assert.equal(header(twoPass).output_l, 13.3);
+  assert.equal(header(twoPass).output_tank_id, 4, '払出先が1つならそのタンクが入る');
+});
+
+test('完了したあとに払出を足せる（二次蒸留ぶん）', async () => {
+  const before = tankVolume(4);
+
+  const res = await api('POST', `/api/distillations/${twoPass}/outputs`, {
+    collectedOn: '2026-10-09',
+    collectedTime: '16:00',
+    outputTankId: 4,
+    outputL: 0.4,
+    outputAbv: 2.82,
+    note: '二次蒸留: 残渣13.7Lを蒸留機に残したまま再蒸留',
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+
+  assert.equal(outputsOf(twoPass).length, 2, '継足が払出の数だけできること');
+  assert.equal(round3(tankVolume(4)), round3(before + 0.4), '浄酎タンクが足した分だけ増える');
+});
+
+test('1回の払出を2つのタンクに分けられる', async () => {
+  const res = await api('POST', `/api/distillations/${twoPass}/outputs`, {
+    collectedOn: '2026-10-09',
+    collectedTime: '16:00',
+    outputTankId: 6, // 浄酎タンク2
+    outputL: 0.4,
+    outputAbv: 2.82,
+  });
+  assert.equal(res.status, 201, JSON.stringify(res.body));
+
+  assert.equal(outputsOf(twoPass).length, 3);
+  assert.equal(tankVolume(6), 0.4);
+});
+
+test('ヘッダは合計と加重平均になる（単純平均ではない）', () => {
+  const h = header(twoPass);
+
+  // 13.3 + 0.4 + 0.4
+  assert.equal(h.output_l, 14.1);
+
+  // (13.3×36.01 + 0.4×2.82 + 0.4×2.82) ÷ 14.1 = 34.13
+  // 単純平均なら (36.01+2.82+2.82)÷3 = 13.88 になるので、取り違えたら落ちる
+  assert.equal(h.output_abv, 34.13);
+
+  assert.equal(h.output_tank_id, null, '払出先が複数なら、どれか1つを代表にしない');
+});
+
+test('払出を足しても投入は増えない（原酒が二重に減らない）', () => {
+  const h = header(twoPass);
+  assert.equal(h.total_input_l, 27, '投入は27Lの1回きりのまま');
+
+  const drawn = db
+    .prepare(
+      `SELECT COALESCE(SUM(quantity), 0) AS q FROM raw_sake_ledger
+        WHERE distillation_id = ? AND txn_type = '払出' AND is_cancelled = 0`
+    )
+    .get(twoPass).q;
+  assert.equal(drawn, 27, '原酒の払出も27Lのまま');
+});
+
+test('完了していない蒸留には払出を足せない', async () => {
+  const started = await api('POST', '/api/distillations', {
+    startedOn: '2026-10-10',
+    startedTime: '19:35',
+    items: [{ tankId: 1, volumeL: 5 }],
+  });
+  const openId = started.body.distillationId;
+
+  const res = await api('POST', `/api/distillations/${openId}/outputs`, {
+    outputTankId: 4,
+    outputL: 1,
+  });
+  assert.equal(res.status, 409);
+  assert.match(res.body.message, /まだ完了していません/);
+
+  // 完了していれば通ること（対で見ないと空振りする）
+  await api('POST', `/api/distillations/${openId}/complete`, {
+    completedOn: '2026-10-10',
+    completedTime: '21:02',
+    outputTankId: 4,
+    outputL: 2,
+    outputAbv: 30,
+  });
+  const ok = await api('POST', `/api/distillations/${openId}/outputs`, {
+    outputTankId: 4,
+    outputL: 1,
+    outputAbv: 10,
+  });
+  assert.equal(ok.status, 201, JSON.stringify(ok.body));
+});
+
+test('払出が複数あるときは「蒸留量を直す」で一括変更できない', async () => {
+  // ここは継足を全部取り消して1行にまとめるので、二次蒸留ぶんが黙って消える
+  const res = await api('PATCH', `/api/distillations/${twoPass}/output`, { outputL: 99 });
+  assert.equal(res.status, 422, JSON.stringify(res.body));
+  assert.match(res.body.message, /払出が3件あります/);
+
+  assert.equal(outputsOf(twoPass).length, 3, '断ったのに継足が消えています');
+  assert.equal(header(twoPass).output_l, 14.1);
+});
+
+test('払出を1件取り消すと、継足も消えてヘッダが引き直される', async () => {
+  const rows = outputsOf(twoPass);
+  const target = rows[rows.length - 1]; // 浄酎タンク2 への 0.4L
+  assert.equal(tankVolume(6), 0.4, '取消前は入っていること');
+
+  const res = await api('DELETE', `/api/distillations/outputs/${target.id}`, {
+    reason: '入力間違い',
+  });
+  assert.equal(res.status, 200, JSON.stringify(res.body));
+
+  assert.equal(outputsOf(twoPass).length, 2);
+  assert.equal(tankVolume(6), 0, '取り消した分が戻っていません');
+
+  const h = header(twoPass);
+  assert.equal(h.output_l, 13.7, '合計が引き直されていません');
+  assert.equal(h.output_tank_id, 4, '残りが1タンクに戻ったら、そのタンクが入る');
+});
+
+test('払出の明細が読める', async () => {
+  const res = await api('GET', `/api/distillations/${twoPass}/outputs`);
+  assert.equal(res.status, 200);
+  assert.equal(res.body.length, 2);
+  assert.ok(res.body[0].tank_name, '払出先のタンク名が出ること');
+  assert.match(res.body[1].note, /二次蒸留/);
+});
+
+test('継足でない記録は払出として取り消せない', async () => {
+  // 対象の行を**必ず作る**。「無ければ飛ばす」と書くと、行が無いときに
+  // 何も確かめないまま通ってしまう（実際それで空振りしていた）
+  db.prepare(
+    `INSERT INTO tank_ledger (txn_date, txn_type, from_tank_id, quantity_l, distillation_id)
+     VALUES ('2026-10-09', '欠減', 4, 0.1, @id)`
+  ).run({ id: twoPass });
+  const other = db
+    .prepare("SELECT id FROM tank_ledger WHERE txn_type = '欠減' AND is_cancelled = 0 LIMIT 1")
+    .get();
+  assert.ok(other, '前提: 継足でない行があること');
+
+  const res = await api('DELETE', `/api/distillations/outputs/${other.id}`, { reason: '誤操作' });
+  assert.equal(res.status, 422);
+  assert.match(res.body.message, /払出（継足）ではありません/);
+
+  assert.equal(
+    db.prepare('SELECT is_cancelled AS c FROM tank_ledger WHERE id = ?').get(other.id).c,
+    0,
+    '断ったのに取り消されています'
+  );
+});
