@@ -420,12 +420,24 @@ test('払出の明細が読める', async () => {
 });
 
 test('継足でない記録は払出として取り消せない', async () => {
+  // 対象の行を**必ず作る**。「無ければ飛ばす」と書くと、行が無いときに
+  // 何も確かめないまま通ってしまう（実際それで空振りしていた）
+  db.prepare(
+    `INSERT INTO tank_ledger (txn_date, txn_type, from_tank_id, quantity_l, distillation_id)
+     VALUES ('2026-10-09', '欠減', 4, 0.1, @id)`
+  ).run({ id: twoPass });
   const other = db
-    .prepare("SELECT id FROM tank_ledger WHERE txn_type <> '継足' AND is_cancelled = 0 LIMIT 1")
+    .prepare("SELECT id FROM tank_ledger WHERE txn_type = '欠減' AND is_cancelled = 0 LIMIT 1")
     .get();
-  if (!other) return; // 対象が無ければこの確認は飛ばす
+  assert.ok(other, '前提: 継足でない行があること');
 
   const res = await api('DELETE', `/api/distillations/outputs/${other.id}`, { reason: '誤操作' });
   assert.equal(res.status, 422);
   assert.match(res.body.message, /払出（継足）ではありません/);
+
+  assert.equal(
+    db.prepare('SELECT is_cancelled AS c FROM tank_ledger WHERE id = ?').get(other.id).c,
+    0,
+    '断ったのに取り消されています'
+  );
 });
