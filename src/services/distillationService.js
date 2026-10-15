@@ -731,7 +731,12 @@ function list({
 
   const rows = db
     .prepare(
-      `SELECT d.*, t.name AS output_tank_name
+      // 払出が複数の蒸留は output_tank_id が NULL になる（どれか1つを代表にすると嘘になる）。
+      // 一覧の払出先が空欄になってしまうので、継足の件数も出して「2か所」と書けるようにする
+      `SELECT d.*, t.name AS output_tank_name,
+              (SELECT COUNT(DISTINCT l.to_tank_id) FROM tank_ledger l
+                WHERE l.distillation_id = d.id AND l.txn_type = '継足' AND l.is_cancelled = 0
+              ) AS output_tank_count
        FROM distillations d
        LEFT JOIN tanks t ON t.id = d.output_tank_id
        ${whereSql}
@@ -768,7 +773,12 @@ function findById(id) {
   const db = getConnection();
   const distillation = db
     .prepare(
-      `SELECT d.*, t.name AS output_tank_name
+      // 払出が複数の蒸留は output_tank_id が NULL になる（どれか1つを代表にすると嘘になる）。
+      // 一覧の払出先が空欄になってしまうので、継足の件数も出して「2か所」と書けるようにする
+      `SELECT d.*, t.name AS output_tank_name,
+              (SELECT COUNT(DISTINCT l.to_tank_id) FROM tank_ledger l
+                WHERE l.distillation_id = d.id AND l.txn_type = '継足' AND l.is_cancelled = 0
+              ) AS output_tank_count
        FROM distillations d
        LEFT JOIN tanks t ON t.id = d.output_tank_id
        WHERE d.id = ?`
