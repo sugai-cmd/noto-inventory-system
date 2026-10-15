@@ -429,7 +429,7 @@ CREATE TABLE "sample_shipments" (
   data_kind     TEXT,
   note          TEXT,
   created_by    INTEGER REFERENCES users(id)
-);
+, purpose TEXT);
 
 CREATE TABLE sessions (
   token       TEXT PRIMARY KEY,

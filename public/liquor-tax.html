@@ -61,6 +61,23 @@
   </section>
 
   <section class="panel">
+    <h2>区分ごとの内訳</h2>
+    <p class="muted" style="margin-top:0;font-size:13px">
+      サンプル・再発送・販促の<strong>無償出荷も、製造場からの移出なので課税されます</strong>。
+      上の合計に入っています。ここは税務で聞かれたときに切り出して示すための内訳です。
+    </p>
+    <div class="table-scroll">
+      <table>
+        <thead><tr>
+          <th>区分</th><th class="num">本数</th><th class="num">数量計(L)</th>
+          <th class="num">商品数</th><th class="num">酒税額</th>
+        </tr></thead>
+        <tbody id="purposeRows"></tbody>
+      </table>
+    </div>
+  </section>
+
+  <section class="panel">
     <h2>参考（課税額には入れていません）</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
       未納税移出は相手先で課税されるため対象外です。
@@ -146,6 +163,9 @@ function renderReport(report) {
       { label: '本数', value: num(t.quantity), unit: '本' },
       { label: '数量計', value: num(t.totalVolumeL, 2), unit: 'L' },
       { label: '商品数', value: num(t.productCount), unit: '件' },
+      // 無償でも課税移出。合計の内側にあることが分かるようにラベルを「うち」にする
+      { label: 'うち無償の酒税', value: yen(report.freeTotals.taxAmount) },
+      { label: 'うち無償の本数', value: num(report.freeTotals.quantity), unit: '本' },
     ]) +
     // 円未満を丸めない。申告書の端数処理をこちらで決めてしまうと、
     // 丸めた額がそのまま申告額として写される。計算した値をそのまま出す
@@ -175,6 +195,16 @@ function renderReport(report) {
          <th></th>
          <th class="num">${yen(t.taxAmount)}</th></tr>`
     : '';
+
+  el('purposeRows').innerHTML = report.byPurpose.length
+    ? report.byPurpose.map((g) => `<tr>
+        <td>${escapeHtml(g.purpose)}${g.isFree ? '<span class="unit"> 無償</span>' : ''}</td>
+        <td class="num">${num(g.totals.quantity)}</td>
+        <td class="num">${num(g.totals.totalVolumeL, 2)}</td>
+        <td class="num">${num(g.totals.productCount)}</td>
+        <td class="num">${yen(g.totals.taxAmount)}</td>
+      </tr>`).join('')
+    : '<tr><td colspan="5" class="empty">この月の出荷はありません</td></tr>';
 
   // 税率が出せなかった商品。**黙って0円にしない**（申告額が過少になる）
   el('unresolvedPanel').style.display = report.unresolved.length ? '' : 'none';

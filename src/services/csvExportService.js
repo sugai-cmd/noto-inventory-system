@@ -475,31 +475,48 @@ function exportTankMonitor() {
 /**
  * 酒税の月次内訳のCSV出力（申告書への転記用）。
  *
- * 課税移出の内訳を並べ、そのあとに合計行。
- * **税率が引けなかった商品も同じ表に出す**（金額は空、理由つき）。
+ * 課税移出の内訳を**区分（有償／サンプル／再発送／販促）ごと**に並べ、
+ * そのあとに合計行。**税率が引けなかった商品も同じ表に出す**（金額は空、理由つき）。
  * 別ファイルにすると転記のときに見落とす。
+ *
+ * 無償出荷も課税移出なので合計に入っている。区分の列があるので、
+ * 税務で聞かれたときにどれが無償分かを示せる。
  */
 function exportLiquorTax(month) {
   const report = liquorTaxService.monthlyReport(month);
 
-  const rows = report.taxable.rows.map((r) => [
-    r.productName,
-    r.taxCategory ?? '',
-    r.abv ?? '',
-    r.volumeMl ?? '',
-    r.quantity,
-    r.totalVolumeL,
-    r.yenPerKl ?? '',
-    r.taxAmount,
-    '',
-  ]);
+  const rows = [];
 
-  rows.push(['合計', '', '', '', report.taxable.totals.quantity,
+  for (const group of report.byPurpose) {
+    for (const r of group.rows) {
+      rows.push([
+        group.purpose,
+        r.productName,
+        r.taxCategory ?? '',
+        r.abv ?? '',
+        r.volumeMl ?? '',
+        r.quantity,
+        r.totalVolumeL,
+        r.yenPerKl ?? '',
+        r.taxAmount,
+        '',
+      ]);
+    }
+    rows.push([
+      group.purpose, `${group.purpose} 小計`, '', '', '',
+      group.totals.quantity, group.totals.totalVolumeL, '', group.totals.taxAmount, '',
+    ]);
+  }
+
+  rows.push(['', '合計', '', '', '', report.taxable.totals.quantity,
     report.taxable.totals.totalVolumeL, '', report.taxable.totals.taxAmount, '']);
+  rows.push(['', 'うち無償', '', '', '', report.freeTotals.quantity,
+    report.freeTotals.totalVolumeL, '', report.freeTotals.taxAmount,
+    '無償でも製造場からの移出は課税されます']);
 
   for (const r of report.unresolved) {
     rows.push([
-      r.productName, r.taxCategory ?? '', r.abv ?? '', r.volumeMl ?? '',
+      '', r.productName, r.taxCategory ?? '', r.abv ?? '', r.volumeMl ?? '',
       r.quantity, r.totalVolumeL, '', '', `要確認: ${r.reason}`,
     ]);
   }
@@ -508,7 +525,7 @@ function exportLiquorTax(month) {
   for (const [type, ref] of Object.entries(report.reference)) {
     for (const r of ref.rows) {
       rows.push([
-        r.productName, r.taxCategory ?? '', r.abv ?? '', r.volumeMl ?? '',
+        '', r.productName, r.taxCategory ?? '', r.abv ?? '', r.volumeMl ?? '',
         r.quantity, r.totalVolumeL, r.yenPerKl ?? '', r.taxAmount ?? '',
         `参考（${type}／課税額には入れていません）`,
       ]);
@@ -517,7 +534,8 @@ function exportLiquorTax(month) {
 
   return {
     csv: toCsv(
-      ['商品名称', '酒類区分', '度数', '容量(ml)', '本数', '数量計(L)', '円/kl', '酒税額(円)', '備考'],
+      ['区分', '商品名称', '酒類区分', '度数', '容量(ml)', '本数', '数量計(L)',
+       '円/kl', '酒税額(円)', '備考'],
       rows
     ),
     count: report.taxable.rows.length,

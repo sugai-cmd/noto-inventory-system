@@ -9,6 +9,9 @@ const { today } = require('../utils/dateUtil');
 const { NotFoundError, BusinessRuleError, ConflictError } = require('../utils/errors');
 const operationLogService = require('./operationLogService');
 const liquorTaxService = require('./liquorTaxService');
+const {
+  SHIPMENT_PURPOSES, DEFAULT_SHIPMENT_PURPOSE, normalizeShipmentPurpose, ledgerNoteFor,
+} = require('../utils/shipmentPurpose');
 
 /**
  * 返品。得意先から戻ってきた商品を在庫に戻す。
@@ -98,6 +101,7 @@ function submitSampleShipment(input, actor = null) {
 
   const run = db.transaction(() => {
     const shippedOn = input.shippedOn ?? today();
+    const purpose = normalizeShipmentPurpose(input.purpose);
 
     const product = db.prepare('SELECT * FROM products WHERE id = ?').get(input.productId);
     if (!product) throw new NotFoundError(`商品が見つかりません (id=${input.productId})`);
@@ -114,10 +118,10 @@ function submitSampleShipment(input, actor = null) {
       .prepare(
         `INSERT INTO sample_shipments
            (sample_no, shipped_on, customer_id, contact_name, product_id, quantity,
-            followup_on, phone, data_kind, note, created_by)
+            followup_on, phone, purpose, data_kind, note, created_by)
          VALUES
            (@sampleNo, @shippedOn, @customerId, @contactName, @productId, @quantity,
-            @followupOn, @phone, '運用中（リアルタイム）', @note, @createdBy)`
+            @followupOn, @phone, @purpose, '運用中（リアルタイム）', @note, @createdBy)`
       )
       .run({
         sampleNo,
@@ -128,6 +132,7 @@ function submitSampleShipment(input, actor = null) {
         quantity: input.quantity,
         followupOn: input.followupOn ?? null,
         phone: input.phone ?? null,
+        purpose,
         note: input.note ?? null,
         createdBy: actor?.id ?? null,
       });
@@ -155,7 +160,7 @@ function submitSampleShipment(input, actor = null) {
         // 無償でも課税移出。容量(ml)×本数×税率で出す（tax_per_unit は読まない）
         taxAmount: liquorTaxService.ledgerTaxAmount(db, product, input.quantity, shippedOn),
         storagePlace: '浄溜所',
-        note: `サンプル送付 ${sampleNo}`,
+        note: ledgerNoteFor(purpose, sampleNo),
         createdBy: actor?.id ?? null,
       });
 
@@ -168,12 +173,15 @@ function submitSampleShipment(input, actor = null) {
       action: 'sample.ship',
       targetType: 'sample_shipments',
       targetId: sampleId,
-      summary: `サンプル ${sampleNo} を送付（${product.name} ${input.quantity}本${customer ? ` / ${customer.name}` : ''}）`,
+      summary:
+        `無償出荷 ${sampleNo}（${purpose}）を登録` +
+        `（${product.name} ${input.quantity}本${customer ? ` / ${customer.name}` : ''}）`,
     });
 
     return {
       sampleId,
       sampleNo,
+      purpose,
       stockLedgerId: ledgerResult.lastInsertRowid,
       after,
     };
@@ -221,6 +229,7 @@ function listSampleShipments({
   order = 'desc',
   customer = null,
   contact = null,
+  purpose = null,
   from = null,
   to = null,
 } = {}) {
@@ -237,6 +246,11 @@ function listSampleShipments({
   if (contact) {
     where.push('s.contact_name LIKE @contact');
     params.contact = `%${contact}%`;
+  }
+  if (purpose) {
+    // 列が空の行（移行ローダー経由で入った分）は「サンプル」として扱う
+    where.push(`COALESCE(s.purpose, '${DEFAULT_SHIPMENT_PURPOSE}') = @purpose`);
+    params.purpose = normalizeShipmentPurpose(purpose);
   }
   if (from) {
     where.push('s.shipped_on >= @from');
@@ -270,7 +284,51 @@ function listSampleShipments({
     )
     .all({ ...params, limit, offset });
 
-  return { rows, total };
+  return {
+    // 列が空の行も「サンプル」として出す（SQLの絞り込みと同じ扱いにする）
+    rows: rows.map((r) => ({ ...r, purpose: r.purpose ?? DEFAULT_SHIPMENT_PURPOSE })),
+    total,
+  };
+}
+
+/**
+ * 無償出荷の**区分だけ**をあとから直す。
+ *
+ * 選び間違いは必ず起きるし、この改修より前に記録した分も直せる必要がある。
+ * **数量・商品・日付・得意先は触らない**（在庫と酒税が動いてしまうため。
+ * それらを直したいときは、台帳から入れ直す）。
+ *
+ * 在庫変動履歴の備考も合わせて書き直す。あの備考はこちらが組み立てた文で、
+ * 利用者が書いた備考（sample_shipments.note）とは別の欄なので上書きしてよい。
+ */
+function updateSampleShipmentPurpose(sampleId, purpose, actor = null) {
+  const db = getConnection();
+
+  const run = db.transaction(() => {
+    const sample = db.prepare('SELECT * FROM sample_shipments WHERE id = ?').get(sampleId);
+    if (!sample) throw new NotFoundError(`無償出荷が見つかりません (id=${sampleId})`);
+
+    const next = normalizeShipmentPurpose(purpose);
+    const before = sample.purpose ?? DEFAULT_SHIPMENT_PURPOSE;
+
+    db.prepare('UPDATE sample_shipments SET purpose = ? WHERE id = ?').run(next, sampleId);
+    db.prepare(
+      `UPDATE product_stock_ledger SET note = ?
+        WHERE sample_shipment_id = ? AND txn_type = '出荷'`
+    ).run(ledgerNoteFor(next, sample.sample_no), sampleId);
+
+    operationLogService.record({
+      user: actor,
+      action: 'sample.purpose.update',
+      targetType: 'sample_shipments',
+      targetId: sampleId,
+      summary: `無償出荷 ${sample.sample_no} の区分: ${before} → ${next}`,
+    });
+
+    return { sampleId, sampleNo: sample.sample_no, purpose: next, before };
+  });
+
+  return run();
 }
 
 /**
@@ -429,9 +487,12 @@ function listPendingConsignmentOrders() {
 }
 
 module.exports = {
+  SHIPMENT_PURPOSES,
+  DEFAULT_SHIPMENT_PURPOSE,
   submitProductReturn,
   submitSampleShipment,
   listSampleShipments,
+  updateSampleShipmentPurpose,
   submitConsignmentReport,
   listConsignmentReports,
   listPendingConsignmentOrders,
