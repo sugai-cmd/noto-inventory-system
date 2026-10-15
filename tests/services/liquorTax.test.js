@@ -457,9 +457,12 @@ test('酒税の内訳をCSVで出せる（合計行と要確認つき）', async
   const lines = body.trim().split('\r\n');
   assert.equal(
     lines[0].replace('﻿', ''),
-    '商品名称,酒類区分,度数,容量(ml),本数,数量計(L),円/kl,酒税額(円),備考'
+    '区分,商品名称,酒類区分,度数,容量(ml),本数,数量計(L),円/kl,酒税額(円),備考'
   );
-  assert.ok(lines.some((l) => l.startsWith('合計,')), '合計行があること');
+  assert.ok(lines.some((l) => l.startsWith(',合計,')), '合計行があること');
+  // 無償分は合計に入っている（無償でも課税移出）。切り出して示せるようにしておく
+  assert.ok(lines.some((l) => l.startsWith(',うち無償,')), 'うち無償の行があること');
+  assert.ok(lines.some((l) => l.startsWith('有償,')), '区分の列が入ること');
   // 税率が引けなかった商品も同じ表に出す（別ファイルだと転記で見落とす）
   assert.ok(
     lines.some((l) => l.includes('区分なしの酒 300ml') && l.includes('要確認')),

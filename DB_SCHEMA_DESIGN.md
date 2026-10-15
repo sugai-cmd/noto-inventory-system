@@ -281,6 +281,7 @@ CREATE TABLE sample_shipments (
   quantity           INTEGER NOT NULL,
   followup_on        TEXT CHECK (followup_on IS NULL OR followup_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'), -- 後追い連絡日
   phone              TEXT,
+  purpose            TEXT,                      -- 区分（サンプル／再発送／販促）。0031。空はサンプル扱い
   data_kind          TEXT,                      -- データ区分
   note               TEXT
   -- 対応する出荷履歴行への参照は product_stock_ledger.sample_shipment_id 側に一本化
@@ -3923,3 +3924,55 @@ SqliteError: UNIQUE constraint failed: consignment_reports.report_no
 
 加重平均の試験は、**単純平均なら落ちる値**を選んである
 （13.3L/36.01% ＋ 0.4L/2.82% ＋ 0.4L/2.82% → 34.13。単純平均なら13.88）。
+
+---
+
+## 37. 無償出荷に「区分」を足した（0031）
+
+ふるさと納税の発送で**キャップシールを貼り忘れて液漏れし**、代替品を再発送することになった。
+**売上は立てないが、酒税は発生する**（無償でも製造場からの移出は課税される）。
+
+### もともとこの形になっていた
+
+`shipmentService.submitSampleShipment`（サンプル送付）が、そのままこの要件を満たしていた。
+
+- 商品在庫変動履歴に `txn_type='出荷'` の行を作り、`liquorTaxService.ledgerTaxAmount` で
+  **課税額も入れる**
+- 受注とは無関係なので、**売上・売上目標・請求・納品書には一切乗らない**
+- 酒税の月次集計は `txn_type='出荷'` を全部拾うので、課税移出として集計される
+
+足りなかったのは**「なぜ無償で出したか」が記録に残らない**ことだけで、どれも
+「サンプル送付」になっていた。税務で聞かれたときに、サンプル配布と事故による再発送を
+区別して示せない。
+
+### 入れたもの
+
+`sample_shipments.purpose`（サンプル／再発送／販促）。
+
+- `ALTER TABLE` では `CHECK` を足せないので、**値の検証はサービス側**で行う
+  （`utils/shipmentPurpose.js`。`tankService.TANK_KINDS` と同じ作法）
+- **区分の一覧を持つのは `utils/shipmentPurpose.js` だけ**。画面も API も酒税の集計もそこを見る。
+  サービス同士（`shipmentService` ⇔ `liquorTaxService`）で読み合うと循環参照になるので、
+  定数だけを `utils/` に置いた
+- 列が空の行は「サンプル」として扱う（移行ローダー経由で入った行が一覧から消えないように）。
+  SQLの絞り込みもJSの返り値も同じ `COALESCE` 扱いに揃えてある
+- **表名 `sample_shipments` は変えない。** 改名は得るものが無く、移行の危険だけ増える
+
+### 区分だけをあとから直せる
+
+`PATCH /api/shipments/samples/:id`。選び間違いは必ず起きるし、この改修より前に記録した分も
+直せる必要がある。入力は `.strict()` で**区分だけ**に絞ってある（数量・商品・日付を混ぜると400）。
+在庫と酒税が動く欄をこの口から触らせない、という意味。
+
+在庫変動履歴の備考（`サンプル送付 S2610-0001` → `再発送 S2610-0001`）も合わせて書き直す。
+あの備考はこちらが組み立てた文で、利用者が書いた備考（`sample_shipments.note`）とは別の欄。
+
+### 酒税タブの「うち無償」
+
+`liquorTaxService.monthlyReport` が `byPurpose`（有償＋区分ごと）と `freeTotals` を返す。
+`ledgerRows` に `sample_shipments` を LEFT JOIN しただけで、**クエリは増やしていない**。
+課税移出に使った行をそのまま振り分けるので、**合計と食い違わない**（合計 ＝ 有償 ＋ 無償）。
+
+酒税CSVにも区分の列を足した。**無償分も合計に入っている**（課税移出だから）ので、
+区分の列は「申告額から抜くための印」ではなく、**税務で聞かれたときに切り出すための印**。
+

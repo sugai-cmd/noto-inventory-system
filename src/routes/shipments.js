@@ -31,8 +31,15 @@ const sampleSchema = z.object({
   phone: z.string().optional(),
   shippedOn: dateOnly.optional(),
   followupOn: dateOnly.optional(),
+  // 区分の一覧は shipmentService が持つ。ここで書き写さない
+  purpose: z.string().optional(),
   note: z.string().optional(),
 });
+
+/** 区分だけを直す。数量・商品・日付は送れない（在庫と酒税が動くため） */
+const purposeSchema = z
+  .object({ purpose: z.string().min(1, '区分は必須です') })
+  .strict();
 
 const consignmentSchema = z.object({
   orderId: z.number().int().positive(),
@@ -55,15 +62,24 @@ router.post('/returns', validateRequest(returnSchema), (req, res, next) => {
   }
 });
 
-// --- サンプル・販促資料送付 ---
+// --- 無償出荷（サンプル・再発送・販促） ---
 
-/** サンプル送付の一覧。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
+/** 選べる区分の一覧（画面のプルダウン用） */
+router.get('/samples/purposes', (req, res) => {
+  res.json({
+    purposes: shipmentService.SHIPMENT_PURPOSES,
+    default: shipmentService.DEFAULT_SHIPMENT_PURPOSE,
+  });
+});
+
+/** 無償出荷の一覧。`{rows, total}` を返す（total は同じ絞り込みでの全件数） */
 router.get('/samples', (req, res) => {
   const q = req.query;
   res.json(
     shipmentService.listSampleShipments({
       customer: q.customer || undefined,
       contact: q.contact || undefined,
+      purpose: q.purpose || undefined,
       from: q.from || undefined,
       to: q.to || undefined,
       limit: Math.min(Number(q.limit) || 200, 1000),
@@ -77,6 +93,21 @@ router.get('/samples', (req, res) => {
 router.post('/samples', validateRequest(sampleSchema), (req, res, next) => {
   try {
     res.status(201).json(shipmentService.submitSampleShipment(req.body, req.user));
+  } catch (err) {
+    next(err);
+  }
+});
+
+/** 区分をあとから直す */
+router.patch('/samples/:id', validateRequest(purposeSchema), (req, res, next) => {
+  try {
+    res.json(
+      shipmentService.updateSampleShipmentPurpose(
+        Number(req.params.id),
+        req.body.purpose,
+        req.user
+      )
+    );
   } catch (err) {
     next(err);
   }

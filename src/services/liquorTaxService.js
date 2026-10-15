@@ -32,6 +32,7 @@ const { getConnection } = require('../db/connection');
 const { BusinessRuleError, NotFoundError } = require('../utils/errors');
 const { lastDayOfMonth } = require('../utils/dateUtil');
 const operationLogService = require('./operationLogService');
+const shipmentPurpose = require('../utils/shipmentPurpose');
 
 const MONTH_RE = /^\d{4}-\d{2}$/;
 const ML_PER_KL = 1_000_000;
@@ -247,6 +248,9 @@ function ledgerTaxAmount(db, product, quantity, onDate) {
 // 月次集計
 // ---------------------------------------------------------------------------
 
+// 受注に紐づく出荷。無償出荷の区分と並べるためのラベル（表には無い値）
+const PAID_LABEL = '有償';
+
 // 課税移出。受注の発送もサンプル送付も、txn_type は '出荷'
 const TAXABLE_TYPE = '出荷';
 // 参考として別枠に出すもの。未納税移出は相手先で課税されるので**除外**、
@@ -259,15 +263,27 @@ function ledgerRows(db, month, txnType) {
       `SELECT l.id, l.txn_date, l.quantity, l.order_id, l.sample_shipment_id,
               l.counterparty, l.tax_amount AS ledger_tax_amount,
               p.id AS product_id, p.name AS product_name, p.volume_ml, p.abv,
-              p.tax_category
+              p.tax_category,
+              COALESCE(ss.purpose, @defaultPurpose) AS purpose
          FROM product_stock_ledger l
          JOIN products p ON p.id = l.product_id
+         LEFT JOIN sample_shipments ss ON ss.id = l.sample_shipment_id
         WHERE l.txn_type = @txnType
           AND l.is_cancelled = 0
           AND substr(l.txn_date, 1, 7) = @month
         ORDER BY p.name, l.txn_date, l.id`
     )
-    .all({ month, txnType });
+    .all({ month, txnType, defaultPurpose: shipmentPurpose.DEFAULT_SHIPMENT_PURPOSE });
+}
+
+/**
+ * 無償出荷の区分のラベル。受注に紐づく出荷は「有償」。
+ *
+ * 無償の行は sample_shipments と結び付いている（受注とは無関係なので売上は立たない）。
+ * 区分の列が空の古い行は「サンプル」になる（0031 の断り書きと同じ扱い）。
+ */
+function purposeOf(row) {
+  return row.sample_shipment_id == null ? PAID_LABEL : row.purpose;
 }
 
 /**
@@ -343,7 +359,33 @@ function monthlyReport(month) {
   const db = getConnection();
   const onDate = endOfMonth(month);
 
-  const taxable = summarize(db, ledgerRows(db, month, TAXABLE_TYPE), onDate);
+  const taxableRows = ledgerRows(db, month, TAXABLE_TYPE);
+  const taxable = summarize(db, taxableRows, onDate);
+
+  // 区分ごとの内訳。**同じ行をもう一度読み直さない**（合計と食い違わないように、
+  // 課税移出に使った行をそのまま振り分ける）
+  const groups = [PAID_LABEL, ...shipmentPurpose.SHIPMENT_PURPOSES]
+    .map((purpose) => {
+      const rows = taxableRows.filter((row) => purposeOf(row) === purpose);
+      const summary = summarize(db, rows, onDate);
+      return {
+        purpose,
+        isFree: purpose !== PAID_LABEL,
+        rows: summary.rows,
+        unresolved: summary.unresolved,
+        totals: summary.totals,
+      };
+    })
+    // その月に1件も無い区分は出さない
+    .filter((g) => g.totals.quantity > 0 || g.unresolved.length > 0);
+
+  const freeGroups = groups.filter((g) => g.isFree);
+  const freeTotals = {
+    quantity: freeGroups.reduce((t, g) => t + g.totals.quantity, 0),
+    totalVolumeL: yen(freeGroups.reduce((t, g) => t + g.totals.totalVolumeL, 0)),
+    taxAmount: yen(freeGroups.reduce((t, g) => t + g.totals.taxAmount, 0)),
+    rowCount: freeGroups.reduce((t, g) => t + g.unresolved.length + g.rows.length, 0),
+  };
 
   const reference = {};
   for (const type of REFERENCE_TYPES) {
@@ -358,6 +400,10 @@ function monthlyReport(month) {
     month,
     rateAsOf: onDate,
     taxable: { rows: taxable.rows, totals: taxable.totals },
+    // 区分ごとの内訳と、無償分の合計。**無償でも製造場からの移出は課税される**ので
+    // taxable に入っている。税務で聞かれたときに切り出して示せるようにしておく
+    byPurpose: groups,
+    freeTotals,
     // 名指しにする。黙って0円にすると申告額が過少になる
     unresolved: taxable.unresolved,
     reference,
