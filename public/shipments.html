@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>返品・サンプル・委託 | NOTO Naorai</title>
+  <title>返品・無償出荷・委託 | NOTO Naorai</title>
   <link rel="icon" href="favicon.svg" type="image/svg+xml">
   <link rel="stylesheet" href="assets/css/app.css">
 </head>
@@ -47,9 +47,11 @@
   </section>
 
   <section class="panel">
-    <h2>サンプル・販促資料送付</h2>
+    <h2>無償出荷（サンプル・再発送など）</h2>
     <p class="muted" style="margin-top:0;font-size:13px">
-      無償送付を記録します。サンプルIDが採番され、在庫からも引かれます。
+      代金をもらわずに出した分を記録します。IDが採番され、在庫からも引かれます。<br>
+      <strong>売上は立ちませんが、酒税はかかります</strong>（無償でも製造場からの移出は課税されます）。
+      区分は、あとから一覧の行で直せます。
     </p>
     <form id="sampleForm">
       <div class="grid">
@@ -73,6 +75,10 @@
             <span class="name"></span><button type="button" class="secondary small">変更</button>
           </div>
         </div>
+        <div>
+          <label for="smpPurpose">区分</label>
+          <select id="smpPurpose" required></select>
+        </div>
         <div><label for="smpQuantity">本数</label><input type="number" id="smpQuantity" min="1" step="1" required></div>
         <div><label for="smpContact">先方担当者名</label><input type="text" id="smpContact"></div>
         <div><label for="smpPhone">電話番号</label><input type="text" id="smpPhone"></div>
@@ -80,9 +86,9 @@
         <div><label for="smpFollowup">後追い連絡日</label><input type="date" id="smpFollowup"></div>
       </div>
       <div style="margin-top:12px"><label for="smpNote">備考</label><input type="text" id="smpNote"></div>
-      <div class="actions"><button type="submit" id="smpSubmit">サンプル送付を登録</button></div>
+      <div class="actions"><button type="submit" id="smpSubmit">無償出荷を登録</button></div>
     </form>
-    <h3>送付履歴</h3>
+    <h3>無償出荷の履歴</h3>
 
     <div class="grid" style="margin-bottom:12px">
       <div>
@@ -92,6 +98,10 @@
       <div>
         <label for="smpFContact">担当者</label>
         <input type="text" id="smpFContact" placeholder="先方担当者名">
+      </div>
+      <div>
+        <label for="smpFPurpose">区分</label>
+        <select id="smpFPurpose"><option value="">すべて</option></select>
       </div>
       <div>
         <label for="smpFFrom">発送日（から）</label>
@@ -117,7 +127,8 @@
       <table>
         <thead>
           <tr>
-            <th><button type="button" class="link" data-sort="sample_no">サンプルID</button></th>
+            <th><button type="button" class="link" data-sort="sample_no">ID</button></th>
+            <th>区分</th>
             <th><button type="button" class="link" data-sort="shipped_on">発送日</button></th>
             <th><button type="button" class="link" data-sort="customer_name">送付先</button></th>
             <th><button type="button" class="link" data-sort="contact_name">担当者</button></th>
@@ -216,6 +227,23 @@ el('returnForm').addEventListener('submit', async (e) => {
   }
 });
 
+// 区分の一覧は shipmentService が持つ。**画面に書き写さない**
+// （増やしたときに画面だけ古いままになる）
+let shipmentPurposes = [];
+let defaultPurpose = '';
+
+async function loadPurposes() {
+  const r = await apiGet('/api/shipments/samples/purposes');
+  shipmentPurposes = r.purposes;
+  defaultPurpose = r.default;
+
+  const options = shipmentPurposes
+    .map((p) => `<option value="${escapeHtml(p)}">${escapeHtml(p)}</option>`).join('');
+  el('smpPurpose').innerHTML = options;
+  el('smpPurpose').value = defaultPurpose;
+  el('smpFPurpose').innerHTML = '<option value="">すべて</option>' + options;
+}
+
 // 一覧の状態（並べ替え・ページ位置）。ヘルパは assets/js/app.js
 const sampleView = createListView('shipped_on');
 const SAMPLE_PAGER = { limit: 'smpLimit', prev: 'smpPrev', next: 'smpNext', range: 'smpRange' };
@@ -224,16 +252,24 @@ async function loadSamples() {
   const params = listQuery(sampleView, SAMPLE_PAGER);
   if (el('smpFCustomer').value.trim()) params.set('customer', el('smpFCustomer').value.trim());
   if (el('smpFContact').value.trim()) params.set('contact', el('smpFContact').value.trim());
+  if (el('smpFPurpose').value) params.set('purpose', el('smpFPurpose').value);
   if (el('smpFFrom').value) params.set('from', el('smpFFrom').value);
   if (el('smpFTo').value) params.set('to', el('smpFTo').value);
 
   const { rows, total } = asListResult(
-    await apiGet(`/api/shipments/samples?${params}`), 'サンプル送付履歴');
+    await apiGet(`/api/shipments/samples?${params}`), '無償出荷の履歴');
   sampleView.total = total;
 
   el('sampleRows').innerHTML = rows.length
     ? rows.map((s) => `<tr>
         <td>${escapeHtml(s.sample_no)}</td>
+        <td>
+          <select class="purpose-edit" data-id="${s.id}" aria-label="${escapeHtml(s.sample_no)} の区分">
+            ${shipmentPurposes.map((p) =>
+              `<option value="${escapeHtml(p)}"${p === s.purpose ? ' selected' : ''}>${escapeHtml(p)}</option>`
+            ).join('')}
+          </select>
+        </td>
         <td>${escapeHtml(s.shipped_on)}</td>
         <td>${escapeHtml(s.customer_name ?? '')}</td>
         <td>${escapeHtml(s.contact_name ?? '')}</td>
@@ -241,7 +277,29 @@ async function loadSamples() {
         <td class="num">${s.quantity != null ? num(s.quantity) : ''}</td>
         <td>${escapeHtml(s.note ?? '')}</td>
       </tr>`).join('')
-    : '<tr><td colspan="7" class="empty">該当する送付履歴がありません</td></tr>';
+    : '<tr><td colspan="8" class="empty">該当する無償出荷がありません</td></tr>';
+
+  // 区分だけをその場で直す。数量・商品・日付は送れない（在庫と酒税が動くため）
+  for (const select of el('sampleRows').querySelectorAll('.purpose-edit')) {
+    select.addEventListener('change', async () => {
+      clearMessage('messages');
+      const before = select.dataset.before ?? select.value;
+      select.disabled = true;
+      try {
+        const r = await apiPatch(`/api/shipments/samples/${select.dataset.id}`,
+          { purpose: select.value });
+        await loadSamples();
+        showMessage('messages', 'ok',
+          `${r.sampleNo} の区分を「${r.before}」から「${r.purpose}」に直しました`);
+      } catch (err) {
+        select.value = before;
+        showMessage('messages', 'error', err.message, err.details);
+      } finally {
+        select.disabled = false;
+      }
+    });
+    select.dataset.before = select.value;
+  }
 
   renderSortMarks(sampleView, el('sampleRows').closest('table'));
   renderPager(sampleView, SAMPLE_PAGER, rows.length);
@@ -252,7 +310,7 @@ const reloadSamples = () =>
 
 // 絞り込みを変えたら1ページ目に戻す。文字の欄は change（入力のたびに投げない）
 wirePager(sampleView, SAMPLE_PAGER, reloadSamples,
-  ['smpFCustomer', 'smpFContact', 'smpFFrom', 'smpFTo']);
+  ['smpFCustomer', 'smpFContact', 'smpFPurpose', 'smpFFrom', 'smpFTo']);
 wireSortHeaders(sampleView, 'sampleRows', reloadSamples);
 
 el('sampleForm').addEventListener('submit', async (e) => {
@@ -264,6 +322,7 @@ el('sampleForm').addEventListener('submit', async (e) => {
     productId: smpProduct.value.id,
     quantity: Number(el('smpQuantity').value),
     shippedOn: el('smpDate').value,
+    purpose: el('smpPurpose').value,
   };
   if (smpCustomer.value) payload.customerId = smpCustomer.value.id;
   for (const [id, key] of [['smpContact','contactName'],['smpPhone','phone'],['smpNote','note']]) {
@@ -275,9 +334,12 @@ el('sampleForm').addEventListener('submit', async (e) => {
   try {
     const r = await apiPost('/api/shipments/samples', payload);
     showMessage('messages', 'ok',
-      `サンプル ${r.sampleNo} を登録しました（在庫 ${r.after.product_stock}本）`);
+      `無償出荷 ${r.sampleNo}（${r.purpose}）を登録しました` +
+      `（在庫 ${r.after.product_stock}本／酒税タブのその月に乗ります。売上は立ちません）`);
     el('sampleForm').reset();
     el('smpDate').value = todayStr();
+    // reset() で区分が空になるので既定に戻す
+    el('smpPurpose').value = defaultPurpose;
     smpProduct.reset(); smpCustomer.reset();
     await loadSamples();
   } catch (err) {
@@ -346,7 +408,8 @@ el('consignmentForm').addEventListener('submit', async (e) => {
 el('retDate').value = todayStr();
 el('smpDate').value = todayStr();
 el('conMonth').value = todayStr().slice(0, 7);
-Promise.all([loadSamples(), loadConsignment()])
+// 区分の選択肢は一覧の行でも使うので、**一覧より先に**読む
+Promise.all([loadPurposes().then(loadSamples), loadConsignment()])
   .catch((err) => showMessage('messages', 'error', err.message));
 </script>
 </body>

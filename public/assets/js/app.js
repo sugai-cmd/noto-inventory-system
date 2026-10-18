@@ -219,7 +219,7 @@ function renderNav(current) {
     ['index.html', 'ダッシュボード'],
     ['orders.html', '受注'],
     ['bottling.html', '瓶詰め・箱詰め'],
-    ['shipments.html', '返品・サンプル・委託'],
+    ['shipments.html', '返品・無償出荷・委託'],
     ['distillation.html', '蒸留'],
     ['tanks.html', 'タンク操作'],
     ['materials.html', '資材'],
