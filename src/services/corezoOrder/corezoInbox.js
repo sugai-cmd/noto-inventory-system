@@ -5,7 +5,7 @@
 //                     名前は「注文日_注文番号.txt」に変える
 //     要確認/       ← 登録できなかった注文メールと、COREZOからの連絡メール
 //                     （配送先住所の変更など。**自動では直さない**）
-//     未分類/       ← COREZOと関係のないメール
+//     未分類/       ← COREZOと関係のないメールと、他社の商品だけの注文メール
 //     不要/         ← 置かれてから30日たったら削除する
 //
 // 仕分けそのもの（移動・掃除）は inbox/fileInbox.js が持つ。
@@ -28,7 +28,7 @@ function processInbox(opts) {
     ...opts,
     fileFilter: /\.txt$/i,
     doneName: doneFileName,
-    otherStatuses: ['not_corezo'],
+    otherStatuses: ['not_corezo', 'not_ours'],
     missingDirLabel: 'COREZOフォルダ',
     missingDirHint:
       'Googleドライブ（パソコン版）が起動しているか、.env の COREZO_INBOX_DIR を確認してください',
@@ -66,6 +66,12 @@ function buildSlackText({ items, deleted }) {
         lines.push(`　　候補（${k === 'customer' ? '得意先' : '商品'}）: ${v.join(' / ')}`);
       }
       lines.push('　　→ COREZO/要確認 のメールを見て、受注画面から手で登録してください');
+    } else if (it.status === 'not_ours') {
+      lines.push(
+        `:page_facing_up: 他社の商品だけの注文なので登録せず「未分類」に置きました: ${it.name}` +
+          (p.orderNumber ? `（注文番号 ${p.orderNumber}）` : '')
+      );
+      for (const reason of r.reasons ?? []) lines.push(`　　- ${reason}`);
     } else if (it.status === 'not_corezo') {
       lines.push(`:page_facing_up: COREZO以外のメールを「未分類」に置きました: ${it.name}`);
     }

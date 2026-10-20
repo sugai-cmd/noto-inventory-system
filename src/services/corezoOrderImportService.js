@@ -5,8 +5,10 @@
 //
 // 方針（2026-10-20 菅井さんと決定）
 //   - 得意先は「金沢楽座（COREZO）」の1社。お届け先は消費者なので delivery_address に入れる
-//   - 商品はメールの商品コード（13桁）を商品マスタの jan_code と突合。
-//     商品名では引かない（表記がCOREZO側の都合で変わるため）
+//   - 商品は**メールの商品名だけ**で商品マスタと突合する（2026-10-20 菅井さんと決定）。
+//     メールの商品コードはCOREZO側の番号で、当社のJANではないので見ない
+//   - COREZOのメールには**他社の商品も載る**。商品名に「浄酎」「JOCHU」が無い商品は
+//     他社の商品として外し、当社の商品だけを登録する（外したことは注意としてSlackに出す）
 //   - 売価は**上代 × 得意先マスタの掛け率**（卸8掛け）。
 //     メールの金額は消費者が払った額で、COREZOから当社に入る額ではないので使わない
 //   - 送料は1注文あたり一律1,000円（税込）
@@ -19,6 +21,7 @@
 const fs = require('node:fs');
 const { getConnection } = require('../db/connection');
 const { similarity } = require('../../scripts/lib/similarName');
+const { normalizeName } = require('../utils/normalizeName');
 const orderService = require('./orderService');
 const { parseCorezoOrder } = require('./corezoOrder/corezoParser');
 
@@ -55,48 +58,73 @@ function findExistingOrder(db, orderNumber) {
     .get(`%注文番号：${orderNumber}%`, `%注文番号:${orderNumber}%`);
 }
 
-/** COREZOの商品コード → 商品マスタのJAN（corezoProductMap.json） */
-function loadCodeMap() {
-  try {
-    return require('./corezoOrder/corezoProductMap.json').map ?? {};
-  } catch {
-    return {};
-  }
+/** 片方だけ当てはまるときにその値を返す（両方・どちらも当てはまらなければ null） */
+const either = (a, b, va, vb) => (a && !b ? va : b && !a ? vb : null);
+
+/**
+ * 商品名から、浄酎を見分ける特徴を拾う。
+ *
+ * メールの「【石川・能登】能登浄酎 JOCHU White(和スピリッツ)35度 300ml」と
+ * マスタの「JOCHU White NOTO 35 300ml」は表記がまるで違うので、名前どうしは比べず
+ * 白／金・能登／長野・詰め方（パウチ等）をそろえて比べる。容量と度数だけだと
+ * 「浄酎白長野35 300」（長野）にも当たってしまうため、産地まで見る。
+ */
+function productTraits(name) {
+  const s = normalizeName(name).toLowerCase();
+  return {
+    jochu: /浄酎|jochu/.test(s),
+    color: either(/white|白/.test(s), /gold|mizunara|ミズナラ/.test(s), 'white', 'gold'),
+    region: either(/noto|能登/.test(s), /nagano|長野/.test(s), 'noto', 'nagano'),
+    pack: /パウチ|refill|サンプル/.test(s),
+    abv: Number((s.match(/(\d+(?:\.\d+)?)\s*(?:度|%)/) ?? [])[1]) || null,
+    volumeMl: Number((s.match(/(\d+)\s*ml/) ?? [])[1]) || null,
+  };
 }
 
 /**
- * 商品を決める。商品コードを**そのままJANとして**引き、当たらなければ読み替え表を見る。
- * どちらでも決まらなければ登録しない（違う商品で送り状を作らないため）。
+ * 商品を決める。**メールの商品名だけ**を見て、特徴がすべてそろう商品が1つなら決める。
+ *
+ * 浄酎でない商品は他社の商品として { foreign: true } を返す（登録しない）。
+ * 浄酎なのに決まらなければ登録しない（違う商品で送り状を作らないため）。
  */
 function matchProduct(db, item) {
-  const map = loadCodeMap();
-  const codes = [item.productCode, map[item.productCode]].filter(Boolean);
+  const t = productTraits(item.productName);
+  if (!t.jochu) return { foreign: true };
 
-  for (const code of codes) {
-    const product = db.prepare('SELECT * FROM products WHERE jan_code = ?').get(code);
-    if (product) {
-      return {
-        product,
-        warning:
-          code === item.productCode
-            ? null
-            : `商品コード ${item.productCode} を読み替え表で ${code} として扱いました`,
-      };
-    }
+  const products = db.prepare('SELECT * FROM products ORDER BY id').all();
+  const decidable = t.color && t.region && t.abv && t.volumeMl;
+  const hits = decidable
+    ? products.filter((p) => {
+        const pt = productTraits(p.name);
+        return (
+          pt.jochu &&
+          pt.color === t.color &&
+          pt.region === t.region &&
+          pt.pack === t.pack &&
+          Number(p.abv) === t.abv &&
+          Number(p.volume_ml) === t.volumeMl
+        );
+      })
+    : [];
+  if (hits.length === 1) return { product: hits[0] };
+
+  if (hits.length > 1) {
+    return {
+      reason: `商品「${item.productName}」に当たる商品が${hits.length}件あり、どれか決められません`,
+      candidates: hits.map((p) => p.name),
+    };
   }
 
-  const candidates = db
-    .prepare('SELECT name FROM products')
-    .all()
+  const candidates = products
     .map((r) => ({ name: r.name, score: similarity(item.productName, r.name) }))
     .sort((a, b) => b.score - a.score)
     .slice(0, 3)
     .map((r) => r.name);
 
   return {
-    reason:
-      `商品コード ${item.productCode}（${item.productName}）に当たる商品がありません。` +
-      'マスタのJANコードを入れるか、corezoProductMap.json に読み替えを書いてください',
+    reason: decidable
+      ? `商品「${item.productName}」に当たる商品が商品マスタにありません`
+      : `商品「${item.productName}」の名前から、白／金・産地・度数・容量を読み取れませんでした`,
     candidates,
   };
 }
@@ -121,7 +149,7 @@ function matchCustomer(db) {
  * 読み取り結果から受注を登録する。
  *
  * @param {object} parsed - parseCorezoOrder の結果
- * @returns {{status:'registered'|'dry_run'|'duplicate'|'needs_review'|'notice'|'not_corezo',
+ * @returns {{status:'registered'|'dry_run'|'duplicate'|'needs_review'|'notice'|'not_corezo'|'not_ours',
  *            parsed, order?, plan?, reasons?, candidates?, warnings}}
  */
 function importParsed(parsed, { dryRun = false, actor = null } = {}) {
@@ -162,15 +190,30 @@ function importParsed(parsed, { dryRun = false, actor = null } = {}) {
   }
 
   const items = [];
+  const foreign = [];
   for (const item of parsed.items) {
     const m = matchProduct(db, item);
-    if (m.product) {
+    if (m.foreign) {
+      foreign.push(item);
+    } else if (m.product) {
       items.push({ productId: m.product.id, productName: m.product.name, quantity: item.quantity });
-      if (m.warning) warnings.push(m.warning);
     } else {
       reasons.push(m.reason);
       if (m.candidates) candidates.product = [...(candidates.product ?? []), ...m.candidates];
     }
+  }
+  for (const f of foreign) {
+    warnings.push(`「${f.productName}」${f.quantity}個は当社の商品ではないので登録していません`);
+  }
+
+  // 他社の商品だけの注文。当社が送るものが無いので登録しない
+  if (!items.length && foreign.length && !reasons.length) {
+    return {
+      status: 'not_ours',
+      parsed,
+      warnings,
+      reasons: [`当社の商品が入っていない注文です（${foreign.map((f) => f.productName).join(' / ')}）`],
+    };
   }
 
   const mc = matchCustomer(db);
@@ -236,6 +279,7 @@ module.exports = {
   importParsed,
   matchCustomer,
   matchProduct,
+  productTraits,
   findExistingOrder,
   NOTE_PREFIX,
   SHIPPING_FEE_EXCL_TAX,
