@@ -41,16 +41,20 @@ function buildSlackText({ items, deleted }) {
   for (const it of items) {
     const r = it.result;
     const p = r.parsed ?? {};
-    if (it.status === 'registered') {
+    if (it.status === 'registered' || it.status === 'dry_run') {
       const summary = r.plan.items.map((i) => `${i.productName} ${i.quantity}本`).join(' / ');
+      // --dry-run のときは何が登録されるはずだったかを出す（受注番号はまだ無い）
+      const head =
+        it.status === 'registered'
+          ? `:white_check_mark: 受注 ${r.order.order_no} を登録しました`
+          : ':mag: 登録予定（--dry-run）';
       lines.push(
-        `:white_check_mark: 受注 ${r.order.order_no} を登録しました（${r.plan.customerName} / ` +
-          `${summary} / お届け先 ${p.delivery?.name ?? '?'} / ` +
+        `${head}（${r.plan.customerName} / ${summary} / お届け先 ${p.delivery?.name ?? '?'} / ` +
           `納品希望日 ${r.plan.requestedDeliveryOn ?? '指定なし'} / 注文番号 ${p.orderNumber}）`
       );
       for (const w of r.warnings ?? []) lines.push(`　　注意: ${w}`);
     } else if (it.status === 'notice') {
-      lines.push(`:bell: COREZOからの連絡です（自動では直していません）: ${r.reasons[0]}`);
+      lines.push(`:bell: ${r.reasons[0]}（自動では直していません）`);
       lines.push('　　→ COREZO/要確認 のメールを見て、受注画面から直してください');
     } else if (it.status === 'needs_review' || it.status === 'error') {
       lines.push(
