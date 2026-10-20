@@ -3,6 +3,8 @@ db/*.sqlite
 db/*.sqlite-journal
 db/*.sqlite-wal
 db/*.sqlite-shm
+# 取込の状態ファイル（FAX・COREZOの「不要」フォルダの掃除に使う。実行して初めてできる）
+db/.fax-inbox-state.json
 .env
 *.log
 

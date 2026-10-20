@@ -11,6 +11,7 @@
 - 一度登録できた受注は二度と登録しません。失敗した側は記録せず、次の実行でもう一度試します。
 - 結果はSlackに届きます（[FAX-AUTO-IMPORT.md](FAX-AUTO-IMPORT.md) ③ と同じ設定）。
 - 対象は「未着手」の受注だけです。発送済・取消済は対象外です。
+- COREZOの受注は、注文メールから自動で登録されます（[COREZO-ORDER-IMPORT.md](COREZO-ORDER-IMPORT.md)）。
 
 ## 登録しないもの（Slackで「要確認」と届く）
 

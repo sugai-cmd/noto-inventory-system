@@ -13,6 +13,7 @@
     "create-user": "node scripts/create-user.js",
     "import-fax": "node scripts/import-fax-order.js",
     "fax-inbox": "node scripts/fax-inbox.js",
+    "corezo-inbox": "node scripts/corezo-inbox.js",
     "ship-docs": "node scripts/ship-docs.js"
   },
   "repository": {
