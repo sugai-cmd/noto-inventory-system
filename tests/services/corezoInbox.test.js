@@ -40,8 +40,14 @@ const RESULTS = {
   'd.txt': {
     status: 'needs_review',
     parsed: { orderNumber: '141710' },
-    reasons: ['商品コード 4999999999999 に当たる商品がありません'],
+    reasons: ['商品「浄酎 ホワイト35 500ml」に当たる商品が商品マスタにありません'],
     candidates: { product: ['浄酎 ホワイト35 300ml'] },
+    warnings: [],
+  },
+  'f.txt': {
+    status: 'not_ours',
+    parsed: { orderNumber: '141711' },
+    reasons: ['当社の商品が入っていない注文です（能登 金の時 本格芋焼酎）'],
     warnings: [],
   },
 };
@@ -56,12 +62,13 @@ test('届いたメールを結果ごとにフォルダへ仕分け、取込済�
 
   const summary = await processInbox({ inboxDir: inbox, stateDir: state, importFn: fakeImport });
 
-  assert.equal(summary.items.length, 4);
+  assert.equal(summary.items.length, 5);
   assert.ok(fs.existsSync(path.join(inbox, '取込済', '20261019_141709.txt')));
   // 連絡メールは「要確認」。**自動では直さない**ので人の目に入る場所に置く
   assert.ok(fs.existsSync(path.join(inbox, '要確認', 'b.txt')));
   assert.ok(fs.existsSync(path.join(inbox, '未分類', 'c.txt')));
   assert.ok(fs.existsSync(path.join(inbox, '要確認', 'd.txt')));
+  assert.ok(fs.existsSync(path.join(inbox, '未分類', 'f.txt')), '他社の商品だけの注文は未分類');
   assert.ok(fs.existsSync(path.join(inbox, 'z.pdf')), 'PDFはそのまま残ること');
 });
 
@@ -85,6 +92,7 @@ test('Slackの文面: 登録・連絡・要確認を知らせ、登録済みの�
   assert.match(text, /自動では直していません/);
   assert.match(text, /要確認（登録していません）: d\.txt（注文番号 141710）/);
   assert.match(text, /未分類/);
+  assert.match(text, /他社の商品だけの注文なので登録せず「未分類」に置きました: f\.txt（注文番号 141711）/);
   assert.doesNotMatch(text, /登録済み/, '取込済みの再取込は知らせない');
 });
 

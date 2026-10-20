@@ -8,6 +8,8 @@
 //   - 送料は税抜909円。請求額が取り決めどおり 3,904円 になることまで見る
 //   - 複数商品は1受注の複数明細になり、送料が二重に乗らないこと
 //   - 同じ注文番号は二度登録しないこと（取消済みでも復活させない）
+//   - 商品は**商品名だけ**で決まる。メールの商品コード（COREZO側の番号）は見ない
+//   - 他社の商品は外す。「浄酎白長野35 300」（長野・同じ度数と容量）と取り違えないこと
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -25,8 +27,10 @@ let invoiceAmount;
 const FIXTURES = path.join(__dirname, '..', 'fixtures', 'corezo');
 const fixture = (name) => fs.readFileSync(path.join(FIXTURES, `${name}.txt`), 'utf8');
 
-const JAN_JOCHU = '5702583400004';
-const JAN_IMO = '5880598400001';
+// 本番の商品マスタと同じ名前にしておく（メールの商品名と表記がまるで違うことを試すため）
+const NOTO_WHITE_300 = 'JOCHU White NOTO 35 300ml';
+const NOTO_GOLD_300 = 'JOCHU Gold NOTO MIZUNARA 35 300ml';
+const GOLD_ITEM_NAME = '【石川・能登】能登浄酎 JOCHU Gold MIZUNARA(和スピリッツ)35度 300ml';
 
 test.before(async () => {
   ({ db } = await harness.setup((db, generateUid) => {
@@ -36,17 +40,16 @@ test.before(async () => {
        VALUES (?, '金沢楽座', 0.8, 1, '末日')`
     ).run(generateUid(db, 'customers'));
 
-    db.prepare(
+    const insertProduct = db.prepare(
       `INSERT INTO products (uid, name, volume_ml, abv, tax_category, list_price, jan_code,
                              initial_product_stock, initial_wip_stock)
-       VALUES (?, '浄酎 ホワイト35 300ml', 300, 35, 'スピリッツ', 3300, ?, 500, 0)`
-    ).run(generateUid(db, 'products'), JAN_JOCHU);
-
-    db.prepare(
-      `INSERT INTO products (uid, name, volume_ml, abv, tax_category, list_price, jan_code,
-                             initial_product_stock, initial_wip_stock)
-       VALUES (?, '能登 金の時 本格芋焼酎', 720, 25, '単式蒸留焼酎', 2000, ?, 500, 0)`
-    ).run(generateUid(db, 'products'), JAN_IMO);
+       VALUES (?, ?, ?, 35, 'スピリッツ', ?, ?, 500, 0)`
+    );
+    insertProduct.run(generateUid(db, 'products'), NOTO_WHITE_300, 300, 3300, '4589501590907');
+    // 度数・容量が同じで産地だけ違う。取り違えないことを見るために入れておく
+    insertProduct.run(generateUid(db, 'products'), '浄酎白長野35 300', 300, 3300, null);
+    insertProduct.run(generateUid(db, 'products'), NOTO_GOLD_300, 300, 4950, null);
+    insertProduct.run(generateUid(db, 'products'), '浄酎白能登35 1000 パウチ', 1000, 6000, null);
   }));
 
   importService = require('../../src/services/corezoOrderImportService');
@@ -68,6 +71,8 @@ test('贈り物の注文（1商品）を受注に登録する', () => {
   assert.equal(order.ordered_on, '2026-10-01', '受注日はメールの受信日');
   assert.equal(order.requested_delivery_on, '2026-10-16', 'お届け日が納品希望日になること');
   assert.equal(order.note, 'COREZO注文番号：140882');
+  // 能登の白35度300ml。同じ度数・容量の長野の商品ではないこと
+  assert.equal(r.plan.items[0].productName, NOTO_WHITE_300);
 
   // 売価は上代3,300×0.8×5本。**メールの消費者価格（4,630）ではない**
   assert.equal(order.unit_price, 3300);
@@ -80,18 +85,18 @@ test('贈り物の注文（1商品）を受注に登録する', () => {
   assert.match(order.delivery_address, /18時～20時/);
 });
 
-// 上の試験と対で見る。消費者価格をそのまま入れていたら、ここで必ず落ちる
-test('請求額は取り決めどおり（売価×1.1 + 送料1,000円）になる', () => {
+// 実物の2商品の注文は、当社の浄酎と他社の芋焼酎の組み合わせだった
+test('他社の商品は外して、当社の商品だけを登録する（注意は出す）', () => {
   const r = importService.importFromText(fixture('order-two-items'));
   assert.equal(r.status, 'registered', r.reasons?.join(' / '));
+  assert.deepEqual(r.plan.items.map((i) => i.productName), [NOTO_WHITE_300]);
+  assert.match(r.warnings.join(' '), /「能登 金の時 本格芋焼酎」2個は当社の商品ではない/);
 
+  // 上の試験と対で見る。消費者価格をそのまま入れていたら、ここで必ず落ちる
   const invoice = invoiceAmount.orderInvoice(db, r.order.order_no);
-  // 浄酎 3,300×0.8×1本 ＝ 2,640 ／ 芋焼酎 2,000×0.8×2本 ＝ 3,200
-  assert.equal(invoice.salesAmount, 5840);
+  assert.equal(invoice.salesAmount, 2640, '浄酎 3,300×0.8×1本。芋焼酎は入らない');
   assert.equal(invoice.shippingFee, 909, '送料は税抜909円で入れる');
-  // (5,840 + 909) × 1.1 ＝ 7,423.9 → 7,424
-  assert.equal(invoice.total, 7424);
-
+  assert.equal(invoice.total, 3904);
 });
 
 // 菅井さんが示した「浄酎300ml 1本なら 3,904円（税込）」が、そのまま出ることを見る。
@@ -110,9 +115,17 @@ test('浄酎300ml 1本の注文は、請求額がちょうど3,904円になる',
   assert.equal(invoice.total, 3904);
 });
 
-test('1通に複数商品があれば、同じ受注番号の複数明細になる（送料は1行目だけ）', () => {
+test('1通に当社の商品が複数あれば、同じ受注番号の複数明細になる（送料は1行目だけ）', () => {
+  const text = fixture('order-two-items')
+    .replace('ご注文番号：141709', 'ご注文番号：141799')
+    .replaceAll('能登 金の時 本格芋焼酎', GOLD_ITEM_NAME);
+  const r = importService.importFromText(text);
+  assert.equal(r.status, 'registered', r.reasons?.join(' / '));
+  // 白 3,300×0.8×1本 ＝ 2,640 ／ 金 4,950×0.8×2本 ＝ 7,920
+  assert.equal(invoiceAmount.orderInvoice(db, r.order.order_no).salesAmount, 10560);
+
   const rows = db
-    .prepare(`SELECT * FROM orders WHERE note = 'COREZO注文番号：141709' ORDER BY line_no`)
+    .prepare(`SELECT * FROM orders WHERE note = 'COREZO注文番号：141799' ORDER BY line_no`)
     .all();
   assert.equal(rows.length, 2);
   assert.equal(rows[0].order_no, rows[1].order_no, '同じ受注番号であること');
@@ -121,6 +134,7 @@ test('1通に複数商品があれば、同じ受注番号の複数明細にな�
   assert.equal(rows[0].shipping_fee, 909);
   assert.equal(rows[1].shipping_fee, 0, '送料が二重に乗らないこと');
   assert.equal(rows[1].quantity, 2);
+  assert.equal(rows[1].product_id, db.prepare('SELECT id FROM products WHERE name = ?').get(NOTO_GOLD_300).id);
 });
 
 test('同じ注文番号は二度登録しない', () => {
@@ -161,21 +175,47 @@ test('COREZOと関係のないメールは「未分類」に回す', () => {
   assert.equal(r.status, 'not_corezo');
 });
 
-test('商品コードが商品マスタに無ければ登録せず、候補を出す', () => {
+test('メールの商品コードは見ない（当社のJANと違っても商品名で決まる）', () => {
   const text = fixture('order-gift')
     .replace('ご注文番号：140882', 'ご注文番号：149999')
-    .replaceAll(JAN_JOCHU, '4999999999999');
+    .replaceAll('5702583400004', '4999999999999');
+
+  const r = importService.importFromText(text, { dryRun: true });
+  assert.equal(r.status, 'dry_run', r.reasons?.join(' / '));
+  assert.equal(r.plan.items[0].productName, NOTO_WHITE_300);
+});
+
+test('長野の浄酎は長野の商品になる（産地で見分ける）', () => {
+  const text = fixture('order-gift')
+    .replace('ご注文番号：140882', 'ご注文番号：149992')
+    .replaceAll('【石川・能登】能登浄酎', '【長野】長野浄酎');
+
+  const r = importService.importFromText(text, { dryRun: true });
+  assert.equal(r.status, 'dry_run', r.reasons?.join(' / '));
+  assert.equal(r.plan.items[0].productName, '浄酎白長野35 300');
+});
+
+test('浄酎なのに商品マスタで決まらなければ登録せず、候補を出す', () => {
+  const text = fixture('order-gift')
+    .replace('ご注文番号：140882', 'ご注文番号：149991')
+    .replaceAll('35度 300ml', '35度 500ml');
 
   const r = importService.importFromText(text);
   assert.equal(r.status, 'needs_review');
-  assert.match(r.reasons.join(' '), /4999999999999/);
+  assert.match(r.reasons.join(' '), /当たる商品が商品マスタにありません/);
   assert.ok(r.candidates.product.length, '近い商品名が候補に出ること');
+});
 
-  // 対で見る。正しいコードなら通ること（全部 needs_review なら試験の意味が無い）
-  const ok = importService.importFromText(
-    fixture('order-gift').replace('ご注文番号：140882', 'ご注文番号：149998')
-  );
-  assert.equal(ok.status, 'registered');
+test('他社の商品だけの注文は登録しない', () => {
+  const before = db.prepare('SELECT COUNT(*) AS n FROM orders').get().n;
+  const text = fixture('order-gift')
+    .replace('ご注文番号：140882', 'ご注文番号：149990')
+    .replaceAll('【石川・能登】能登浄酎 JOCHU White(和スピリッツ)35度 300ml', '能登 金の時 本格芋焼酎');
+
+  const r = importService.importFromText(text);
+  assert.equal(r.status, 'not_ours');
+  assert.match(r.reasons[0], /当社の商品が入っていない/);
+  assert.equal(db.prepare('SELECT COUNT(*) AS n FROM orders').get().n, before);
 });
 
 test('お届け先が複数あるメールは登録しない（送り状が1枚しか出ないため）', () => {
