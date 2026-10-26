@@ -370,7 +370,7 @@ CREATE TABLE "raw_sake_brands" (
   registered_on     TEXT CHECK (registered_on IS NULL OR registered_on GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]'),
   initial_stock     REAL DEFAULT 0,             -- 初期在庫量
   current_stock     REAL DEFAULT 0              -- 現在在庫量（実質raw_sake_ledgerで管理、参考値）
-);
+, unit_price_per_l REAL, used_for_cost INTEGER NOT NULL DEFAULT 0);
 
 CREATE TABLE "raw_sake_ledger" (
   id              INTEGER PRIMARY KEY,
@@ -399,6 +399,13 @@ CREATE TABLE raw_sake_lot_allocations (
   receipt_ledger_id INTEGER NOT NULL REFERENCES raw_sake_ledger(id),  -- 引当元の受入ロット
   quantity          REAL NOT NULL,
   created_at        TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE raw_sake_yield_rates (
+  abv          REAL PRIMARY KEY,           -- 商品の規定度数
+  raw_l        REAL NOT NULL CHECK (raw_l > 0),        -- 投入した原酒(L)
+  distillate_l REAL NOT NULL CHECK (distillate_l > 0), -- 採れた浄酎(L)
+  note         TEXT
 );
 
 CREATE TABLE resource_locks (

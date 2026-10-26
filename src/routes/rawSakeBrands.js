@@ -25,6 +25,8 @@ const createSchema = z
     note: z.string().optional(),
     registeredOn: dateOnly.optional(),
     initialStock: z.number().nonnegative().optional(),
+    unitPricePerL: z.number().nonnegative().nullable().optional(), // 仕入単価(円/L)。原価の計算に使う
+    usedForCost: z.boolean().optional(), // 原価に使う原酒（立てると他は下りる）
   })
   .refine((v) => !(v.breweryId && v.breweryName), {
     message: 'breweryIdとbreweryNameは同時に指定できません',
@@ -44,6 +46,8 @@ const updateSchema = z
     producedOn: z.string().optional(),
     note: z.string().optional(),
     registeredOn: dateOnly.optional(),
+    unitPricePerL: z.number().nonnegative().nullable().optional(),
+    usedForCost: z.boolean().optional(),
   })
   .refine((v) => !(v.breweryId && v.breweryName), {
     message: 'breweryIdとbreweryNameは同時に指定できません',

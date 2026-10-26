@@ -52,20 +52,22 @@ function create({
   note,
   registeredOn,
   initialStock,
+  unitPricePerL,
+  usedForCost,
 }) {
   const db = getConnection();
   const uid = generateUid(db, 'raw_sake_brands');
   const resolvedBreweryId = resolveBreweryId(db, { breweryId, breweryName });
   const breweryNameRaw = resolvedBreweryId ? null : (breweryName ?? null);
 
-  const result = db
-    .prepare(
-      `INSERT INTO raw_sake_brands
-         (uid, code, name, abv, sake_meter_value, brewery_id, brewery_name_raw,
-          status, produced_on, note, registered_on, initial_stock, current_stock)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
-    )
-    .run(
+  const insert = db.prepare(
+    `INSERT INTO raw_sake_brands
+       (uid, code, name, abv, sake_meter_value, brewery_id, brewery_name_raw,
+        status, produced_on, note, registered_on, initial_stock, current_stock, unit_price_per_l)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  );
+  const id = db.transaction(() => {
+    const result = insert.run(
       uid,
       code ?? null,
       name,
@@ -78,9 +80,21 @@ function create({
       note ?? null,
       registeredOn ?? null,
       initialStock ?? 0,
-      initialStock ?? 0
+      initialStock ?? 0,
+      unitPricePerL ?? null
     );
-  return findById(result.lastInsertRowid);
+    if (usedForCost) markUsedForCost(db, result.lastInsertRowid);
+    return result.lastInsertRowid;
+  })();
+  return findById(id);
+}
+
+/**
+ * 原価に使う原酒を1件だけにする（立てたら他を全部下ろす）。
+ * 1件だけなのはDBのCHECKでは守れないので、ここで守る。
+ */
+function markUsedForCost(db, id) {
+  db.prepare('UPDATE raw_sake_brands SET used_for_cost = (id = ?)').run(id);
 }
 
 function update(id, fields) {
@@ -96,7 +110,7 @@ function update(id, fields) {
     ? null
     : (fields.breweryName ?? current.brewery_name_raw);
 
-  db.prepare(
+  const save = db.prepare(
     `UPDATE raw_sake_brands
      SET code = COALESCE(?, code),
          name = COALESCE(?, name),
@@ -107,21 +121,32 @@ function update(id, fields) {
          status = COALESCE(?, status),
          produced_on = COALESCE(?, produced_on),
          note = COALESCE(?, note),
-         registered_on = COALESCE(?, registered_on)
+         registered_on = COALESCE(?, registered_on),
+         unit_price_per_l = CASE WHEN ? THEN ? ELSE unit_price_per_l END
      WHERE id = ?`
-  ).run(
-    fields.code ?? null,
-    fields.name ?? null,
-    fields.abv ?? null,
-    fields.sakeMeterValue ?? null,
-    resolvedBreweryId,
-    breweryNameRaw,
-    fields.status ?? null,
-    fields.producedOn ?? null,
-    fields.note ?? null,
-    fields.registeredOn ?? null,
-    id
   );
+  db.transaction(() => {
+    save.run(
+      fields.code ?? null,
+      fields.name ?? null,
+      fields.abv ?? null,
+      fields.sakeMeterValue ?? null,
+      resolvedBreweryId,
+      breweryNameRaw,
+      fields.status ?? null,
+      fields.producedOn ?? null,
+      fields.note ?? null,
+      fields.registeredOn ?? null,
+      // 単価は空にして消せるようにする（他の列のCOALESCEだと null で消せない）
+      fields.unitPricePerL !== undefined ? 1 : 0,
+      fields.unitPricePerL ?? null,
+      id
+    );
+    if (fields.usedForCost === true) markUsedForCost(db, id);
+    else if (fields.usedForCost === false) {
+      db.prepare('UPDATE raw_sake_brands SET used_for_cost = 0 WHERE id = ?').run(id);
+    }
+  })();
   return findById(id);
 }
 

@@ -443,6 +443,11 @@ const MASTERS = {
         hint: '和暦などの自由記述も入れられます' },
       { key: 'registeredOn', label: '登録日', type: 'date' },
       { key: 'initialStock', label: '初期在庫(L)', type: 'number', step: '0.1', createOnly: true },
+      { key: 'unitPricePerL', label: '仕入単価(円/L)', type: 'number', step: '0.01',
+        hint: '仕込み年度ごとの値段です（例: 8,000Lで8,000,000円なら 1000）。商品原価の中身の計算に使います' },
+      { key: 'usedForCost', label: '原価に使う', type: 'checkbox',
+        checkboxLabel: 'この原酒の単価で商品原価を出す',
+        hint: '今使っている原酒に1件だけチェックします。別の原酒にチェックすると、こちらは外れます' },
       { key: 'note', label: '備考', type: 'text' },
     ],
     columns: [
@@ -456,6 +461,8 @@ const MASTERS = {
       { key: 'sake_meter_value', label: '日本酒度', num: true, digits: 1 },
       { key: 'status', label: '状態' },
       { key: 'produced_on', label: '製造年月' },
+      { key: 'unit_price_per_l', label: '単価(円/L)', num: true, yen: true },
+      { key: 'used_for_cost', label: '原価', format: (r) => (r.used_for_cost ? '使用中' : '') },
     ],
   },
 };

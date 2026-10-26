@@ -330,4 +330,16 @@ function buildReport({ asOf } = {}) {
   };
 }
 
-module.exports = { buildReport, previousWeek, taxIncluded };
+module.exports = {
+  buildReport,
+  previousWeek,
+  taxIncluded,
+  // 経営数値シート（managementSheetService）が同じ定義で数えるために使う
+  yen,
+  addDays,
+  monthOf,
+  monthlyOrderedSales,
+  monthlyPaymentDue,
+  receivedBetween,
+  overdue,
+};
