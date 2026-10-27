@@ -66,7 +66,8 @@ Mac（このシステム） ──毎朝6:10──▶ Apps Script（受け口）
 
 ### 0. 原酒の単価を入れる
 
-1. `npm run migrate` で 0032 を当てる（原酒の単価・原価に使う・倍率が増えます）
+1. 受注管理システムを再起動する（起動するときに 0032 が自動で当たり、原酒の単価・原価に使う・倍率が増えます。
+   `npm run migrate` を別に打つ必要はありません）。再起動の前に `backups/` へDBのバックアップを取っておく
 2. 画面の **マスタ → 原酒** で各ロットを開き、「仕入単価(円/L)」を入れる
    - 一昨年度（BYR6）: 8,000Lで8,000,000円 → `1000`
    - 昨年度（BYR7）: `1400`
@@ -78,7 +79,8 @@ Mac（このシステム） ──毎朝6:10──▶ Apps Script（受け口）
 2. **拡張機能 → Apps Script** を開き、`コード.gs` の中身を [`gas/management-sheet/Code.gs`](../gas/management-sheet/Code.gs) に置き換えて保存
 3. 歯車（プロジェクトの設定）→ **スクリプト プロパティ** に追加
    - プロパティ: `MANAGEMENT_SECRET`
-   - 値: 合言葉（`openssl rand -hex 24` で作る。週次報告とは**別の**合言葉にする）
+   - 値: 合言葉。ターミナルで `openssl rand -hex 24` を実行し、**出てきた48文字の英数字**を貼る
+     （`openssl rand -hex 24` という文字そのものを合言葉にしない）。週次報告とは**別の**合言葉にする
 4. **デプロイ → 新しいデプロイ → ウェブアプリ**
    - 次のユーザーとして実行: **自分** ／ アクセスできるユーザー: **全員**
    - 表示された **ウェブアプリのURL**（`…/exec`）を控える
@@ -148,6 +150,6 @@ launchctl load ~/Library/LaunchAgents/jp.noto-naorai.management-sheet.plist
 |---|---|
 | `合言葉が一致しません` | `.env` の `MANAGEMENT_WEBHOOK_SECRET` とスクリプト プロパティの `MANAGEMENT_SECRET` が同じか |
 | `送り先の応答が読めませんでした` | URLが `/exec` で終わっているか。Code.gs を直したら「デプロイを管理 → 編集 → 新バージョン」で更新したか |
-| `no such table: raw_sake_yield_rates` | `npm run migrate` を当てたか（手順0） |
+| `no such table: raw_sake_yield_rates` | 0032 が当たっているか。受注管理システムを再起動すると当たる（手順0） |
 | 商品原価が空欄 | 「商品原価」シートの「注意」列。原酒の単価・「原価に使う」・倍率・容量・度数のどれが足りないかが出ます |
 | ログに何も出ない | `launchctl list \| grep management-sheet` で登録されているか |
