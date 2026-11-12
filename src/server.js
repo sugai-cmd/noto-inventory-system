@@ -53,6 +53,32 @@ if (config.tls) {
   });
 }
 
+// 音声入力のコネクタ（MCP）。**失敗してもサイト本体は止めない。**
+if (config.mcp) {
+  try {
+    const { createMcpApp } = require('./mcp/mcpApp');
+    const { purgeExpiredOAuthRows } = require('./mcp/oauthProvider');
+    if (migrationOk()) {
+      const purged = purgeExpiredOAuthRows();
+      if (purged) console.log(`[mcp] 期限切れのログイン情報を${purged}件削除しました`);
+    }
+    createMcpApp({ publicUrl: config.mcp.publicUrl })
+      .listen(config.mcp.port, config.mcp.host, () => {
+        console.log(
+          `MCP connector listening on http://${config.mcp.host}:${config.mcp.port}/mcp ` +
+            `（公開URL ${config.mcp.publicUrl}/mcp）`
+        );
+      })
+      .on('error', (err) => console.error(`[mcp] 待ち受けを始められませんでした: ${err.message}`));
+  } catch (err) {
+    console.error(`[mcp] コネクタを起動できませんでした: ${err.message}`);
+  }
+}
+
+function migrationOk() {
+  return require('./middlewares/migrationState').getMigrationState().ok;
+}
+
 function displayHost() {
   return config.host === '0.0.0.0' ? 'localhost' : config.host;
 }

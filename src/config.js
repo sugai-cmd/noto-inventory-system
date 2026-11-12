@@ -20,6 +20,22 @@ function resolveTls() {
   };
 }
 
+/**
+ * 音声入力のコネクタ（MCP）の待ち受け。サイト本体とは別のポートで、**このMacの中だけ**で待ち受ける。
+ * 外へは Tailscale Funnel でこのポートだけを出す（docs/MCP-CONNECTOR.md）。
+ *   MCP_PORT=0       … 起動しない
+ *   MCP_PUBLIC_URL   … 外から見たURL。OAuthの発行者（issuer）になるので、Funnelの公開URLと一致させる
+ */
+function resolveMcp() {
+  const port = process.env.MCP_PORT === undefined ? 3100 : Number(process.env.MCP_PORT);
+  if (!port) return null;
+  return {
+    port,
+    host: '127.0.0.1',
+    publicUrl: process.env.MCP_PUBLIC_URL || 'https://notonaoraimacbook-air.tail1c017e.ts.net:8443',
+  };
+}
+
 const config = {
   port: Number(process.env.PORT) || 3000,
   // 既定は全インターフェースで待ち受ける（他の端末から使うため）。
@@ -29,6 +45,7 @@ const config = {
     ? path.resolve(process.cwd(), process.env.DB_PATH)
     : path.resolve(__dirname, '..', 'db', 'database.sqlite'),
   tls: resolveTls(),
+  mcp: resolveMcp(),
 };
 
 module.exports = config;
