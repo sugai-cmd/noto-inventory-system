@@ -14,7 +14,8 @@
     "import-fax": "node scripts/import-fax-order.js",
     "fax-inbox": "node scripts/fax-inbox.js",
     "corezo-inbox": "node scripts/corezo-inbox.js",
-    "ship-docs": "node scripts/ship-docs.js"
+    "ship-docs": "node scripts/ship-docs.js",
+    "mcp-revoke": "node scripts/mcp-revoke.js"
   },
   "repository": {
     "type": "git",
@@ -25,6 +26,7 @@
     "node": ">=22"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "better-sqlite3": "^13.0.3",
     "csv-parse": "^7.0.2",
     "express": "^5.2.1",

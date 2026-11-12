@@ -158,6 +158,29 @@ function recordAttempt(db, username, succeeded, ipAddress) {
  */
 function login({ username, password, totpCode, userAgent, ipAddress }) {
   const db = getConnection();
+  const user = verifyCredentials({ username, password, totpCode, ipAddress });
+
+  const token = crypto.randomBytes(32).toString('hex');
+  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
+
+  db.prepare(
+    `INSERT INTO sessions (token, user_id, expires_at, user_agent)
+     VALUES (?, ?, ?, ?)`
+  ).run(token, user.id, expiresAt, userAgent ?? null);
+
+  db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
+
+  return { token, expiresAt, user: toPublicUser(user) };
+}
+
+/**
+ * ID・パスワード（と2要素のコード）を確かめ、利用者の行を返す。セッションは作らない。
+ *
+ * 画面のログインと、外部のコネクタ（MCP）のログイン画面とで**同じ照合**を通すために分けた。
+ * ロックアウトも失敗の記録も共通なので、片方から総当たりされてももう片方と同じく止まる。
+ */
+function verifyCredentials({ username, password, totpCode, ipAddress }) {
+  const db = getConnection();
   const name = (username ?? '').trim();
 
   const failures = recentFailureCount(db, name);
@@ -201,18 +224,7 @@ function login({ username, password, totpCode, userAgent, ipAddress }) {
   }
 
   recordAttempt(db, name, true, ipAddress);
-
-  const token = crypto.randomBytes(32).toString('hex');
-  const expiresAt = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
-
-  db.prepare(
-    `INSERT INTO sessions (token, user_id, expires_at, user_agent)
-     VALUES (?, ?, ?, ?)`
-  ).run(token, user.id, expiresAt, userAgent ?? null);
-
-  db.prepare("UPDATE users SET last_login_at = datetime('now') WHERE id = ?").run(user.id);
-
-  return { token, expiresAt, user: toPublicUser(user) };
+  return user;
 }
 
 /**
@@ -357,6 +369,8 @@ module.exports = {
   countUsers,
   changePassword,
   login,
+  verifyCredentials,
+  toPublicUser,
   logout,
   resolveSession,
   purgeExpiredSessions,

@@ -188,11 +188,62 @@ CREATE TABLE materials (
   updated_at        TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
+CREATE TABLE mcp_requests (
+  request_key   TEXT PRIMARY KEY,
+  tool          TEXT NOT NULL,
+  args_hash     TEXT NOT NULL,                       -- 同じキーで別の内容が来たら断るため
+  user_id       INTEGER REFERENCES users(id),
+  result_json   TEXT NOT NULL,
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
 CREATE TABLE migration_runs (
   id           INTEGER PRIMARY KEY,
   finished_at  TEXT NOT NULL DEFAULT (datetime('now')),
   mode         TEXT,                        -- reset / append
   table_counts TEXT NOT NULL                -- 投入直後の行数 {"orders": 156, ...}
+);
+
+CREATE TABLE oauth_clients (
+  client_id     TEXT PRIMARY KEY,
+  client_json   TEXT NOT NULL,                       -- 登録時の内容（リダイレクト先など）
+  created_at    TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE oauth_codes (
+  code_hash       TEXT PRIMARY KEY,
+  client_id       TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  user_id         INTEGER NOT NULL REFERENCES users(id),
+  redirect_uri    TEXT NOT NULL,
+  code_challenge  TEXT NOT NULL,
+  scopes          TEXT,
+  resource        TEXT,
+  expires_at      TEXT NOT NULL,
+  used_at         TEXT                               -- 1回使ったら二度と使えない
+);
+
+CREATE TABLE oauth_pending_authorizations (
+  id              TEXT PRIMARY KEY,                  -- ログイン画面のフォームに埋める推測できない値
+  client_id       TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  redirect_uri    TEXT NOT NULL,
+  code_challenge  TEXT NOT NULL,
+  state           TEXT,
+  scopes          TEXT,
+  resource        TEXT,
+  expires_at      TEXT NOT NULL
+);
+
+CREATE TABLE oauth_tokens (
+  id              INTEGER PRIMARY KEY,
+  token_hash      TEXT NOT NULL UNIQUE,
+  kind            TEXT NOT NULL CHECK (kind IN ('access', 'refresh')),
+  client_id       TEXT NOT NULL REFERENCES oauth_clients(client_id),
+  user_id         INTEGER NOT NULL REFERENCES users(id),
+  scopes          TEXT,
+  resource        TEXT,
+  expires_at      TEXT NOT NULL,
+  revoked_at      TEXT,
+  created_at      TEXT NOT NULL DEFAULT (datetime('now'))
 );
 
 CREATE TABLE operation_logs (
@@ -534,6 +585,8 @@ CREATE INDEX idx_login_attempts_lookup ON login_attempts(username, attempted_at)
 CREATE INDEX idx_msl_material ON material_stock_ledger(material_id, txn_date);
 
 CREATE INDEX idx_msl_product_ledger ON material_stock_ledger(product_ledger_id);
+
+CREATE INDEX idx_oauth_tokens_user ON oauth_tokens(user_id);
 
 CREATE INDEX idx_operation_logs_target ON operation_logs(target_type, target_id);
 
