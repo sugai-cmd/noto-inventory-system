@@ -45,7 +45,7 @@ function createMcpApp({ publicUrl, allowedRedirectUris, rateLimit = true }) {
       provider,
       issuerUrl,
       resourceServerUrl: resourceUrl,
-      resourceName: 'NOTO Naorai 蒸留記録',
+      resourceName: 'NOTO Naorai 受注管理システム',
       authorizationOptions: limits,
       tokenOptions: limits,
       revocationOptions: limits,

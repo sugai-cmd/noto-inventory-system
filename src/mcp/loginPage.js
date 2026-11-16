@@ -51,7 +51,7 @@ function renderLoginPage({ pendingId, clientName, username, error } = {}) {
 <main>
   <h1>NOTO Naorai 受注管理システム</h1>
   <p>${escapeHtml(clientName || 'Claude')} が、あなたのアカウントで次の操作をできるようにします。</p>
-  <div class="scope">蒸留の開始・蒸留中の投入追加・完了報告の登録と、タンク・蒸留記録の読み取り（取消・修正・削除はできません）</div>
+  <div class="scope">蒸留・原酒入荷・瓶詰め・箱詰め・タンク移動・資材入荷・受注・出荷・返品・無償出荷・委託販売報告・見積・入金・マスタの<strong>新しい記録の登録</strong>と、そのための読み取り（取消・修正・削除はできません）</div>
   ${error ? `<p class="error">${escapeHtml(error)}</p>` : ''}
   ${form}
 </main>

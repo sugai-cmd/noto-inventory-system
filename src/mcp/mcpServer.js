@@ -1,64 +1,15 @@
-// MCPのツール定義。**登録するのはここに書いた7つだけ。**
-// 取消・修正・削除・原酒入荷はコネクタから呼べないようにするため、ここには足さない。
+// MCPのツール定義。**コネクタから呼べるのは、ここと registrationToolDefs.js に書いたものだけ。**
+// できるのは「新しい記録の登録」と、そのための読み取りだけ。
+// 取消・修正・削除はコネクタから呼べないようにするため、ここには足さない（画面で行う）。
 //
-// 中身は distillationTools.js にあり、ここは入力の形（Claudeに見せる説明）と、
+// 中身は distillationTools.js / registrationTools.js にあり、ここは入力の形（Claudeに見せる説明）と、
 // 結果をMCPの返し方に包むことだけを受け持つ。
 
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const tools = require('./distillationTools');
-const { McpInputError } = require('./tankLookup');
-
-const date = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).describe('YYYY-MM-DD');
-const time = z.string().regex(/^\d{2}:\d{2}$/).describe('HH:MM（24時間）');
-const tankRef = z
-  .union([z.number().int().positive(), z.string().min(1)])
-  .describe('タンクのID（数値）、または名前・容器ID（例「タンク2」「SP-2405-01」）。1つに決まらなければ候補を返します');
-const distillationRef = z
-  .union([z.number().int().positive(), z.string().min(1)])
-  .describe('蒸留記録のID（数値）、または蒸留コード（例「D2611120001」）');
-const preview = z
-  .boolean()
-  .optional()
-  .describe('true：保存せず、保存される内容・タンクの変化・注意点だけ返す。確認表を作るときは必ず true で呼ぶ');
-const requestKey = z
-  .string()
-  .min(8)
-  .max(200)
-  .optional()
-  .describe('本登録（preview=false）で必須。確認表ごとに一意な文字列。同じキーで再送しても2件目は作られない');
-
-const READ = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
-const WRITE = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
-
-const WRITE_FLOW =
-  '必ず先に preview=true で呼び、結果（warnings・tanks の変化）から確認表を作って利用者の「OK」を得てから、' +
-  '同じ内容で preview=false と requestKey を付けて本登録する。';
-
-function ok(payload) {
-  return { content: [{ type: 'text', text: JSON.stringify(payload, null, 2) }] };
-}
-
-function fail(err) {
-  const body =
-    err instanceof McpInputError || (err.status && err.status < 500)
-      ? tools.errorBody(err)
-      : { code: 'internal_error', message: `サーバー側でエラーが起きました: ${err.message}` };
-  if (!(err instanceof McpInputError) && !(err.status && err.status < 500)) {
-    console.error('[mcp] ツールの実行に失敗しました:', err);
-  }
-  return { isError: true, content: [{ type: 'text', text: JSON.stringify({ error: body }, null, 2) }] };
-}
-
-function wrap(fn) {
-  return async (args) => {
-    try {
-      return ok(fn(args ?? {}));
-    } catch (err) {
-      return fail(err);
-    }
-  };
-}
+const { date, time, tankRef, distillationRef, preview, requestKey, READ, WRITE, WRITE_FLOW, wrap } = require('./toolHelpers');
+const { registerRegistrationTools } = require('./registrationToolDefs');
 
 /**
  * @param {object} ctx
@@ -67,12 +18,13 @@ function wrap(fn) {
  */
 function buildMcpServer(ctx) {
   const server = new McpServer(
-    { name: 'noto-distillation', version: '1.0.0' },
+    { name: 'noto-inventory', version: '2.0.0' },
     {
       instructions:
-        'NOTO Naorai の蒸留記録（上流記録）を登録するためのツール群。できるのは蒸留の開始・蒸留中の投入追加・完了報告だけで、' +
-        '取消・修正は画面で行う。登録は ' + WRITE_FLOW +
-        ' タンクが1つに決まらないときは候補が返るので、利用者に選んでもらう。',
+        'NOTO Naorai の受注管理システムに、新しい記録を登録するためのツール群' +
+        '（蒸留・原酒入荷・瓶詰め・箱詰め・タンク移動・資材入荷・受注・出荷・返品・無償出荷・委託販売報告・見積・入金・マスタ）。' +
+        '取消・修正・削除はできない（画面で行う）。登録は ' + WRITE_FLOW +
+        ' タンク・得意先・商品などが1つに決まらないときは候補が返るので、利用者に選んでもらう。',
     }
   );
 
@@ -197,6 +149,8 @@ function buildMcpServer(ctx) {
     },
     wrap((args) => tools.completeDistillation(args, ctx))
   );
+
+  registerRegistrationTools(server, ctx);
 
   return server;
 }

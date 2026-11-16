@@ -288,18 +288,53 @@ test('リフレッシュトークンは使うと新しくなり、古いもの�
   refreshToken = first.body.refresh_token;
 });
 
-test('ツールは7つだけ（取消・修正・削除・原酒入荷は無い）', async () => {
+test('ツールは新規登録と読み取りだけ（取消・修正・削除は無い）', async () => {
   const { status, body } = await rpc('tools/list', {});
   assert.equal(status, 200);
-  assert.deepEqual(body.result.tools.map((t) => t.name).sort(), [
+  const names = body.result.tools.map((t) => t.name).sort();
+  assert.deepEqual(names, [
+    'add_customer_note',
     'add_distillation_input',
+    'add_recipe_row',
+    'allocate_payment',
     'complete_distillation',
+    'create_brewery',
+    'create_customer',
+    'create_material',
+    'create_order',
+    'create_product',
+    'create_quotation',
+    'create_raw_sake_brand',
+    'create_tank',
+    'find_orders',
     'get_distillation',
     'get_distillation_options',
+    'get_registration_options',
     'list_active_distillations',
+    'list_open_invoices',
+    'list_pending_consignments',
     'list_tanks',
+    'list_wip_lots',
+    'receive_material',
+    'receive_raw_sake',
+    'record_bottling',
+    'record_boxing',
+    'record_consignment_report',
+    'record_payment',
+    'record_return',
+    'record_sample',
+    'record_tax_free_transfer',
+    'search_master',
+    'ship_order',
     'start_distillation',
+    'transfer_tank',
   ]);
+  assert.ok(names.every((n) => !/cancel|update|edit|delete|remove|revoke/.test(n)));
+  // 登録のツールは必ず preview と requestKey を持つ
+  for (const tool of body.result.tools.filter((t) => !t.annotations?.readOnlyHint)) {
+    assert.ok(tool.inputSchema.properties.preview, tool.name);
+    assert.ok(tool.inputSchema.properties.requestKey, tool.name);
+  }
 });
 
 // --- 読み取り ---

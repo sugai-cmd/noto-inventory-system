@@ -22,7 +22,7 @@ function resolveTls() {
 
 /**
  * 音声入力のコネクタ（MCP）の待ち受け。サイト本体とは別のポートで、**このMacの中だけ**で待ち受ける。
- * 外へは Tailscale Funnel でこのポートだけを出す（docs/MCP-CONNECTOR.md）。
+ * 外へは、コネクタ専用の2つ目の Tailscale（機器名 noto-mcp）の Funnel でこのポートだけを出す（docs/MCP-CONNECTOR.md）。
  *   MCP_PORT=0       … 起動しない
  *   MCP_PUBLIC_URL   … 外から見たURL。OAuthの発行者（issuer）になるので、Funnelの公開URLと一致させる
  */
@@ -32,7 +32,7 @@ function resolveMcp() {
   return {
     port,
     host: '127.0.0.1',
-    publicUrl: process.env.MCP_PUBLIC_URL || 'https://notonaoraimacbook-air.tail1c017e.ts.net:8443',
+    publicUrl: process.env.MCP_PUBLIC_URL || 'https://noto-mcp.tail1c017e.ts.net',
   };
 }
 

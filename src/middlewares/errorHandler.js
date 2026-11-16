@@ -53,4 +53,4 @@ function errorHandler(err, req, res, next) { // eslint-disable-line no-unused-va
   res.status(500).json({ error: 'internal_error', message: err.message });
 }
 
-module.exports = { errorHandler };
+module.exports = { errorHandler, constraintMessage };
