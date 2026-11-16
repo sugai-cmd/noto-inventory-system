@@ -9,12 +9,9 @@
 // ここに置くのは「開始」「投入の追加」「完了」と、その確認のための読み取りだけ。
 // 取消・修正・削除はコネクタからはできない（画面で行う）。
 
-const crypto = require('node:crypto');
 const { getConnection } = require('../db/connection');
 const distillationService = require('../services/distillationService');
-const operationLogService = require('../services/operationLogService');
 const { tankContentsKind, rawSakeTankSql, RESIDUE_TANK_PREFIX, computeTankAbv } = require('../services/tankService');
-const { getMigrationState, migrationNotice } = require('../middlewares/migrationState');
 const { today } = require('../utils/dateUtil');
 const { startSchema, completeSchema, addDetailSchema } = require('../validators/distillationSchemas');
 const {
@@ -27,132 +24,10 @@ const {
   round3,
 } = require('./tankLookup');
 const { normalizePlannedDuration } = require('./plannedDuration');
-
-/** 操作ログの一行目につける印。設定画面の操作ログで「音声入力から入った」と分かるように */
-const VIA_LABEL = '【音声入力（MCP）経由】';
+const { executeWrite, compact, errorBody, VIA_LABEL } = require('./writeFlow');
 
 /** 度数が直近の平均からこれ以上離れていたら注意する（％ポイント） */
 const ABV_DEVIATION_PT = 10;
-
-/** 試し実行（preview）で巻き戻すための合図 */
-const ROLLBACK = Symbol('preview-rollback');
-
-/** undefined のキーを落とす。画面が送らない項目は、こちらも送らない（同じ入力にするため） */
-function compact(obj) {
-  return Object.fromEntries(Object.entries(obj).filter(([, v]) => v !== undefined));
-}
-
-function hashArgs(tool, input) {
-  return crypto.createHash('sha256').update(JSON.stringify({ tool, input })).digest('hex');
-}
-
-function errorBody(err) {
-  return compact({
-    code: err.code ?? 'error',
-    message: err.message,
-    candidates: err.candidates,
-    details: err.details,
-  });
-}
-
-/**
- * 登録の共通の流れ。
- *
- * preview=true のとき：本番と同じサービス関数をトランザクションの中で実行し、
- *   結果を控えてから巻き戻す。**画面と同じチェックが必ず走り、何も保存されない。**
- * preview=false のとき：requestKey で二重登録を防ぎつつ、登録・操作ログ・
- *   requestKey の記録を1つのトランザクションで行う（どれかが失敗したら全部なかったことになる）。
- */
-function executeWrite({ tool, schema, input, args, tankIds, ctx, run, warnings, log, record }) {
-  const db = getConnection();
-
-  const parsed = schema.safeParse(input);
-  if (!parsed.success) {
-    throw new McpInputError('入力内容に誤りがあります', {
-      code: 'validation_error',
-      details: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
-    });
-  }
-  const valid = parsed.data;
-  const before = snapshotTanks(db, tankIds);
-  const notes = warnings(db, valid, before);
-
-  if (args.preview) {
-    let outcome = null;
-    let failure = null;
-    try {
-      db.transaction(() => {
-        const result = run(valid);
-        outcome = { record: record(db, result), after: snapshotTanks(db, tankIds) };
-        throw ROLLBACK;
-      })();
-    } catch (err) {
-      if (err !== ROLLBACK) failure = err;
-    }
-    if (failure && !(failure.status && failure.status < 500)) throw failure; // サーバー側の故障はそのまま上げる
-
-    return compact({
-      preview: true,
-      saved: false,
-      wouldSucceed: !failure,
-      error: failure ? errorBody(failure) : undefined,
-      warnings: notes,
-      input: valid,
-      // 採番（蒸留コードなど）は試し実行の時点の見込み。本登録で変わることがある
-      record: outcome?.record,
-      tanks: diffTanks(before, outcome?.after),
-    });
-  }
-
-  if (!getMigrationState().ok) throw new McpInputError(migrationNotice(), { code: 'migration_failed' });
-
-  const requestKey = typeof args.requestKey === 'string' ? args.requestKey.trim() : '';
-  if (!requestKey) {
-    throw new McpInputError(
-      'requestKey がありません。確認表ごとに一意の文字列を付けてください（同じ登録の二重送信を防ぐため）',
-      { code: 'request_key_required' }
-    );
-  }
-  const argsHash = hashArgs(tool, valid);
-
-  return db.transaction(() => {
-    const prior = db.prepare('SELECT * FROM mcp_requests WHERE request_key = ?').get(requestKey);
-    if (prior) {
-      if (prior.tool !== tool || prior.args_hash !== argsHash) {
-        throw new McpInputError(
-          `requestKey「${requestKey}」は別の内容の登録に使われています。新しい requestKey で送り直してください`,
-          { code: 'request_key_conflict' }
-        );
-      }
-      return { ...JSON.parse(prior.result_json), duplicate: true };
-    }
-
-    const result = run(valid);
-    const payload = compact({
-      saved: true,
-      warnings: notes,
-      record: record(db, result),
-      tanks: diffTanks(before, snapshotTanks(db, tankIds)),
-    });
-
-    const entry = log(result, valid);
-    operationLogService.record({
-      user: ctx.actor,
-      action: entry.action,
-      targetType: entry.targetType,
-      targetId: entry.targetId,
-      summary: `${VIA_LABEL}${entry.summary}`,
-      detail: compact({ via: 'mcp', tool, requestKey, clientName: ctx.clientName }),
-    });
-
-    db.prepare(
-      `INSERT INTO mcp_requests (request_key, tool, args_hash, user_id, result_json)
-       VALUES (?, ?, ?, ?, ?)`
-    ).run(requestKey, tool, argsHash, ctx.actor?.id ?? null, JSON.stringify(payload));
-
-    return payload;
-  })();
-}
 
 // --- 注意点（警告だけ。登録できるかどうかは画面と同じルールで決まる） ---
 
@@ -222,8 +97,10 @@ function startDistillation(args, ctx) {
     schema: startSchema,
     input,
     args,
-    tankIds: items.map((i) => i.tank.id),
     ctx,
+    snapshot: (db) => snapshotTanks(db, items.map((i) => i.tank.id)),
+    diff: diffTanks,
+    effectsKey: 'tanks',
     run: (valid) => distillationService.submitDistillationStart(valid),
     warnings: (_db, valid, before) => {
       const out = inputWarnings(before, drawsByTank(valid.items));
@@ -256,9 +133,12 @@ function addDistillationInput(args, ctx) {
     tool: 'add_distillation_input',
     schema: addDetailSchema,
     input,
+    scope: { distillationId: distillation.id },
     args,
-    tankIds: [tank.id],
     ctx,
+    snapshot: (db) => snapshotTanks(db, [tank.id]),
+    diff: diffTanks,
+    effectsKey: 'tanks',
     run: (valid) => distillationService.addDistillationDetailItem(distillation.id, valid, ctx.actor),
     warnings: (_db, valid, before) => {
       const out = inputWarnings(before, new Map([[valid.tankId, valid.volumeL]]));
@@ -313,9 +193,12 @@ function completeDistillation(args, ctx) {
     tool: 'complete_distillation',
     schema: completeSchema,
     input,
+    scope: { distillationId: distillation.id },
     args,
-    tankIds: [outputTank.id, ...(residueTank ? [residueTank.id] : [])],
     ctx,
+    snapshot: (db) => snapshotTanks(db, [outputTank.id, ...(residueTank ? [residueTank.id] : [])]),
+    diff: diffTanks,
+    effectsKey: 'tanks',
     run: (valid) => distillationService.completeDistillation(distillation.id, valid),
     warnings: (wdb, valid, before) => {
       const out = [];

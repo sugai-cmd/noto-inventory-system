@@ -69,3 +69,5 @@ router.post('/tax-free-transfer', validateRequest(taxFreeSchema), (req, res, nex
 });
 
 module.exports = router;
+// 音声入力のコネクタ（src/mcp/）も同じ入力チェックを通すため、新規登録のスキーマを渡す
+module.exports.schemas = { transferSchema, taxFreeSchema };
